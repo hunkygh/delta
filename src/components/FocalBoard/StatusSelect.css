@@ -1,0 +1,138 @@
+.status-select {
+  position: relative;
+  z-index: 2;
+}
+
+.status-select.open {
+  z-index: 520;
+}
+
+.status-select-trigger {
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  padding: 0 4px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+
+.status-select-trigger:hover {
+  background: #f2f2f2;
+}
+
+.status-select-circle {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid var(--status-color, #94a3b8);
+  background: transparent;
+  box-sizing: border-box;
+}
+
+.status-select-circle.pending {
+  border-style: dashed;
+  border-color: #94a3b8;
+}
+
+.status-select-circle.active {
+  border-style: solid;
+  background: color-mix(in srgb, var(--status-color, #94a3b8) 32%, white);
+}
+
+.status-select-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  padding: 2px 7px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #334155;
+  background: color-mix(in srgb, var(--status-color, #94a3b8) 18%, white);
+}
+
+.status-select-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--status-color, #94a3b8);
+}
+
+.status-select-label {
+  white-space: nowrap;
+}
+
+.status-select-chevron {
+  color: #64748b;
+  transition: transform 120ms ease;
+}
+
+.status-select-chevron.open {
+  transform: rotate(180deg);
+}
+
+.status-select-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 164px;
+  background: #ffffff;
+  border: 1px solid #dbe3f1;
+  border-radius: 10px;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
+  padding: 5px;
+  z-index: 540;
+  display: grid;
+  gap: 2px;
+}
+
+.status-select-option {
+  border: none;
+  background: transparent;
+  border-radius: 7px;
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  font-size: 12px;
+  color: #334155;
+  cursor: pointer;
+  padding: 0 8px;
+  text-align: left;
+}
+
+.status-select-option:hover {
+  background: #f2f2f2;
+}
+
+.status-select-option.active {
+  background: #ececec;
+}
+
+.status-select-menu-footer {
+  border-top: 1px solid #edf2fb;
+  margin-top: 3px;
+  padding-top: 4px;
+}
+
+.status-select-manage {
+  border: none;
+  background: transparent;
+  width: 100%;
+  min-height: 28px;
+  border-radius: 7px;
+  text-align: left;
+  font-size: 11px;
+  color: #64748b;
+  padding: 0 8px;
+  cursor: pointer;
+}
+
+.status-select-manage:hover {
+  background: #f2f2f2;
+  color: #334155;
+}

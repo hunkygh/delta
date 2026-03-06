@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": false,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    "baseUrl": "."
+  },
+  "include": ["src", "tests", "api", "delta.config.js"],
+  "exclude": [
+    "src/**/*-broken*.tsx",
+    "src/**/*-corrupted*.tsx",
+    "src/**/*-new-design*.tsx",
+    "src/**/*.bak",
+    "src/**/*.bak.*"
+  ]
+}

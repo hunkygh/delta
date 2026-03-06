@@ -1,0 +1,66 @@
+.inline-input-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  background: var(--color-surface-card);
+  border: 1px solid var(--color-border-default);
+  border-radius: 8px;
+  transition: border-color 180ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 180ms cubic-bezier(0.22, 1, 0.36, 1), background-color 180ms cubic-bezier(0.22, 1, 0.36, 1);
+  box-shadow: none;
+  height: 48px; /* Match Add List button height */
+}
+
+.inline-input-form:focus-within {
+  border-color: var(--color-border-focus);
+  box-shadow: 0 0 0 2px var(--color-focus-ring);
+}
+
+.inline-input {
+  flex: 1;
+  border: none;
+  outline: none;
+  font-size: var(--body-size);
+  font-family: var(--font-body);
+  color: var(--color-text-primary);
+  background: transparent;
+  padding: 4px 0;
+  font-weight: 500;
+  line-height: var(--line-height);
+  letter-spacing: 0.005em;
+}
+
+.inline-input::placeholder {
+  color: var(--color-text-muted);
+  font-family: var(--font-body);
+  font-weight: 400;
+  letter-spacing: 0.005em;
+}
+
+.inline-input-submit {
+  min-width: 48px;
+  height: 32px;
+  padding: 0 12px;
+  border: none;
+  background: rgba(100, 41, 248, 1);
+  color: white;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  transition: all 0.15s ease;
+  font-family: 'Poppins', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-weight: 500;
+}
+
+.inline-input-submit:hover {
+  background: rgba(80, 31, 198, 1);
+}
+
+.inline-input-submit:focus {
+  outline: 2px solid rgba(100, 41, 248, 1);
+  outline-offset: 1px;
+}

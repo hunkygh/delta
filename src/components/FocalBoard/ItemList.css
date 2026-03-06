@@ -1,0 +1,240 @@
+.item-list {
+  padding: 8px 0 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.item {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--color-border-subtle);
+  border-radius: 0;
+  overflow: visible;
+  transition: background-color 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.item:last-of-type {
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.item-header {
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  user-select: none;
+}
+
+.item-header:hover {
+  background: var(--color-bg-hover);
+}
+
+.item-info {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.item-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: background-color 0.15s ease;
+}
+
+.item-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  font-family: 'Poppins', -apple-system, BlinkMacSystemFont, sans-serif;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.item-description {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  font-family: 'Poppins', -apple-system, BlinkMacSystemFont, sans-serif;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.item-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.item-status-control {
+  display: inline-flex;
+  align-items: center;
+}
+
+.action-count {
+  font-size: 10px;
+  color: #6f7682;
+  background: #eceff3;
+  border-radius: 999px;
+  padding: 1px 6px;
+  font-family: 'Poppins', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.expand-button {
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 10px;
+  color: #6f7682;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  transition: all 180ms cubic-bezier(0.22, 1, 0.36, 1);
+  font-family: monospace;
+}
+
+.expand-button:hover {
+  background: #e6e8ec;
+  color: #454b56;
+}
+
+.item-content {
+  margin: 0 0 8px;
+  padding: 0 0 0 20px;
+  border-left: none;
+  background: transparent;
+}
+
+.expand-button.leading {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+}
+
+.expand-button.leading svg {
+  transition: transform 140ms ease;
+}
+
+.expand-button.leading.expanded svg {
+  transform: rotate(90deg);
+}
+
+.add-item-button {
+  width: calc(100% - 24px);
+  margin: 0 12px;
+  padding: 7px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 14px;
+  font-size: 13px;
+  cursor: pointer;
+  color: #6f7682;
+  font-family: 'Poppins', -apple-system, BlinkMacSystemFont, sans-serif;
+  transition: all 180ms cubic-bezier(0.22, 1, 0.36, 1);
+  text-align: left;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.add-item-button:hover {
+  color: #454b56;
+  background: #eceef2;
+}
+
+.add-item-hover-zone:hover .add-item-button,
+.add-item-hover-zone:focus-within .add-item-button {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.add-item-hover-zone {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  margin-top: 2px;
+}
+
+.new-item-composer {
+  margin: 8px 14px 0;
+  min-height: 52px;
+  border: 1px solid #d8dbe2;
+  border-radius: 14px;
+  background: #ffffff;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 8px 8px 12px;
+}
+
+.new-item-composer:focus-within {
+  border-color: #d8dbe2;
+}
+
+.new-item-composer-icon {
+  color: #7f8794;
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1;
+}
+
+.new-item-composer-input {
+  border: none;
+  outline: none;
+  background: transparent;
+  color: #2e333b;
+  font-family: 'Poppins', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1.25;
+  min-width: 0;
+}
+
+.new-item-composer-input:focus,
+.new-item-composer-input:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.new-item-composer.subtask-mode {
+  margin-left: 32px;
+}
+
+.new-item-composer-input::placeholder {
+  color: #9ba2ad;
+}
+
+.new-item-composer-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.new-item-save {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  border: none;
+  background: transparent;
+  color: #3b4452;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+}
+
+.new-item-save:hover,
+.new-item-save:focus-visible {
+  background: #eef1f5;
+}

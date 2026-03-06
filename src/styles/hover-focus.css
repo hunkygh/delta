@@ -1,0 +1,16 @@
+.btn-primary:hover {
+  background: var(--color-accent-hover);
+}
+
+.btn-secondary:hover,
+.navbar-link:hover,
+.project-tag:hover {
+  background: var(--color-bg-hover);
+}
+
+button:focus-visible,
+textarea:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 1px;
+}

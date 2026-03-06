@@ -1,0 +1,60 @@
+:root {
+  /* Typography */
+  --font-family-base: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-weight-primary: 500;
+  --font-weight-secondary: 400;
+  --font-weight-tertiary: 400;
+
+  /* Backgrounds */
+  --color-bg-page: rgb(255, 255, 255);
+  --color-bg-hover: rgb(240, 240, 240);
+  --color-bg-selected: rgb(240, 240, 240);
+
+  /* Surfaces */
+  --color-surface-card: #ffffff;
+  --color-surface-panel: #ffffff;
+  --color-surface-float: #ffffff;
+
+  /* Borders */
+  --color-border-subtle: rgb(240, 240, 240);
+  --color-border-default: rgb(240, 240, 240);
+  --color-border-focus: #00c7ff;
+
+  /* Text */
+  --color-text-primary: rgb(32, 32, 32);
+  --color-text-secondary: rgb(131, 131, 131);
+  --color-text-tertiary: rgb(131, 131, 131);
+  --color-text-muted: var(--color-text-tertiary);
+  --color-text-inverse: #ffffff;
+
+  /* Accent */
+  --color-accent-primary: #00c7ff;
+  --color-accent-hover: #00b8ea;
+  --color-accent-pressed: #00a9d6;
+  --color-accent-tint: rgba(0, 199, 255, 0.12);
+  --color-focus-ring: rgba(0, 199, 255, 0.42);
+
+  /* Status */
+  --color-status-success: #22c55e;
+  --color-status-warning: #f59e0b;
+  --color-status-danger: #dc2626;
+  --color-status-info: #94a3b8;
+
+  /* Shadows */
+  --shadow-subtle: 0 1px 1.5px rgba(0, 0, 0, 0.04);
+  --shadow-soft: 0 2px 4px rgba(0, 0, 0, 0.06);
+  --shadow-elevated: 0 8px 20px rgba(0, 0, 0, 0.08);
+
+  /* Column controls */
+  --column-control-size: 30px;
+  --column-control-expanded-width: 128px;
+  --column-control-radius: 999px;
+  --column-control-expanded-radius: 12px;
+  --column-popover-width: 296px;
+  --motion-ui-duration: 200ms;
+  --motion-ui-ease: cubic-bezier(0.22, 1, 0.36, 1);
+
+  /* Experimental / playground only */
+  --gradient-brand-core: linear-gradient(140deg, #3f71ff, #ff70cf);
+  --gradient-brand-soft: radial-gradient(circle at 20% 25%, rgba(96, 196, 232, 0.18), rgba(143, 104, 210, 0.14));
+}

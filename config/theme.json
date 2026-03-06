@@ -1,0 +1,12 @@
+{
+  "grid": 8,
+  "layout": {
+    "maxWidth": 1100,
+    "mobileBreakpoint": 680,
+    "tabletBreakpoint": 1024
+  },
+  "typography": {
+    "headingFont": "Space Grotesk",
+    "bodyFont": "Manrope"
+  }
+}

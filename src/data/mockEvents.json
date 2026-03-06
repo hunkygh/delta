@@ -1,0 +1,25 @@
+[
+  {
+    "id": "evt-1",
+    "title": "Deep Work Block",
+    "description": "Refactor launchpad and proposal flow.",
+    "start": "2026-02-27T16:45:00.000Z",
+    "end": "2026-02-27T18:15:00.000Z",
+    "recurrence": "weekly",
+    "tasks": [
+      {
+        "id": "task-1",
+        "title": "Finalize weekly calendar view polish",
+        "completed": false,
+        "recurrenceMode": "match_event"
+      },
+      {
+        "id": "task-2",
+        "title": "Test resize + overlap toggle behavior",
+        "completed": false,
+        "recurrenceMode": "match_event"
+      }
+    ],
+    "timezone": "America/Denver"
+  }
+]

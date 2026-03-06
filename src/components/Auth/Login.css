@@ -1,0 +1,143 @@
+.login-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  background: #ffffff;
+  font-family: 'Poppins', -apple-system, BlinkMacSystemFont, sans-serif;
+  padding: 40px 24px;
+}
+
+.login-content {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0;
+  width: 100%;
+  max-width: 360px;
+}
+
+.login-header {
+  text-align: center;
+  margin-bottom: 26px;
+}
+
+.login-header h2 {
+  margin: 0 0 6px 0;
+  font-size: 22px;
+  font-weight: 600;
+  color: #1b2430;
+}
+
+.login-header p {
+  margin: 0;
+  font-size: 14px;
+  color: #67707d;
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.form-group label {
+  font-size: 13px;
+  font-weight: 500;
+  color: #223040;
+}
+
+.form-group input {
+  height: 46px;
+  padding: 0 15px;
+  border: 1px solid #d4deef;
+  border-radius: 12px;
+  font-size: 14px;
+  color: #1f2937;
+  background: #f7f8fa;
+  font-family: 'Poppins', -apple-system, BlinkMacSystemFont, sans-serif;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.form-group input:focus {
+  outline: none;
+  border-color: #8ea3c6;
+  box-shadow: 0 0 0 2px rgba(237, 242, 253, 0.9);
+}
+
+.form-group input:disabled {
+  background-color: #edf2fd;
+  cursor: not-allowed;
+}
+
+.error-message {
+  padding: 10px 12px;
+  background-color: #edf2fd;
+  border: 1px solid #d7e0f1;
+  border-radius: 10px;
+  color: #445469;
+  font-size: 13px;
+}
+
+.success-message {
+  padding: 10px 12px;
+  background-color: #edf2fd;
+  border: 1px solid #d7e0f1;
+  border-radius: 10px;
+  color: #344760;
+  font-size: 13px;
+}
+
+.login-button {
+  height: 42px;
+  background: transparent;
+  color: #1f2b3a;
+  border: none;
+  border-radius: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+  font-family: 'Poppins', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.login-button:hover:not(:disabled) {
+  background: #f7f8fa;
+}
+
+.login-button:disabled {
+  background: transparent;
+  color: #8390a2;
+  cursor: not-allowed;
+}
+
+.login-footer {
+  text-align: center;
+  margin-top: 16px;
+}
+
+.toggle-auth-button {
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: none;
+  background: transparent;
+  color: #344760;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: 'Poppins', -apple-system, BlinkMacSystemFont, sans-serif;
+  transition: background-color 0.15s ease;
+}
+
+.toggle-auth-button:hover {
+  background: #f7f8fa;
+}

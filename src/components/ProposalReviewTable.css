@@ -1,0 +1,90 @@
+.proposal-review {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 18px;
+  background: var(--color-surface-card);
+  box-shadow: var(--shadow-subtle);
+  padding: 10px;
+}
+
+.proposal-review-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.proposal-review-head h3 {
+  margin: 0;
+  font-size: 14px;
+  color: #2c313a;
+}
+
+.proposal-review-source {
+  margin-left: auto;
+  font-size: 11px;
+  color: #707680;
+  text-transform: lowercase;
+}
+
+.proposal-review-table {
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--color-surface-card);
+}
+
+.proposal-review-row {
+  display: grid;
+  grid-template-columns: 80px minmax(140px, 1fr) 120px 120px minmax(200px, 2fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 10px;
+  border-top: 1px solid #e9ecf1;
+  font-size: 12px;
+  color: #454b55;
+}
+
+.proposal-review-row.header {
+  border-top: none;
+  background: #f2f4f7;
+  font-weight: 600;
+  color: #616872;
+}
+
+.proposal-review-row input[type='checkbox'] {
+  width: 14px;
+  height: 14px;
+}
+
+.proposal-review-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.proposal-btn {
+  height: 30px;
+  border-radius: 10px;
+  padding: 0 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.proposal-btn.secondary {
+  border: 1px solid #d8dbe2;
+  background: #f7f8fa;
+  color: #4b515c;
+}
+
+.proposal-btn.primary {
+  border: 1px solid #111827;
+  background: #111827;
+  color: #ffffff;
+}
+
+.proposal-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

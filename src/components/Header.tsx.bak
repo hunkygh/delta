@@ -1,0 +1,146 @@
+import { Search, Calendar, X, LogOut, User, Settings } from 'lucide-react';
+import { CampfireIcon } from '@phosphor-icons/react';
+import { useState, useEffect } from 'react';
+import authService from '../services/authService';
+
+interface HeaderProps {
+  isAiOpen: boolean;
+  onToggleAi: () => void;
+  onCloseAi: () => void;
+  aiContextTags: string[];
+  onRemoveAiContextTag: (tag: string) => void;
+}
+
+export default function Header({
+  isAiOpen,
+  onToggleAi,
+  onCloseAi,
+  aiContextTags,
+  onRemoveAiContextTag
+}: HeaderProps) {
+  const [user, setUser] = useState<any>(null);
+  const [showSettingsMenu, setShowSettingsMenu] = useState(false);
+
+  useEffect(() => {
+    // Get current user on mount
+    const getCurrentUser = async () => {
+      try {
+        const currentUser = await authService.getCurrentUser();
+        setUser(currentUser);
+      } catch (error) {
+        console.error('Failed to get current user:', error);
+      }
+    };
+
+    getCurrentUser();
+
+    // Listen to auth changes
+    const { data: { subscription } } = authService.onAuthStateChange((_event: string, session: { user: any } | null) => {
+      setUser(session?.user || null);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  // Close settings dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Element;
+      if (!target.closest('.delta-ai-panel')) {
+        setIsAiOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
+
+  const handleLogout = async () => {
+    try {
+      await authService.signOut();
+      setUser(null);
+      setShowSettingsMenu(false);
+      // Redirect to login page or reload
+      window.location.href = '/login';
+    } catch (error) {
+      console.error('Failed to logout:', error);
+    }
+  };
+
+  const onCloseAi = () => {
+    setIsAiOpen(false);
+  };
+
+  return (
+    <header className="header-strip">
+      <div className="header-content">
+        {/* Delta logo - left side */}
+        <div className="header-logo">
+          <img
+            src="/in-app-logo.png"
+            alt="Delta"
+            className="logo-image"
+          />
+        </div>
+          
+        {/* Calendar snapshot block */}
+        <div className="calendar-snapshot-block">
+          <Calendar className="calendar-icon" size={16} />
+          <span className="calendar-text">calendar snapshot</span>
+        </div>
+          
+        {/* Search bar - centered */}
+        <div className="search-bar">
+          <Search className="search-icon" size={16} />
+          <input
+            type="text"
+            placeholder="Search"
+            className="search-input"
+          />
+          <button className="ai-button-label">Ask Delta</button>
+        </div>
+      </div>
+    </header>
+  );
+}
+
+      {isAiOpen && (
+        <aside id="delta-ai-panel" className="delta-ai-panel" aria-label="Delta AI panel">
+          <div className="delta-ai-panel-inner">
+            <button
+              className="delta-ai-close-btn"
+              onClick={onCloseAi}
+              aria-label="Close Delta AI panel"
+            >
+              <X size={14} />
+            </button>
+            <div className="delta-ai-panel-content">
+              <div className="delta-ai-chat-shell">
+                {aiContextTags.length > 0 && (
+                  <div className="delta-ai-context-tags" aria-label="Delta context tags">
+                    {aiContextTags.map((tag) => (
+                      <span key={tag} className="delta-ai-context-tag">
+                        {tag}
+                        <button
+                          type="button"
+                          className="delta-ai-context-remove"
+                          aria-label={`Remove context ${tag}`}
+                          onClick={() => onRemoveAiContextTag(tag)}
+                        >
+                          ×
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <div className="delta-ai-chat-placeholder">AI chat goes here</div>
+              </div>
+            </div>
+          </div>
+        </aside>
+      )}
+    </>
+  );
+}

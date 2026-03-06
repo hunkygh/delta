@@ -1,0 +1,152 @@
+/* ==========================================
+   DELTA DESIGN SYSTEM
+   Modern, Cohesive Brand Identity
+   ========================================== */
+
+/* 🎨 BRAND COLORS */
+:root {
+  /* Primary brand colors */
+  --delta-primary-50: #f0f9ff;
+  --delta-primary-100: #dbeafe;
+  --delta-primary-200: #bfdbfe;
+  --delta-primary-300: #93c5fd;
+  --delta-primary-400: #60a5fa;
+  --delta-primary-500: #3b82f6;
+  --delta-primary-600: #2563eb;
+  --delta-primary-700: #1d4ed8;
+  --delta-primary-800: #1e40af;
+  --delta-primary-900: #1e3a8a;
+
+  /* Secondary colors */
+  --delta-secondary-50: #f8fafc;
+  --delta-secondary-100: #f1f5f9;
+  --delta-secondary-200: #e2e8f0;
+  --delta-secondary-300: #cbd5e1;
+  --delta-secondary-400: #a78bfa;
+  --delta-secondary-500: #818cf8;
+  --delta-secondary-600: #6366f1;
+  --delta-secondary-700: #4b5563;
+  --delta-secondary-800: #374151;
+  --delta-secondary-900: #1f2937;
+
+  /* Semantic colors */
+  --delta-success: #10b981;
+  --delta-warning: #f59e0b;
+  --delta-error: #ef4444;
+  --delta-info: #3b82f6;
+
+  /* Neutral colors */
+  --delta-gray-50: #f9fafb;
+  --delta-gray-100: #f3f4f6;
+  --delta-gray-200: #e5e7eb;
+  --delta-gray-300: #d1d5db;
+  --delta-gray-400: #9ca3af;
+  --delta-gray-500: #6b7280;
+  --delta-gray-600: #4b5563;
+  --delta-gray-700: #374151;
+  --delta-gray-800: #1f2937;
+  --delta-gray-900: #111827;
+
+  /* Surface colors */
+  --delta-surface-0: #ffffff;
+  --delta-surface-50: #f9fafb;
+  --delta-surface-100: #f3f4f6;
+  --delta-surface-200: #e5e7eb;
+  --delta-surface-300: #d1d5db;
+  --delta-surface-400: #9ca3af;
+  --delta-surface-500: #6b7280;
+  --delta-surface-600: #4b5563;
+  --delta-surface-700: #374151;
+  --delta-surface-800: #1f2937;
+  --delta-surface-900: #111827;
+
+  /* Text colors */
+  --delta-text-primary: #0f172a;
+  --delta-text-secondary: #4b5563;
+  --delta-text-tertiary: #6b7280;
+  --delta-text-inverse: #ffffff;
+  --delta-text-muted: #9ca3af;
+
+  /* Border colors */
+  --delta-border-primary: var(--delta-primary-200);
+  --delta-border-secondary: var(--delta-secondary-200);
+  --delta-border-surface: var(--delta-gray-200);
+  --delta-border-focus: var(--delta-primary-400);
+}
+
+/* 🎨 TYPOGRAPHY */
+:root {
+  --delta-font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --delta-font-mono: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', monospace;
+  
+  /* Font sizes */
+  --delta-text-xs: 0.75rem;     /* 12px */
+  --delta-text-sm: 0.875rem;    /* 14px */
+  --delta-text-base: 1rem;       /* 16px */
+  --delta-text-lg: 1.125rem;    /* 18px */
+  --delta-text-xl: 1.25rem;     /* 20px */
+  --delta-text-2xl: 1.5rem;    /* 24px */
+  --delta-text-3xl: 1.875rem;   /* 30px */
+
+  /* Font weights */
+  --delta-font-light: 300;
+  --delta-font-normal: 400;
+  --delta-font-medium: 500;
+  --delta-font-semibold: 600;
+  --delta-font-bold: 700;
+}
+
+/* 🎨 SPACING */
+:root {
+  --delta-space-1: 0.25rem;   /* 4px */
+  --delta-space-2: 0.5rem;    /* 8px */
+  --delta-space-3: 0.75rem;   /* 12px */
+  --delta-space-4: 1rem;      /* 16px */
+  --delta-space-5: 1.25rem;   /* 20px */
+  --delta-space-6: 1.5rem;   /* 24px */
+  --delta-space-8: 2rem;      /* 32px */
+  --delta-space-10: 2.5rem;  /* 40px */
+  --delta-space-12: 3rem;     /* 48px */
+  --delta-space-16: 4rem;     /* 64px */
+  --delta-space-20: 5rem;     /* 80px */
+}
+
+/* 🎨 BORDER RADIUS */
+:root {
+  /* Canonical radius tokens (locked) */
+  --r-xs: 6px;
+  --r-sm: 10px;
+  --r-md: 14px;
+  --r-lg: 18px;
+  --r-xl: 24px;
+  --r-full: 9999px;
+
+  /* Legacy radius tokens (kept for compatibility) */
+  --delta-radius-sm: 0.375rem;  /* 6px */
+  --delta-radius-md: 0.5rem;    /* 8px */
+  --delta-radius-lg: 0.75rem;   /* 12px */
+  --delta-radius-xl: 1rem;      /* 16px */
+  --delta-radius-2xl: 1.5rem;   /* 24px */
+  --delta-radius-full: 9999px;
+}
+
+/* 🎨 SHADOWS */
+:root {
+  --delta-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --delta-shadow-md: 0 4px 6px rgba(0, 0, 0, 0.07);
+  --delta-shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.1);
+  --delta-shadow-xl: 0 20px 25px rgba(0, 0, 0, 0.15);
+  --delta-shadow-2xl: 0 25px 50px rgba(0, 0, 0, 0.25);
+}
+
+/* 🎨 ANIMATIONS */
+:root {
+  --delta-duration-fast: 150ms;
+  --delta-duration-normal: 250ms;
+  --delta-duration-slow: 350ms;
+  
+  --delta-ease-linear: linear;
+  --delta-ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --delta-ease-out: cubic-bezier(0, 0, 0.2, 1);
+  --delta-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+}

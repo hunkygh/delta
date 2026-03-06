@@ -1,0 +1,9 @@
+{
+  "chat": "api/chat-proposal.ts",
+  "calendarCreate": "api/calendar-create.ts",
+  "calendarUpdate": "api/calendar-update.ts",
+  "calendarSync": "api/calendar-sync.ts",
+  "planExecute": "api/plan-execute.ts",
+  "tagHandler": "api/tag-handler.ts",
+  "docSync": "api/doc-sync.ts"
+}

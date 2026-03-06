@@ -1,0 +1,384 @@
+.focal-board {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #ffffff;
+  border-radius: 18px;
+  overflow: hidden;
+}
+
+.focal-board.loading {
+  align-items: center;
+  justify-content: center;
+}
+
+.loading-message {
+  font-size: 14px;
+  color: #6b7280;
+  font-family: 'Poppins', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.focal-board.error {
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.error-message {
+  color: #dc2626;
+  font-size: 14px;
+  font-family: 'Poppins', -apple-system, BlinkMacSystemFont, sans-serif;
+  text-align: center;
+}
+
+.retry-button {
+  margin-top: 8px;
+  padding: 4px 12px;
+  background: #dc2626;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: 'Poppins', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.retry-button:hover {
+  background: #b91c1c;
+}
+
+.focal-board-header {
+  padding: 18px 24px;
+  border-bottom: 1px solid #e4e6ea;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.focal-overview {
+  display: grid;
+  gap: 20px;
+  padding: 20px;
+  overflow: auto;
+}
+
+.focal-create-list-editor {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(140px, 1fr) minmax(140px, 1fr);
+  gap: 10px;
+  align-items: center;
+  width: min(980px, 100%);
+  margin-top: 6px;
+}
+
+.focal-create-list-controls {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.focal-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 16px;
+}
+
+.focal-card-grid.secondary {
+  grid-template-columns: repeat(2, minmax(320px, 1fr));
+}
+
+.focal-overview-card {
+  border: 1px solid var(--color-border-default);
+  border-radius: 18px;
+  background: var(--color-surface-card);
+  box-shadow: var(--shadow-subtle);
+  padding: 16px;
+  display: grid;
+  gap: 12px;
+}
+
+.focal-overview-card.list-card {
+  cursor: pointer;
+  transition: background-color 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.focal-overview-card.list-card:hover {
+  background: var(--color-surface-card);
+  box-shadow: var(--shadow-soft);
+}
+
+.focal-overview-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.focal-overview-card-head h3 {
+  margin: 0;
+  font-size: 18px;
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.focal-overview-card-head span {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+}
+
+.focal-overview-card-subtitle {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+}
+
+.focal-overview-stats {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.focal-overview-stats span,
+.focal-overview-statuses span {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
+.focal-overview-statuses {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.focal-overview-card.calendar-card {
+  width: 100%;
+}
+
+.focal-calendar-list {
+  display: grid;
+  gap: 2px;
+}
+
+.focal-calendar-row {
+  min-height: 38px;
+  border: none;
+  border-radius: 14px;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 8px;
+  cursor: pointer;
+}
+
+.focal-calendar-row:hover {
+  background: #eceef2;
+}
+
+.focal-calendar-row span {
+  font-size: 13px;
+  color: #31363f;
+  text-align: left;
+}
+
+.focal-calendar-row time {
+  font-size: 13px;
+  font-weight: 500;
+  color: #646b76;
+  white-space: nowrap;
+}
+
+.focal-board-header h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: #2a3038;
+  font-family: 'Poppins', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.add-focal-section {
+  display: flex;
+  align-items: center;
+}
+
+.add-focal-button {
+  padding: 6px 12px;
+  background: #18181b;
+  color: white;
+  border: 1px solid #18181b;
+  border-radius: 14px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: 'Poppins', -apple-system, BlinkMacSystemFont, sans-serif;
+  transition: background-color 0.15s ease;
+}
+
+.add-focal-button:hover {
+  background: #27272a;
+}
+
+.lane-editor-cancel {
+  height: 30px;
+  border-radius: 14px;
+  border: 1px solid #d8dbe2;
+  background: #f7f8fa;
+  color: #4d535d;
+  padding: 0 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.lists-card {
+  width: 100%;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+.lists-table {
+  border: none;
+  border-radius: 0;
+  overflow: hidden;
+}
+
+.lists-table-head {
+  height: 38px;
+  padding: 0 12px;
+  border-bottom: 1px solid rgb(240, 240, 240);
+  display: grid;
+  grid-template-columns: minmax(180px, 1.2fr) minmax(160px, 1fr) minmax(180px, 1fr) minmax(180px, 1fr);
+  align-items: center;
+  background: #ffffff;
+}
+
+.lists-table-head span {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--color-text-secondary);
+  letter-spacing: 0.02em;
+}
+
+.lists-table-row {
+  width: 100%;
+  min-height: 40px;
+  padding: 0 12px;
+  border: none;
+  border-bottom: 1px solid rgb(240, 240, 240);
+  background: #ffffff;
+  display: grid;
+  grid-template-columns: minmax(180px, 1.2fr) minmax(160px, 1fr) minmax(180px, 1fr) minmax(180px, 1fr);
+  align-items: center;
+  text-align: left;
+  cursor: pointer;
+}
+
+.lists-table-row:last-child {
+  border-bottom: none;
+}
+
+.lists-table-row:hover {
+  background: #ffffff;
+}
+
+.lists-row-name {
+  font-size: 15px;
+  color: var(--color-text-primary);
+  font-weight: 500;
+}
+
+.lists-row-muted {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--color-text-secondary);
+}
+
+.lists-row-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--color-text-secondary);
+}
+
+.lists-progress-track {
+  position: relative;
+  width: 120px;
+  height: 8px;
+  border-radius: 999px;
+  background: rgb(240, 240, 240);
+  overflow: hidden;
+}
+
+.lists-progress-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  height: 100%;
+  background: #343943;
+  border-radius: inherit;
+}
+
+.lists-table-empty {
+  min-height: 56px;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+@media (max-width: 1100px) {
+  .focal-card-grid.secondary {
+    grid-template-columns: 1fr;
+  }
+
+  .focal-create-list-editor {
+    grid-template-columns: 1fr;
+  }
+
+  .lists-table-head,
+  .lists-table-row {
+    grid-template-columns: 1.2fr 1fr;
+    gap: 8px;
+  }
+
+  .lists-table-head span:nth-child(3),
+  .lists-table-head span:nth-child(4),
+  .lists-table-row span:nth-child(3),
+  .lists-table-row span:nth-child(4) {
+    display: none;
+  }
+}
+
+.no-focal-selected {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+}
+
+.no-focal-message {
+  text-align: center;
+  max-width: 300px;
+}
+
+.no-focal-message h3 {
+  margin: 0 0 8px 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #6b7280;
+  font-family: 'Poppins', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.no-focal-message p {
+  margin: 0;
+  font-size: 14px;
+  color: #9ca3af;
+  line-height: 1.4;
+  font-family: 'Poppins', -apple-system, BlinkMacSystemFont, sans-serif;
+}
