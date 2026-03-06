@@ -14,6 +14,7 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
   FileText,
   Compass,
   CalendarDays,
@@ -27,6 +28,9 @@ import chatService from '../../services/chatService';
 import chatPersistence from '../../services/chatPersistence';
 import focalBoardService from '../../services/focalBoardService';
 import { calendarService } from '../../services/calendarService';
+import listFieldService from '../../services/listFieldService';
+import itemFieldValueService from '../../services/itemFieldValueService';
+import commentsService from '../../services/commentsService';
 import type { ChatMessage } from '../../types/chat';
 
 type MobileBlockItem = {
@@ -157,6 +161,16 @@ export default function MobileCalendarWireframe(): JSX.Element {
   const [viewedDate, setViewedDate] = useState<Date>(() => new Date());
   const [blocks, setBlocks] = useState<MobileBlock[]>([]);
   const [completed, setCompleted] = useState<Record<string, boolean>>({});
+  const [expandedTasksByBlock, setExpandedTasksByBlock] = useState<Record<string, boolean>>({});
+  const [subtaskComposerByItem, setSubtaskComposerByItem] = useState<Record<string, boolean>>({});
+  const [subtaskDraftByItem, setSubtaskDraftByItem] = useState<Record<string, string>>({});
+  const [itemDrawerPanel, setItemDrawerPanel] = useState<'details' | 'comments'>('details');
+  const [itemDrawerFields, setItemDrawerFields] = useState<any[]>([]);
+  const [itemDrawerFieldValues, setItemDrawerFieldValues] = useState<Record<string, any>>({});
+  const [itemDrawerComments, setItemDrawerComments] = useState<Array<{ id: string; body: string; created_at: string; author_type?: string }>>([]);
+  const [itemDrawerCommentsLoading, setItemDrawerCommentsLoading] = useState(false);
+  const [itemDrawerCommentDraft, setItemDrawerCommentDraft] = useState('');
+  const [itemDrawerCommentSubmitting, setItemDrawerCommentSubmitting] = useState(false);
   const [calendarAttachTree, setCalendarAttachTree] = useState<AttachTreeNode[]>([]);
   const [taskDrawerScope, setTaskDrawerScope] = useState<'items' | 'lists'>('items');
   const [taskDrawerSearch, setTaskDrawerSearch] = useState('');
@@ -209,6 +223,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
     lastT: 0,
     velocityY: 0
   });
+  const itemDrawerGestureRef = useRef<{ startX: number; startY: number }>({ startX: 0, startY: 0 });
 
   const now = new Date();
   const isTodayView =
@@ -223,6 +238,10 @@ export default function MobileCalendarWireframe(): JSX.Element {
   const activeDrawerBlock = useMemo(
     () => (drawer.blockId ? blocks.find((block) => block.id === drawer.blockId) ?? null : null),
     [blocks, drawer.blockId]
+  );
+  const activeDrawerItem = useMemo(
+    () => (activeDrawerBlock && drawer.itemId ? activeDrawerBlock.items.find((item) => item.id === drawer.itemId) || null : null),
+    [activeDrawerBlock, drawer.itemId]
   );
 
   const selectedFocal = useMemo(
@@ -498,6 +517,49 @@ export default function MobileCalendarWireframe(): JSX.Element {
   }, [activeNav, user?.id]);
 
   useEffect(() => {
+    const loadItemDrawerData = async (): Promise<void> => {
+      if (!drawer.open || drawer.mode !== 'item' || !activeDrawerItem?.id) {
+        setItemDrawerFields([]);
+        setItemDrawerFieldValues({});
+        setItemDrawerComments([]);
+        return;
+      }
+
+      const listId = activeDrawerItem.listId || null;
+      if (listId) {
+        try {
+          const [fields, valuesMap] = await Promise.all([
+            listFieldService.getFields(listId),
+            itemFieldValueService.bulkFetchForList(listId)
+          ]);
+          setItemDrawerFields((fields || []).filter((field: any) => field.is_pinned));
+          setItemDrawerFieldValues(valuesMap?.[activeDrawerItem.id] || {});
+        } catch (error) {
+          console.error('Failed loading item drawer fields:', error);
+          setItemDrawerFields([]);
+          setItemDrawerFieldValues({});
+        }
+      } else {
+        setItemDrawerFields([]);
+        setItemDrawerFieldValues({});
+      }
+
+      setItemDrawerCommentsLoading(true);
+      try {
+        const rows = await commentsService.getItemComments(activeDrawerItem.id, 80);
+        setItemDrawerComments(rows || []);
+      } catch (error) {
+        console.error('Failed loading item drawer comments:', error);
+        setItemDrawerComments([]);
+      } finally {
+        setItemDrawerCommentsLoading(false);
+      }
+    };
+
+    void loadItemDrawerData();
+  }, [drawer.open, drawer.mode, activeDrawerItem?.id, activeDrawerItem?.listId]);
+
+  useEffect(() => {
     if (view !== 'calendar' || activeNav !== 'calendar' || !currentBlockId) return;
     const container = timelineScrollRef.current;
     if (!container) return;
@@ -693,7 +755,11 @@ export default function MobileCalendarWireframe(): JSX.Element {
 
   const openPeekDrawer = (blockId: string): void => setDrawer({ open: true, mode: 'peek', blockId });
   const openEditDrawer = (blockId: string): void => setDrawer({ open: true, mode: 'edit', blockId });
-  const openItemDrawer = (blockId: string, itemId: string): void => setDrawer({ open: true, mode: 'item', blockId, itemId });
+  const openItemDrawer = (blockId: string, itemId: string): void => {
+    setItemDrawerPanel('details');
+    setItemDrawerCommentDraft('');
+    setDrawer({ open: true, mode: 'item', blockId, itemId });
+  };
 
   const openAddSheet = (next: AddSheetState): void => {
     setAddSheetClosing(false);
@@ -723,6 +789,8 @@ export default function MobileCalendarWireframe(): JSX.Element {
   const closeDrawer = (): void => {
     setIsDrawerDragging(false);
     setDrawerDragY(0);
+    setItemDrawerPanel('details');
+    setItemDrawerCommentDraft('');
     setDrawer({ open: false, mode: 'peek', blockId: null });
   };
 
@@ -808,6 +876,89 @@ export default function MobileCalendarWireframe(): JSX.Element {
   };
 
   const toggleComplete = (itemId: string): void => setCompleted((prev) => ({ ...prev, [itemId]: !prev[itemId] }));
+
+  const toggleBlockTaskExpansion = (blockId: string): void => {
+    setExpandedTasksByBlock((prev) => ({ ...prev, [blockId]: !prev[blockId] }));
+  };
+
+  const toggleSubtaskComposer = (itemId: string): void => {
+    setSubtaskComposerByItem((prev) => ({ ...prev, [itemId]: !prev[itemId] }));
+  };
+
+  const createSubtaskFromBlock = async (blockId: string, itemId: string): Promise<void> => {
+    const title = (subtaskDraftByItem[itemId] || '').trim();
+    if (!title || !user?.id) return;
+    try {
+      const created = await focalBoardService.createAction(itemId, user.id, title, null, null);
+      setBlocks((prev) =>
+        prev.map((block) => {
+          if (block.id !== blockId) return block;
+          return {
+            ...block,
+            items: block.items.map((item) =>
+              item.id === itemId
+                ? {
+                    ...item,
+                    subItems: [...(item.subItems || []), { id: created.id, name: created.title || title }]
+                  }
+                : item
+            )
+          };
+        })
+      );
+      setSubtaskDraftByItem((prev) => ({ ...prev, [itemId]: '' }));
+      setSubtaskComposerByItem((prev) => ({ ...prev, [itemId]: false }));
+    } catch (error) {
+      console.error('Failed to create subtask from mobile block:', error);
+    }
+  };
+
+  const submitItemDrawerComment = async (): Promise<void> => {
+    if (!user?.id || !activeDrawerItem?.id) return;
+    const body = itemDrawerCommentDraft.trim();
+    if (!body) return;
+    setItemDrawerCommentSubmitting(true);
+    try {
+      const created = await commentsService.createComment(activeDrawerItem.id, user.id, body);
+      setItemDrawerComments((prev) => [...prev, created]);
+      setItemDrawerCommentDraft('');
+    } catch (error) {
+      console.error('Failed to add item comment from mobile drawer:', error);
+    } finally {
+      setItemDrawerCommentSubmitting(false);
+    }
+  };
+
+  const getFieldDisplayValue = (field: any): string => {
+    const value = itemDrawerFieldValues[field.id];
+    if (!value) return '--';
+    if (field.type === 'status' || field.type === 'select') {
+      const option = (field.options || []).find((entry: any) => entry.id === value.option_id);
+      return option?.label || '--';
+    }
+    if (field.type === 'text') return value.value_text || '--';
+    if (field.type === 'number') return value.value_number != null ? String(value.value_number) : '--';
+    if (field.type === 'date') return value.value_date ? new Date(value.value_date).toLocaleDateString() : '--';
+    if (field.type === 'boolean') return value.value_boolean ? 'Yes' : 'No';
+    return '--';
+  };
+
+  const onItemDrawerPanelTouchStart = (event: TouchEvent): void => {
+    const touch = event.touches[0];
+    itemDrawerGestureRef.current = { startX: touch.clientX, startY: touch.clientY };
+  };
+
+  const onItemDrawerPanelTouchEnd = (event: TouchEvent): void => {
+    const touch = event.changedTouches[0];
+    const dx = touch.clientX - itemDrawerGestureRef.current.startX;
+    const dy = touch.clientY - itemDrawerGestureRef.current.startY;
+    if (Math.abs(dy) > 56 || Math.abs(dx) < 52) return;
+    if (dx > 0) {
+      setItemDrawerPanel('comments');
+    } else if (dx < 0) {
+      setItemDrawerPanel('details');
+    }
+  };
 
   const inferListForBlock = (blockId: string): string | null => {
     const block = blocks.find((entry) => entry.id === blockId);
@@ -933,7 +1084,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
   };
 
   const getContextualAddSpec = (): { label: string; icon: any } => {
-    if (activeNav === 'calendar') return { label: 'Calendar +', icon: CalendarPlus };
+    if (activeNav === 'calendar') return { label: 'Time Block', icon: CalendarPlus };
     if (activeNav === 'docs') return { label: 'Note +', icon: FileText };
     if (mobileScope.level === 'focals') return { label: 'Space +', icon: Compass };
     if (mobileScope.level === 'focal') return { label: 'List +', icon: Folder };
@@ -1582,20 +1733,34 @@ export default function MobileCalendarWireframe(): JSX.Element {
                           </div>
                         </div>
 
-                        {isCurrent && (
+                        {!isCurrent && block.items.length > 0 && (
+                          <button
+                            type="button"
+                            className="mobile-block-show-tasks"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              toggleBlockTaskExpansion(block.id);
+                            }}
+                          >
+                            <ChevronDown size={14} className={expandedTasksByBlock[block.id] ? 'open' : ''} />
+                            {expandedTasksByBlock[block.id] ? 'Hide tasks' : 'Show tasks'}
+                          </button>
+                        )}
+
+                        {(isCurrent || expandedTasksByBlock[block.id]) && (
                           <div className="mobile-time-block-items">
                             {block.items.map((item) => (
                               <div key={item.id} className="mobile-item-row">
                                 <button
                                   type="button"
-                                  className="mobile-item-check"
+                                  className={`mobile-item-check ${completed[item.id] ? 'done' : 'todo'}`.trim()}
                                   onClick={(event) => {
                                     event.stopPropagation();
                                     toggleComplete(item.id);
                                   }}
                                   aria-label={completed[item.id] ? 'Mark not done' : 'Mark done'}
                                 >
-                                  {completed[item.id] ? <CheckCircle2 size={20} /> : <Circle size={20} />}
+                                  {completed[item.id] ? <CheckCircle2 size={20} /> : <span className="mobile-status-ring" />}
                                 </button>
                                 <button
                                   type="button"
@@ -1607,8 +1772,18 @@ export default function MobileCalendarWireframe(): JSX.Element {
                                 >
                                   <div className="mobile-item-main">
                                     <span className="mobile-item-label">{item.name}</span>
-                                    <span className="mobile-item-arrow">↗</span>
                                   </div>
+                                </button>
+                                <button
+                                  type="button"
+                                  className="mobile-item-subtask-toggle"
+                                  aria-label="Add subtask"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    toggleSubtaskComposer(item.id);
+                                  }}
+                                >
+                                  +
                                 </button>
                                 {item.subItems && item.subItems.length > 0 && (
                                   <div className="mobile-subitems">
@@ -1616,14 +1791,14 @@ export default function MobileCalendarWireframe(): JSX.Element {
                                       <div key={subItem.id} className="mobile-item-subrow">
                                         <button
                                           type="button"
-                                          className="mobile-item-check sub"
+                                          className={`mobile-item-check sub ${completed[subItem.id] ? 'done' : 'todo'}`.trim()}
                                           onClick={(event) => {
                                             event.stopPropagation();
                                             toggleComplete(subItem.id);
                                           }}
                                           aria-label={completed[subItem.id] ? 'Mark subtask not done' : 'Mark subtask done'}
                                         >
-                                          {completed[subItem.id] ? <CheckCircle2 size={17} /> : <Circle size={17} />}
+                                          {completed[subItem.id] ? <CheckCircle2 size={17} /> : <span className="mobile-status-ring small" />}
                                         </button>
                                         <button
                                           type="button"
@@ -1637,6 +1812,28 @@ export default function MobileCalendarWireframe(): JSX.Element {
                                         </button>
                                       </div>
                                     ))}
+                                  </div>
+                                )}
+                                {subtaskComposerByItem[item.id] && (
+                                  <div className="mobile-item-subtask-composer">
+                                    <input
+                                      type="text"
+                                      value={subtaskDraftByItem[item.id] || ''}
+                                      onClick={(event) => event.stopPropagation()}
+                                      onChange={(event) =>
+                                        setSubtaskDraftByItem((prev) => ({ ...prev, [item.id]: event.target.value }))
+                                      }
+                                      placeholder="Add subtask"
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        void createSubtaskFromBlock(block.id, item.id);
+                                      }}
+                                    >
+                                      Add
+                                    </button>
                                   </div>
                                 )}
                               </div>
@@ -2032,7 +2229,11 @@ export default function MobileCalendarWireframe(): JSX.Element {
           <div className="mobile-drawer-head">
             <Clock3 size={15} />
             <strong>
-              {drawer.mode === 'addTask' ? 'Add Task' : drawer.mode === 'item' ? 'Item Details' : activeDrawerBlock?.name || 'Time Block'}
+              {drawer.mode === 'addTask'
+                ? 'Add Task'
+                : drawer.mode === 'item'
+                  ? activeDrawerItem?.name || 'Item Details'
+                  : activeDrawerBlock?.name || 'Time Block'}
             </strong>
             <button type="button" onClick={closeDrawer}>
               <X size={14} />
@@ -2161,7 +2362,73 @@ export default function MobileCalendarWireframe(): JSX.Element {
               </>
             )}
             {drawer.mode === 'edit' && 'Placeholder edit controls.'}
-            {drawer.mode === 'item' && 'Placeholder item detail surface.'}
+            {drawer.mode === 'item' && activeDrawerItem && (
+              <div
+                className={`mobile-item-drawer-panel ${itemDrawerPanel}`.trim()}
+                onTouchStart={onItemDrawerPanelTouchStart}
+                onTouchEnd={onItemDrawerPanelTouchEnd}
+              >
+                <div className="mobile-item-drawer-tabs">
+                  <button type="button" className={itemDrawerPanel === 'details' ? 'active' : ''} onClick={() => setItemDrawerPanel('details')}>
+                    Details
+                  </button>
+                  <button type="button" className={itemDrawerPanel === 'comments' ? 'active' : ''} onClick={() => setItemDrawerPanel('comments')}>
+                    Comments
+                  </button>
+                </div>
+
+                {itemDrawerPanel === 'details' ? (
+                  <div className="mobile-item-drawer-details">
+                    <h4>{activeDrawerItem.name}</h4>
+                    <p>{activeDrawerBlock?.description?.trim() || 'No description on the parent time block.'}</p>
+                    <div className="mobile-item-drawer-fields">
+                      <h5>Column values</h5>
+                      {itemDrawerFields.length === 0 && <div className="mobile-item-drawer-empty">No column values on this task yet.</div>}
+                      {itemDrawerFields.map((field) => (
+                        <div key={field.id} className="mobile-item-drawer-field-row">
+                          <span>{field.name}</span>
+                          <strong>{getFieldDisplayValue(field)}</strong>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mobile-item-drawer-comments">
+                    {itemDrawerCommentsLoading && <div className="mobile-item-drawer-empty">Loading comments…</div>}
+                    {!itemDrawerCommentsLoading && itemDrawerComments.length === 0 && (
+                      <div className="mobile-item-drawer-empty">No comments yet.</div>
+                    )}
+                    {!itemDrawerCommentsLoading && itemDrawerComments.length > 0 && (
+                      <div className="mobile-item-drawer-comment-list">
+                        {itemDrawerComments.map((comment) => (
+                          <article key={comment.id} className="mobile-item-drawer-comment">
+                            <p>{comment.body}</p>
+                            <time>{new Date(comment.created_at).toLocaleString()}</time>
+                          </article>
+                        ))}
+                      </div>
+                    )}
+                    <form
+                      className="mobile-item-drawer-comment-form"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        void submitItemDrawerComment();
+                      }}
+                    >
+                      <input
+                        type="text"
+                        value={itemDrawerCommentDraft}
+                        onChange={(event) => setItemDrawerCommentDraft(event.target.value)}
+                        placeholder="Add comment"
+                      />
+                      <button type="submit" disabled={itemDrawerCommentSubmitting || !itemDrawerCommentDraft.trim()}>
+                        Send
+                      </button>
+                    </form>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}
