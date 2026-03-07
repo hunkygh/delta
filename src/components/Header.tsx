@@ -395,15 +395,6 @@ export default function Header({
   return (
     <header className="header-strip">
       <div className="header-content">
-        {/* Delta logo - left side */}
-        <div className="header-logo">
-          <img
-            src="/in-app-logo.png"
-            alt="Delta"
-            className="logo-image"
-          />
-        </div>
-        
         {/* Calendar snapshot block */}
         <div className="calendar-snapshot-block">
           <Calendar className="calendar-icon" size={16} />
@@ -430,6 +421,7 @@ export default function Header({
           aria-label="Ask Delta"
         >
           <Atom className="ai-atom-icon" weight="fill" />
+          <span>Delta AI</span>
         </button>
       </div>
       

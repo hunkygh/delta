@@ -7011,10 +7011,10 @@ textarea::placeholder {
 .sidebar-nav.sidebar-locked {
   width: 78px !important;
   border-radius: 14px !important;
-  top: calc(var(--header-height-sm) + 5px) !important;
+  top: calc(var(--header-height-sm) + 10px) !important;
   left: 5px !important;
-  height: calc(100vh - var(--header-height-sm) - 10px) !important;
-  padding: 5px 0 !important;
+  height: calc(100vh - var(--header-height-sm) - 20px) !important;
+  padding: 10px 0 !important;
   background: rgb(0, 0, 0) !important;
   border: none !important;
   box-shadow: none !important;
@@ -7022,7 +7022,7 @@ textarea::placeholder {
 }
 
 .sidebar-nav.sidebar-locked .sidebar-content {
-  padding: 0 5px !important;
+  padding: 4px 5px !important;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -7169,4 +7169,127 @@ textarea::placeholder {
 .focals-popout .focal-list-item.selected {
   background: rgb(240, 240, 240) !important;
   color: rgb(32, 32, 32) !important;
+}
+
+/* ==========================================
+   Final Desktop Sidebar + Header Controls Fix
+   ========================================== */
+.sidebar-nav.sidebar-locked .sidebar-content {
+  padding: 0 5px !important;
+}
+
+.sidebar-nav.sidebar-locked .sidebar-nav-item,
+.sidebar-nav.sidebar-locked .focals-toggle {
+  justify-content: center !important;
+  justify-items: center !important;
+  align-items: center !important;
+  text-align: center !important;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+}
+
+.sidebar-nav.sidebar-locked .focals-primary-icon {
+  width: 22px !important;
+  height: 22px !important;
+  margin: 0 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
+.sidebar-nav.sidebar-locked .sidebar-nav-text {
+  width: 100% !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  text-align: center !important;
+}
+
+.sidebar-nav.sidebar-locked .sidebar-divider-item {
+  display: none !important;
+}
+
+.sidebar-nav.sidebar-locked .sidebar-nav-item svg,
+.sidebar-nav.sidebar-locked .focals-primary-icon,
+.sidebar-nav.sidebar-locked .focals-primary-icon svg {
+  transform: translateY(-1px);
+}
+
+.sidebar-nav.sidebar-locked .sidebar-nav-item.active::after,
+.sidebar-nav.sidebar-locked .focal-item.selected::after {
+  width: 42px !important;
+  height: 34px !important;
+  top: 5px !important;
+  background: radial-gradient(
+    circle at 50% 55%,
+    rgba(0, 122, 255, 1) 0%,
+    rgba(0, 122, 255, 0.86) 44%,
+    rgba(0, 122, 255, 0) 84%
+  ) !important;
+  filter: blur(7px) !important;
+}
+
+.sidebar-nav.sidebar-locked .sidebar-nav-item:hover svg,
+.sidebar-nav.sidebar-locked .sidebar-nav-item:focus-visible svg,
+.sidebar-nav.sidebar-locked .sidebar-nav-item.active svg,
+.sidebar-nav.sidebar-locked .focal-item:hover .focals-primary-icon,
+.sidebar-nav.sidebar-locked .focal-item:focus-visible .focals-primary-icon,
+.sidebar-nav.sidebar-locked .focal-item.selected .focals-primary-icon,
+.sidebar-nav.sidebar-locked .focal-list-item.selected svg {
+  filter: drop-shadow(0 0 16px rgba(0, 122, 255, 1))
+    drop-shadow(0 0 34px rgba(0, 122, 255, 1))
+    drop-shadow(0 0 52px rgba(0, 122, 255, 0.9)) !important;
+}
+
+.header-strip .calendar-snapshot-block {
+  background: #ffffff !important;
+  border: 1px solid var(--color-border-default) !important;
+}
+
+.header-strip .calendar-icon,
+.header-strip .calendar-text {
+  color: rgb(131, 131, 131) !important;
+}
+
+.header-strip .search-bar {
+  background: rgb(240, 240, 240) !important;
+  border: none !important;
+}
+
+.header-strip .search-icon,
+.header-strip .search-input,
+.header-strip .search-input::placeholder {
+  color: rgb(100, 100, 100) !important;
+}
+
+.header-strip .ask-delta-button {
+  height: 24px !important;
+  padding: 0 10px !important;
+  border-radius: 10px !important;
+  border: 1px solid rgba(0, 199, 255, 0.9) !important;
+  background:
+    linear-gradient(180deg, rgba(0, 199, 255, 0.28), rgba(0, 199, 255, 0.2)),
+    rgba(0, 199, 255, 0.22) !important;
+  color: #ffffff !important;
+  box-shadow: 0 0 0 1px rgba(0, 199, 255, 0.2), 0 8px 18px rgba(0, 199, 255, 0.26) !important;
+  backdrop-filter: saturate(130%) blur(4px);
+  -webkit-backdrop-filter: saturate(130%) blur(4px);
+  transform: none !important;
+}
+
+.header-strip .ask-delta-button::before,
+.header-strip .ask-delta-button::after {
+  content: none !important;
+}
+
+.header-strip .ask-delta-button .ai-atom-icon {
+  width: 14px !important;
+  height: 14px !important;
+  color: #ffffff !important;
+}
+
+.header-strip .ask-delta-button span {
+  color: #ffffff !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.01em;
 }
