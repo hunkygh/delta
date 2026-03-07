@@ -7175,7 +7175,7 @@ textarea::placeholder {
    Final Desktop Sidebar + Header Controls Fix
    ========================================== */
 .sidebar-nav.sidebar-locked .sidebar-content {
-  padding: 0 5px !important;
+  padding: 6px 5px !important;
 }
 
 .sidebar-nav.sidebar-locked .sidebar-nav-item,
@@ -7214,6 +7214,18 @@ textarea::placeholder {
   transform: translateY(-1px);
 }
 
+.sidebar-nav.sidebar-locked .sidebar-nav-items {
+  gap: 10px !important;
+}
+
+.sidebar-nav.sidebar-locked .sidebar-nav-item {
+  min-height: 58px !important;
+}
+
+.sidebar-nav.sidebar-locked .sidebar-footer {
+  padding-bottom: 12px !important;
+}
+
 .sidebar-nav.sidebar-locked .sidebar-nav-item.active::after,
 .sidebar-nav.sidebar-locked .focal-item.selected::after {
   width: 42px !important;
@@ -7238,6 +7250,23 @@ textarea::placeholder {
   filter: drop-shadow(0 0 16px rgba(0, 122, 255, 1))
     drop-shadow(0 0 34px rgba(0, 122, 255, 1))
     drop-shadow(0 0 52px rgba(0, 122, 255, 0.9)) !important;
+}
+
+.focals-popout .focal-item.selected::after {
+  content: none !important;
+}
+
+.sidebar-nav.sidebar-locked .focals-popout .focal-item,
+.sidebar-nav.sidebar-locked .focals-popout .focal-item > span,
+.sidebar-nav.sidebar-locked .focals-popout .focal-list-item,
+.sidebar-nav.sidebar-locked .focals-popout .focal-list-item.selected,
+.sidebar-nav.sidebar-locked .focals-popout .focal-item.selected > span {
+  color: rgb(32, 32, 32) !important;
+}
+
+.sidebar-nav.sidebar-locked .focals-popout .focal-item.selected,
+.sidebar-nav.sidebar-locked .focals-popout .focal-list-item.selected {
+  background: rgb(240, 240, 240) !important;
 }
 
 .header-strip .calendar-snapshot-block {

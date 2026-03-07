@@ -101,6 +101,8 @@ export default function DayColumn({
   onDragPreviewChange,
   externalDragPreview
 }: DayColumnProps): JSX.Element {
+  const TOUCH_HOLD_MS = 220;
+  const TOUCH_CANCEL_PX = 10;
   const [dragMinutes, setDragMinutes] = useState<{
     start: number;
     end: number;
@@ -132,23 +134,22 @@ export default function DayColumn({
   const [suppressNextEventClick, setSuppressNextEventClick] = useState(false);
   const moveDragDetectedRef = useRef(false);
   const resizeDragDetectedRef = useRef(false);
+  const pendingTouchCreateRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    lastY: number;
+    rect: DOMRect;
+  } | null>(null);
+  const touchHoldTimerRef = useRef<number | null>(null);
 
   const startMinute = getStartMinute(hours);
   const endMinute = getEndMinute(hours);
   const totalMinutes = getTotalVisibleMinutes(hours);
   const columnHeight = totalMinutes * pixelsPerMinute;
 
-  const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>): void => {
-    if (event.pointerType === 'mouse' && event.button !== 0) {
-      return;
-    }
-    const target = event.target as HTMLElement | null;
-    if (target?.closest('.week-event-card')) {
-      return;
-    }
-    event.preventDefault();
-    const rect = event.currentTarget.getBoundingClientRect();
-    const minutes = pointerToVisibleMinutes(event.clientY, {
+  const beginRangeDrag = (pointerId: number, clientY: number, rect: DOMRect): void => {
+    const minutes = pointerToVisibleMinutes(clientY, {
       top: rect.top,
       height: rect.height,
       startMinute,
@@ -156,7 +157,7 @@ export default function DayColumn({
     });
 
     setIsDragging(true);
-    setDragPointerId(event.pointerId);
+    setDragPointerId(pointerId);
     setDragMinutes({
       start: minutes,
       end: minutes,
@@ -168,6 +169,77 @@ export default function DayColumn({
       columnHeight: rect.height
     });
   };
+
+  const clearPendingTouchCreate = (): void => {
+    pendingTouchCreateRef.current = null;
+    if (touchHoldTimerRef.current) {
+      window.clearTimeout(touchHoldTimerRef.current);
+      touchHoldTimerRef.current = null;
+    }
+  };
+
+  const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    if (event.pointerType === 'mouse' && event.button !== 0) {
+      return;
+    }
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('.week-event-card')) {
+      return;
+    }
+    const rect = event.currentTarget.getBoundingClientRect();
+
+    if (event.pointerType === 'touch' || event.pointerType === 'pen') {
+      clearPendingTouchCreate();
+      pendingTouchCreateRef.current = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        lastY: event.clientY,
+        rect
+      };
+      touchHoldTimerRef.current = window.setTimeout(() => {
+        const pending = pendingTouchCreateRef.current;
+        if (!pending || pending.pointerId !== event.pointerId) return;
+        beginRangeDrag(pending.pointerId, pending.lastY, pending.rect);
+        clearPendingTouchCreate();
+      }, TOUCH_HOLD_MS);
+      return;
+    }
+
+    event.preventDefault();
+    beginRangeDrag(event.pointerId, event.clientY, rect);
+  };
+
+  useEffect(() => {
+    const onPointerMove = (event: PointerEvent): void => {
+      const pending = pendingTouchCreateRef.current;
+      if (!pending || pending.pointerId !== event.pointerId) return;
+      const dx = Math.abs(event.clientX - pending.startX);
+      const dy = Math.abs(event.clientY - pending.startY);
+      if (dx > TOUCH_CANCEL_PX || dy > TOUCH_CANCEL_PX) {
+        clearPendingTouchCreate();
+        return;
+      }
+      pendingTouchCreateRef.current = { ...pending, lastY: event.clientY };
+    };
+
+    const onPointerUp = (event: PointerEvent): void => {
+      const pending = pendingTouchCreateRef.current;
+      if (!pending || pending.pointerId !== event.pointerId) return;
+      clearPendingTouchCreate();
+    };
+
+    window.addEventListener('pointermove', onPointerMove, { passive: true });
+    window.addEventListener('pointerup', onPointerUp, { passive: true });
+    window.addEventListener('pointercancel', onPointerUp, { passive: true });
+    return () => {
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerUp);
+    };
+  }, []);
+
+  useEffect(() => () => clearPendingTouchCreate(), []);
 
   useEffect(() => {
     if (!isDragging || !dragMinutes) {

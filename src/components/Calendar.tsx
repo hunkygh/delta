@@ -171,6 +171,8 @@ export default function Calendar({
     kind: 'field_update' | 'new_action' | 'calendar_proposal';
     value: FieldUpdateProposal | NewActionProposal | CalendarProposal;
   }>>({});
+  const [fallbackListOptions, setFallbackListOptions] = useState<ListOption[]>([]);
+  const [fallbackFocalTree, setFallbackFocalTree] = useState<FocalListTree[]>([]);
   const [timeblockComments, setTimeblockComments] = useState<Array<{
     id: string;
     author_type: 'user' | 'ai';
@@ -300,6 +302,63 @@ export default function Calendar({
 
   useEffect(() => {
     let active = true;
+    if (!user?.id) {
+      setFallbackListOptions([]);
+      setFallbackFocalTree([]);
+      return () => {
+        active = false;
+      };
+    }
+    const shouldHydrateFallback = !attachTree || attachTree.length === 0;
+    if (!shouldHydrateFallback) return () => { active = false; };
+
+    void (async () => {
+      try {
+        const [focals, lists] = await Promise.all([
+          focalBoardService.getFocals(user.id),
+          focalBoardService.getListsForUser(user.id)
+        ]);
+        const itemsPerList = await Promise.all(
+          (lists || []).map(async (list: any) => {
+            const rows = await focalBoardService.getItemsByListId(list.id);
+            return [list.id, (rows || []).map((item: any) => ({ id: item.id, title: item.title }))] as const;
+          })
+        );
+        if (!active) return;
+        const itemMap = new Map(itemsPerList);
+        const listOptions: ListOption[] = (lists || []).map((list: any) => ({
+          id: list.id,
+          name: list.name,
+          items: itemMap.get(list.id) || []
+        }));
+        const focalTree: FocalListTree[] = (focals || []).map((focal: any) => ({
+          id: focal.id,
+          name: focal.name,
+          lists: (lists || [])
+            .filter((list: any) => list.focal_id === focal.id)
+            .map((list: any) => ({
+              id: list.id,
+              name: list.name,
+              items: itemMap.get(list.id) || []
+            }))
+        }));
+        setFallbackListOptions(listOptions);
+        setFallbackFocalTree(focalTree);
+      } catch (error) {
+        console.error('Failed to hydrate fallback calendar list options:', error);
+        if (!active) return;
+        setFallbackListOptions([]);
+        setFallbackFocalTree([]);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [attachTree, user?.id]);
+
+  useEffect(() => {
+    let active = true;
     if (!isModalOpen || !editingEventId) {
       setTimeblockComments([]);
       setTimeblockCommentError(null);
@@ -422,8 +481,8 @@ export default function Calendar({
       }
     }
 
-    return options;
-  }, [attachTree]);
+    return options.length > 0 ? options : fallbackListOptions;
+  }, [attachTree, fallbackListOptions]);
 
   const itemTitleById = useMemo(() => {
     const map = new Map<string, string>();
@@ -494,8 +553,8 @@ export default function Calendar({
         });
       }
     }
-    return focals;
-  }, [attachTree]);
+    return focals.length > 0 ? focals : fallbackFocalTree;
+  }, [attachTree, fallbackFocalTree]);
 
   const listIdByItemId = useMemo(() => {
     const map = new Map<string, string>();

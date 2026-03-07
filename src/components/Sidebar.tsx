@@ -86,9 +86,13 @@ export default function Sidebar({
       const target = event.target as Element;
       const settingsDropdown = document.querySelector('.settings-dropdown');
       const settingsButton = document.querySelector('.settings-button');
+      const focalsContainer = document.querySelector('.focals-dropdown-container');
       
       if (settingsDropdown && settingsButton && !settingsDropdown.contains(target) && !settingsButton.contains(target)) {
         setShowSettingsMenu(false);
+      }
+      if (focalsContainer && !focalsContainer.contains(target)) {
+        setFocalsDropdownOpen(false);
       }
     };
 
