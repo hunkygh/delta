@@ -106,6 +106,12 @@ type MobileScope = {
   listId: string | null;
 };
 
+type MobileChatSourceOption = {
+  id: string;
+  label: string;
+  context: Record<string, string>;
+};
+
 const DAY_START_MIN = 6 * 60;
 const DAY_END_MIN = 22 * 60;
 const PX_PER_MIN = 2.2;
@@ -176,12 +182,16 @@ export default function MobileCalendarWireframe(): JSX.Element {
   const [taskDrawerSearch, setTaskDrawerSearch] = useState('');
   const [taskDrawerListId, setTaskDrawerListId] = useState<string | null>(null);
   const [taskDrawerPendingKey, setTaskDrawerPendingKey] = useState<string | null>(null);
+  const [taskDrawerLoading, setTaskDrawerLoading] = useState(false);
 
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatDraft, setChatDraft] = useState('');
   const [chatSending, setChatSending] = useState(false);
   const [useTimeBlockContext, setUseTimeBlockContext] = useState(true);
   const [mobileMemoMode, setMobileMemoMode] = useState(false);
+  const [mobileChatSourceMenuOpen, setMobileChatSourceMenuOpen] = useState(false);
+  const [mobileChatSourceId, setMobileChatSourceId] = useState('current');
+  const [mobileChatSourceContext, setMobileChatSourceContext] = useState<Record<string, string> | null>(null);
   const [textCaptureDraft, setTextCaptureDraft] = useState('');
   const [voiceTranscript, setVoiceTranscript] = useState('');
   const [voiceRecording, setVoiceRecording] = useState(false);
@@ -198,6 +208,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
   const longPressTimer = useRef<number | null>(null);
   const timelineScrollRef = useRef<HTMLDivElement | null>(null);
   const chatMessagesRef = useRef<HTMLDivElement | null>(null);
+  const mobileSourceMenuRef = useRef<HTMLDivElement | null>(null);
   const textCaptureRef = useRef<HTMLTextAreaElement | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
@@ -290,8 +301,21 @@ export default function MobileCalendarWireframe(): JSX.Element {
         });
       }
     }
+    const seenListIds = new Set(rows.map((row) => row.id));
+    Object.entries(listsByFocal).forEach(([focalId, lists]) => {
+      const focalName = focals.find((entry) => entry.id === focalId)?.name || 'Space';
+      lists.forEach((list) => {
+        if (seenListIds.has(list.id)) return;
+        rows.push({
+          id: list.id,
+          name: list.name,
+          focalName,
+          items: (itemsByList[list.id] || []).map((item) => ({ id: item.id, title: item.title }))
+        });
+      });
+    });
     return rows;
-  }, [calendarAttachTree]);
+  }, [calendarAttachTree, focals, itemsByList, listsByFocal]);
 
   const indexedItems = useMemo(
     () =>
@@ -376,6 +400,9 @@ export default function MobileCalendarWireframe(): JSX.Element {
     (addSheet.type !== 'subitem' || (!!addSheet.listId && !!addSheet.itemId));
 
   const buildMobileChatContext = (): Record<string, string> => {
+    if (mobileChatSourceContext) {
+      return { ...mobileChatSourceContext };
+    }
     const context: Record<string, string> = {};
     if (currentBlockId && useTimeBlockContext) {
       context.time_block_id = currentBlockId;
@@ -386,6 +413,47 @@ export default function MobileCalendarWireframe(): JSX.Element {
     }
     return context;
   };
+
+  const mobileChatSourceOptions = useMemo<MobileChatSourceOption[]>(() => {
+    const options: MobileChatSourceOption[] = [
+      { id: 'current', label: 'Current', context: buildMobileChatContext() }
+    ];
+    focals.forEach((focal) => {
+      options.push({
+        id: `focal:${focal.id}`,
+        label: `Space · ${focal.name}`,
+        context: { focal_id: focal.id }
+      });
+    });
+    Object.entries(listsByFocal).forEach(([focalId, lists]) => {
+      const focalName = focals.find((entry) => entry.id === focalId)?.name || 'Space';
+      lists.forEach((list) => {
+        options.push({
+          id: `list:${list.id}`,
+          label: `List · ${focalName} / ${list.name}`,
+          context: { focal_id: focalId, list_id: list.id }
+        });
+      });
+    });
+    const selectedListId = mobileScope.listId;
+    if (selectedListId && itemsByList[selectedListId]) {
+      itemsByList[selectedListId].slice(0, 40).forEach((item) => {
+        const itemContext: Record<string, string> = {
+          list_id: selectedListId,
+          item_id: item.id
+        };
+        if (mobileScope.focalId) {
+          itemContext.focal_id = mobileScope.focalId;
+        }
+        options.push({
+          id: `item:${item.id}`,
+          label: `Item · ${item.title}`,
+          context: itemContext
+        });
+      });
+    }
+    return options;
+  }, [buildMobileChatContext, focals, itemsByList, listsByFocal, mobileScope.focalId, mobileScope.listId]);
 
   const loadFocals = async (): Promise<void> => {
     if (!user?.id) {
@@ -1001,12 +1069,61 @@ export default function MobileCalendarWireframe(): JSX.Element {
     );
   };
 
+  const ensureTaskDrawerIndexData = async (): Promise<void> => {
+    if (!user?.id) return;
+    setTaskDrawerLoading(true);
+    try {
+      const lists = await focalBoardService.getListsForUser(user.id);
+      const grouped = (lists || []).reduce((acc: Record<string, MobileList[]>, list: any) => {
+        const focalId = list?.focal_id;
+        if (!focalId) return acc;
+        const bucket = acc[focalId] || [];
+        bucket.push({
+          id: list.id,
+          name: list.name,
+          item_label: list.item_label || 'Items',
+          action_label: list.action_label || 'Actions'
+        });
+        acc[focalId] = bucket;
+        return acc;
+      }, {});
+      setListsByFocal(grouped);
+      if (!taskDrawerListId && lists?.[0]?.id) {
+        setTaskDrawerListId(lists[0].id);
+      }
+
+      const missingListIds = (lists || [])
+        .map((entry: any) => entry.id)
+        .filter((listId: string) => !itemsByList[listId]);
+
+      if (missingListIds.length > 0) {
+        const fetched = await Promise.all(
+          missingListIds.map(async (listId: string) => {
+            const rows = await focalBoardService.getItemsByListId(listId);
+            const mapped: MobileItem[] = (rows || []).map((entry: any) => ({
+              id: entry.id,
+              title: entry.title,
+              actions: (entry.actions || []).map((action: any) => ({ id: action.id, title: action.title }))
+            }));
+            return [listId, mapped] as const;
+          })
+        );
+        setItemsByList((prev) => ({ ...prev, ...Object.fromEntries(fetched) }));
+      }
+    } catch (error) {
+      console.error('Task drawer failed to hydrate list/item index:', error);
+    } finally {
+      setTaskDrawerLoading(false);
+    }
+  };
+
   const openAddTaskDrawer = (blockId: string): void => {
     setTaskDrawerScope('items');
     setTaskDrawerSearch('');
     setTaskDrawerPendingKey(null);
     setTaskDrawerListId(inferListForBlock(blockId));
     setDrawer({ open: true, mode: 'addTask', blockId });
+    void ensureTaskDrawerIndexData();
   };
 
   const attachExistingItemToBlock = async (blockId: string, item: { id: string; title: string; listId: string }): Promise<void> => {
@@ -1288,6 +1405,29 @@ export default function MobileCalendarWireframe(): JSX.Element {
     } finally {
       setChatSending(false);
     }
+  };
+
+  useEffect(() => {
+    if (!mobileChatSourceMenuOpen) return;
+    const onPointerDown = (event: MouseEvent): void => {
+      if (!mobileSourceMenuRef.current) return;
+      if (!mobileSourceMenuRef.current.contains(event.target as Node)) {
+        setMobileChatSourceMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    return () => document.removeEventListener('mousedown', onPointerDown);
+  }, [mobileChatSourceMenuOpen]);
+
+  const selectedMobileSourceLabel =
+    mobileChatSourceId === 'current'
+      ? 'Current'
+      : mobileChatSourceOptions.find((option) => option.id === mobileChatSourceId)?.label || 'Current';
+
+  const handleSelectMobileChatSource = (option: MobileChatSourceOption): void => {
+    setMobileChatSourceId(option.id);
+    setMobileChatSourceContext(option.id === 'current' ? null : option.context);
+    setMobileChatSourceMenuOpen(false);
   };
 
   const handleChatKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
@@ -1881,21 +2021,64 @@ export default function MobileCalendarWireframe(): JSX.Element {
             )}
           </div>
           <div className="mobile-ai-composer-wrap">
-            <div className="mobile-ai-chip-row">
-              {currentBlockId && useTimeBlockContext ? (
-                <span className="mobile-ai-chip">
-                  <span>Time Block</span>
+            <div className="mobile-ai-composer">
+              <textarea
+                rows={2}
+                placeholder="Ask Delta…"
+                value={chatDraft}
+                onChange={(event) => setChatDraft(event.target.value)}
+                onKeyDown={handleChatKeyDown}
+              />
+              <button type="button" aria-label="Send" onClick={() => void sendMobileChat()} disabled={chatSending || !chatDraft.trim()}>
+                <Send size={17} />
+              </button>
+            </div>
+            <div className="mobile-ai-footer-strip">
+              <button
+                type="button"
+                className="mobile-ai-voice-btn"
+                aria-label="Voice mode"
+                onClick={() => {
+                  void startVoiceCapture();
+                }}
+              >
+                <Mic size={16} />
+              </button>
+              <div className="mobile-ai-source-control" ref={mobileSourceMenuRef}>
+                {mobileChatSourceId === 'current' ? (
                   <button
                     type="button"
-                    aria-label="Remove time block context"
-                    onClick={() => setUseTimeBlockContext(false)}
+                    className="mobile-ai-source-add"
+                    onClick={() => setMobileChatSourceMenuOpen((prev) => !prev)}
                   >
-                    <X size={12} />
+                    <span>Add source</span>
+                    <ChevronDown size={14} />
                   </button>
-                </span>
-              ) : (
-                <span className="mobile-ai-chip muted">Context: none</span>
-              )}
+                ) : (
+                  <span className="mobile-ai-chip">
+                    <span>{selectedMobileSourceLabel}</span>
+                    <button
+                      type="button"
+                      aria-label="Clear selected source"
+                      onClick={() => {
+                        setMobileChatSourceId('current');
+                        setMobileChatSourceContext(null);
+                      }}
+                    >
+                      <X size={12} />
+                    </button>
+                  </span>
+                )}
+                {mobileChatSourceMenuOpen && (
+                  <div className="mobile-ai-source-menu">
+                    {mobileChatSourceOptions.map((option) => (
+                      <button key={option.id} type="button" onClick={() => handleSelectMobileChatSource(option)}>
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
               <div className="mobile-ai-chip-controls">
                 <span>Memo</span>
                 <button
@@ -1908,18 +2091,6 @@ export default function MobileCalendarWireframe(): JSX.Element {
                   <span />
                 </button>
               </div>
-            </div>
-            <div className="mobile-ai-composer">
-              <textarea
-                rows={1}
-                placeholder="Ask Delta…"
-                value={chatDraft}
-                onChange={(event) => setChatDraft(event.target.value)}
-                onKeyDown={handleChatKeyDown}
-              />
-              <button type="button" aria-label="Send" onClick={() => void sendMobileChat()} disabled={chatSending || !chatDraft.trim()}>
-                <Send size={17} />
-              </button>
             </div>
           </div>
         </div>
@@ -2267,6 +2438,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                   />
                 </label>
                 <div className="mobile-task-drawer-results">
+                  {taskDrawerLoading && <div className="mobile-task-drawer-empty">Loading lists and items…</div>}
                   {taskDrawerScope === 'items' ? (
                     <>
                       {taskItemResults.map((item) => (
@@ -2285,9 +2457,6 @@ export default function MobileCalendarWireframe(): JSX.Element {
                           </button>
                         </div>
                       ))}
-                      {taskItemResults.length === 0 && (
-                        <div className="mobile-task-drawer-empty">No matching items</div>
-                      )}
                       {!!taskDrawerSearch.trim() && !taskHasExactMatch && (
                         <div className="mobile-task-drawer-create-row">
                           <div className="mobile-task-drawer-result-copy">
@@ -2323,9 +2492,6 @@ export default function MobileCalendarWireframe(): JSX.Element {
                           </button>
                         </div>
                       ))}
-                      {taskListResults.length === 0 && (
-                        <div className="mobile-task-drawer-empty">No matching lists</div>
-                      )}
                     </>
                   )}
                 </div>

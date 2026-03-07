@@ -173,6 +173,8 @@ Button hierarchy (strict):
 - Secondary and tertiary hover/focus state may use only a light gray background fill.
 - Close buttons (including `X`) follow the same plain-text rule and never use persistent fill or border.
 - Per surface (screen, modal, drawer, popover), only one colored button is allowed: the primary action.
+- Settings controls open a compact slide-out options rail from the trigger, not a detached modal/panel.
+- Settings trigger style is icon-first with neutral gray circular fill and no border.
 
 ------------------------------------------------------------
 9. Animation Tone

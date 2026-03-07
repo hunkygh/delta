@@ -26,6 +26,7 @@ SURFACE TYPES (DO NOT MIX)
 - Opened via inline text buttons
 - No permanent nested containers
 - No card-within-card stacks
+- Item/list settings open as an anchored slide-out options rail from the settings trigger (not a detached modal).
 
 3) Persistent Content Surface (Lists, Threads)
 - Rows separated by hairline dividers
@@ -133,6 +134,12 @@ Popover (anchored floating panel):
 - Optional minimal opacity ramp (0.95 → 1)
 - No scale animation
 - Reverse slide on exit
+
+Settings slide-out (anchored to icon trigger):
+- Horizontal slide from trigger edge
+- 160–200ms
+- Easing: cubic-bezier(0.22, 1, 0.36, 1)
+- No bounce, no independent child animation
 
 Inline expand/collapse:
 - Height reveal using overflow hidden

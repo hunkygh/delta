@@ -1,4 +1,4 @@
-import { Calendar, ChevronLeft, Settings, FileText, Plus, CornerDownLeft, User, LogOut } from 'lucide-react';
+import { Calendar, Settings, FileText, Plus, CornerDownLeft, User, LogOut } from 'lucide-react';
 import type { User as SupabaseUser } from '@supabase/supabase-js';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useState, useEffect, useRef } from 'react';
@@ -62,6 +62,12 @@ export default function Sidebar({
     if (!currentFocalId) return;
     setExpandedFocalIds((prev) => (prev[currentFocalId] ? prev : { ...prev, [currentFocalId]: true }));
   }, [currentFocalId]);
+
+  useEffect(() => {
+    if (isExpanded) {
+      setIsExpanded(false);
+    }
+  }, [isExpanded, setIsExpanded]);
 
   // Close dropdowns when clicking outside
   useEffect(() => {
@@ -236,7 +242,7 @@ export default function Sidebar({
   };
 
   return (
-    <nav className={`sidebar-nav ${isExpanded ? 'expanded' : ''}`}>
+    <nav className="sidebar-nav sidebar-locked">
       <div className="sidebar-content">
         <div className="sidebar-nav-items">
           <button className={`sidebar-nav-item ${isActivePath('/') ? 'active' : ''}`.trim()} onClick={() => navigate('/')}>
@@ -255,12 +261,7 @@ export default function Sidebar({
                 className={`sidebar-nav-item focals-toggle ${focalsDropdownOpen ? 'active' : ''}`.trim()}
                 onClick={(e) => {
                   e.stopPropagation();
-                  if (!isExpanded) {
-                    setIsExpanded(true);
-                    setFocalsDropdownOpen(true);
-                  } else {
-                    setFocalsDropdownOpen(!focalsDropdownOpen);
-                  }
+                  setFocalsDropdownOpen(!focalsDropdownOpen);
                 }}
               >
                 <span className="focals-primary-icon" aria-hidden="true">
@@ -271,26 +272,24 @@ export default function Sidebar({
                   <RoundedTriangle expanded={Boolean(focalsDropdownOpen)} />
                 </span>
               </button>
-              {isExpanded && (
-                <button
-                  className="add-focal-btn focals-add-btn"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setShowNewFocalInput(!showNewFocalInput);
-                    if (showNewFocalInput) {
-                      setNewFocalName('');
-                      setCreateError('');
-                    }
-                  }}
-                >
-                  <Plus size={14} />
-                </button>
-              )}
+              <button
+                className="add-focal-btn focals-add-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowNewFocalInput(!showNewFocalInput);
+                  if (showNewFocalInput) {
+                    setNewFocalName('');
+                    setCreateError('');
+                  }
+                }}
+              >
+                <Plus size={14} />
+              </button>
             </div>
             
-            {/* Focals dropdown - only shows when expanded and dropdown open */}
-            {focalsDropdownOpen && isExpanded && (
-              <div className="focals-dropdown show">
+            {/* Focals popout */}
+            {focalsDropdownOpen && (
+              <div className="focals-dropdown show focals-popout">
                 {/* Only show focals list when there are focals */}
                 {focals.length > 0 && (
                   focals.map((focal) => (
@@ -345,7 +344,7 @@ export default function Sidebar({
             )}
             
             {/* New focal input - shows when + is clicked, regardless of dropdown state */}
-            {showNewFocalInput && isExpanded && (
+            {showNewFocalInput && (
               <div className="new-focal-input show">
                 <input
                   type="text"
@@ -388,16 +387,8 @@ export default function Sidebar({
           </button>
         </div>
         
-        {/* Footer with collapse and settings */}
+        {/* Footer with settings */}
         <div className="sidebar-footer">
-          <button 
-            className="sidebar-nav-item sidebar-expand-btn"
-            onClick={() => setIsExpanded(!isExpanded)}
-          >
-            <ChevronLeft className={`sidebar-expand-icon ${isExpanded ? 'rotated' : ''}`} />
-            <span className="sidebar-nav-text">Collapse</span>
-          </button>
-          
           <button 
             className="sidebar-nav-item settings-button"
             onClick={(e) => {

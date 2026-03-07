@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
-import { Calendar, Search, X, ArrowDown } from 'lucide-react';
+import { Calendar, Search, X, ArrowDown, ChevronDown } from 'lucide-react';
 import { Atom, Microphone, PaperPlaneTilt } from '@phosphor-icons/react';
 import type { User } from '@supabase/supabase-js';
 import type { ChatContext, ChatDebugMeta, ChatMessage, ChatProposal } from '../types/chat';
@@ -17,6 +17,12 @@ interface HeaderProps {
   onRemoveAiContextTag: (tag: string) => void;
   chatContext: ChatContext;
   onClearChatContext: () => void;
+}
+
+interface SourceOption {
+  id: string;
+  label: string;
+  context: ChatContext;
 }
 
 export default function Header({
@@ -36,11 +42,16 @@ export default function Header({
   const [isStreaming, setIsStreaming] = useState(false);
   const [chatMode, setChatMode] = useState<'ai' | 'memo'>('ai');
   const [isVoiceModeRequested, setIsVoiceModeRequested] = useState(false);
+  const [sourceMenuOpen, setSourceMenuOpen] = useState(false);
+  const [sourceOptions, setSourceOptions] = useState<SourceOption[]>([]);
+  const [selectedSourceId, setSelectedSourceId] = useState<string>('current');
+  const [selectedSourceContext, setSelectedSourceContext] = useState<ChatContext | null>(null);
   const [isNearBottom, setIsNearBottom] = useState(true);
   const [approvedProposalIds, setApprovedProposalIds] = useState<Record<string, boolean>>({});
   const [dismissedProposalIds, setDismissedProposalIds] = useState<Record<string, boolean>>({});
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const sourceMenuRef = useRef<HTMLDivElement | null>(null);
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const previousContextSignatureRef = useRef<string>('unset');
   const streamTimerRef = useRef<number | null>(null);
@@ -106,6 +117,76 @@ export default function Header({
       ]));
     }
   }, [contextSignature, chatContext, isAiOpen]);
+
+  useEffect(() => {
+    if (!sourceMenuOpen) return;
+    const onPointerDown = (event: MouseEvent): void => {
+      if (!sourceMenuRef.current) return;
+      if (!sourceMenuRef.current.contains(event.target as Node)) {
+        setSourceMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    return () => document.removeEventListener('mousedown', onPointerDown);
+  }, [sourceMenuOpen]);
+
+  useEffect(() => {
+    if (!sourceMenuOpen || !user?.id) return;
+    let cancelled = false;
+    const loadSourceOptions = async (): Promise<void> => {
+      const nextOptions: SourceOption[] = [{ id: 'current', label: 'Current', context: { ...chatContext } }];
+      try {
+        const [focalRows, listRows] = await Promise.all([
+          focalBoardService.getFocals(user.id),
+          focalBoardService.getListsForUser(user.id)
+        ]);
+        const focalById = new Map((focalRows || []).map((focal: any) => [focal.id, focal.name]));
+        (focalRows || []).forEach((focal: any) => {
+          nextOptions.push({
+            id: `focal:${focal.id}`,
+            label: `Space · ${focal.name}`,
+            context: { focal_id: focal.id }
+          });
+        });
+        (listRows || []).forEach((list: any) => {
+          const focalName = focalById.get(list.focal_id) || 'Space';
+          nextOptions.push({
+            id: `list:${list.id}`,
+            label: `List · ${focalName} / ${list.name}`,
+            context: { focal_id: list.focal_id, list_id: list.id }
+          });
+        });
+        if (chatContext.list_id) {
+          const itemRows = await focalBoardService.getItemsByListId(chatContext.list_id);
+          (itemRows || []).slice(0, 50).forEach((item: any) => {
+            nextOptions.push({
+              id: `item:${item.id}`,
+              label: `Item · ${item.title}`,
+              context: {
+                focal_id: chatContext.focal_id,
+                list_id: chatContext.list_id,
+                item_id: item.id
+              }
+            });
+          });
+        }
+      } catch {
+        // Keep "Current" option available even if workspace source fetch fails.
+      }
+      if (!cancelled) {
+        setSourceOptions(nextOptions);
+      }
+    };
+    void loadSourceOptions();
+    return () => {
+      cancelled = true;
+    };
+  }, [sourceMenuOpen, user?.id, chatContext]);
+
+  useEffect(() => {
+    setSelectedSourceId('current');
+    setSelectedSourceContext(null);
+  }, [contextSignature]);
 
   useEffect(() => {
     return () => {
@@ -200,12 +281,13 @@ export default function Header({
     if (!value || !user || isSending || isStreaming) return;
     setIsSending(true);
     setDraft('');
+    const outboundContext = selectedSourceContext || chatContext;
     const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
       role: 'user',
       content: value,
       created_at: Date.now(),
-      context: chatContext,
+      context: outboundContext,
       mode: chatMode
     };
     insertMessage(userMessage);
@@ -226,7 +308,7 @@ export default function Header({
 
     const reply = await chatService.send({
       messages: payloadMessages,
-      context: chatContext,
+      context: outboundContext,
       mode: chatMode
     });
     await startStreamingReply(reply.text, reply.proposals || [], reply.debug_meta);
@@ -299,17 +381,16 @@ export default function Header({
     }
   };
 
-  const contextChips = [
-    chatContext.time_block_id ? { key: 'time_block_id', label: 'Time Block' } : null,
-    chatContext.focal_id ? { key: 'focal_id', label: 'Space' } : null,
-    chatContext.list_id ? { key: 'list_id', label: 'List' } : null,
-    chatContext.item_id ? { key: 'item_id', label: 'Item' } : null,
-    chatContext.action_id ? { key: 'action_id', label: 'Action' } : null
-  ].filter(Boolean) as Array<{ key: string; label: string }>;
+  const selectedSourceLabel =
+    selectedSourceId === 'current'
+      ? 'Current'
+      : sourceOptions.find((option) => option.id === selectedSourceId)?.label || 'Current';
 
-  const visibleTags = aiContextTags.length > 0
-    ? aiContextTags.map((tag, index) => ({ key: `manual-${index}`, label: tag, remove: () => onRemoveAiContextTag(tag) }))
-    : contextChips.map((chip) => ({ key: chip.key, label: chip.label, remove: onClearChatContext }));
+  const handleSourceSelect = (option: SourceOption): void => {
+    setSelectedSourceId(option.id);
+    setSelectedSourceContext(option.id === 'current' ? null : option.context);
+    setSourceMenuOpen(false);
+  };
 
   return (
     <header className="header-strip">
@@ -427,59 +508,16 @@ export default function Header({
               </div>
 
               <div className="delta-ai-composer-surface">
-                <div className="delta-ai-chip-row">
-                  <div className="delta-ai-chip-list">
-                    {visibleTags.map((chip) => (
-                      <span key={chip.key} className="delta-ai-chip-tag">
-                        <span className="delta-ai-chip-tag-label">{chip.label}</span>
-                        <button
-                          type="button"
-                          className="delta-ai-chip-tag-remove"
-                          onClick={chip.remove}
-                          aria-label={`Remove ${chip.label}`}
-                        >
-                          <X size={11} />
-                        </button>
-                      </span>
-                    ))}
-                  </div>
-                  <div className="delta-ai-chip-controls">
-                    <div className="delta-ai-memo-toggle-wrap">
-                      <label className="delta-ai-mode-toggle-label" htmlFor="delta-ai-memo-toggle">Memo</label>
-                      <button
-                        id="delta-ai-memo-toggle"
-                        type="button"
-                        className={`calendar-switch ${chatMode === 'memo' ? 'on' : 'off'}`.trim()}
-                        aria-label={`Memo mode ${chatMode === 'memo' ? 'on' : 'off'}`}
-                        onClick={() => setChatMode((prev) => (prev === 'memo' ? 'ai' : 'memo'))}
-                      >
-                        <span className="calendar-switch-thumb" />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="delta-ai-input-row">
-                  <div className="delta-ai-input-field-wrap">
-                    <textarea
-                      ref={inputRef}
-                      placeholder="Ask Delta…"
-                      className="delta-ai-input-field"
-                      value={draft}
-                      rows={1}
-                      onChange={(event) => setDraft(event.target.value)}
-                      onKeyDown={handleInputKeyDown}
-                    />
-                    <button
-                      type="button"
-                      className={`delta-ai-voice-btn ${isVoiceModeRequested ? 'active' : ''}`.trim()}
-                      onClick={() => setIsVoiceModeRequested((prev) => !prev)}
-                      aria-pressed={isVoiceModeRequested}
-                      aria-label="Voice mode"
-                    >
-                      <Microphone size={14} weight="fill" />
-                    </button>
-                  </div>
+                <div className="delta-ai-input-stack">
+                  <textarea
+                    ref={inputRef}
+                    placeholder="Ask Delta…"
+                    className="delta-ai-input-field"
+                    value={draft}
+                    rows={2}
+                    onChange={(event) => setDraft(event.target.value)}
+                    onKeyDown={handleInputKeyDown}
+                  />
                   <button
                     type="button"
                     className="delta-ai-send-button"
@@ -489,6 +527,69 @@ export default function Header({
                   >
                     <PaperPlaneTilt className="delta-ai-send-icon" size={18} weight="fill" />
                   </button>
+                </div>
+
+                <div className="delta-ai-composer-footer">
+                  <button
+                    type="button"
+                    className={`delta-ai-voice-btn ${isVoiceModeRequested ? 'active' : ''}`.trim()}
+                    onClick={() => setIsVoiceModeRequested((prev) => !prev)}
+                    aria-pressed={isVoiceModeRequested}
+                    aria-label="Voice mode"
+                  >
+                    <Microphone size={15} weight="fill" />
+                  </button>
+
+                  <div className="delta-ai-source-control" ref={sourceMenuRef}>
+                    {selectedSourceId === 'current' ? (
+                      <button
+                        type="button"
+                        className="delta-ai-source-add"
+                        onClick={() => setSourceMenuOpen((prev) => !prev)}
+                        aria-expanded={sourceMenuOpen}
+                      >
+                        <span>Add source</span>
+                        <ChevronDown size={13} />
+                      </button>
+                    ) : (
+                      <span className="delta-ai-chip-tag delta-ai-source-chip">
+                        <span className="delta-ai-chip-tag-label">{selectedSourceLabel}</span>
+                        <button
+                          type="button"
+                          className="delta-ai-chip-tag-remove"
+                          onClick={() => {
+                            setSelectedSourceId('current');
+                            setSelectedSourceContext(null);
+                          }}
+                          aria-label="Clear selected source"
+                        >
+                          <X size={11} />
+                        </button>
+                      </span>
+                    )}
+                    {sourceMenuOpen && (
+                      <div className="delta-ai-source-menu" role="menu" aria-label="Source selection">
+                        {sourceOptions.map((option) => (
+                          <button key={option.id} type="button" onClick={() => handleSourceSelect(option)}>
+                            {option.label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="delta-ai-memo-toggle-wrap">
+                    <label className="delta-ai-mode-toggle-label" htmlFor="delta-ai-memo-toggle">Memo</label>
+                    <button
+                      id="delta-ai-memo-toggle"
+                      type="button"
+                      className={`calendar-switch ${chatMode === 'memo' ? 'on' : 'off'}`.trim()}
+                      aria-label={`Memo mode ${chatMode === 'memo' ? 'on' : 'off'}`}
+                      onClick={() => setChatMode((prev) => (prev === 'memo' ? 'ai' : 'memo'))}
+                    >
+                      <span className="calendar-switch-thumb" />
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>

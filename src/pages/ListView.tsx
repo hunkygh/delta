@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { ChevronRight } from 'lucide-react';
+import { ChevronRight, X as CloseIcon } from 'lucide-react';
 import { Atom, GearSix, PaperPlaneTilt, Plus } from '@phosphor-icons/react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import StatusSelect from '../components/FocalBoard/StatusSelect';
@@ -108,16 +108,16 @@ interface ColumnOptionDraft {
 }
 
 const STATUS_COLORS = [
-  '#94a3b8',
-  '#60a5fa',
-  '#818cf8',
-  '#a78bfa',
-  '#f472b6',
-  '#f97316',
-  '#f59e0b',
-  '#22c55e',
-  '#14b8a6',
-  '#ef4444'
+  '#8EA3BF',
+  '#5FA8D3',
+  '#7B8CE6',
+  '#9A7ED7',
+  '#D97AA8',
+  '#D28A53',
+  '#E0B04A',
+  '#5CB487',
+  '#4FB0A7',
+  '#D36A6A'
 ];
 
 const DEFAULT_STATUS_OPTION_PRESETS = [
@@ -235,6 +235,13 @@ export default function ListView(): JSX.Element {
   const [modalDescriptionDraft, setModalDescriptionDraft] = useState('');
   const [modalStatusValue, setModalStatusValue] = useState<string | null>('pending');
   const [savingItem, setSavingItem] = useState(false);
+  const [itemModalSettingsOpen, setItemModalSettingsOpen] = useState(false);
+  const [moveTargetListId, setMoveTargetListId] = useState('');
+  const [peerLists, setPeerLists] = useState<Array<{ id: string; name: string }>>([]);
+  const [movingItem, setMovingItem] = useState(false);
+  const [deletingItem, setDeletingItem] = useState(false);
+  const descriptionAutosaveTimerRef = useRef<number | null>(null);
+  const [descriptionAutosaveBusy, setDescriptionAutosaveBusy] = useState(false);
 
   const [activeCommentScope, setActiveCommentScope] = useState<CommentScope | null>(null);
   const [selectedActionForThreadId, setSelectedActionForThreadId] = useState<string | null>(null);
@@ -244,6 +251,9 @@ export default function ListView(): JSX.Element {
   const [commentSubmitting, setCommentSubmitting] = useState(false);
   const [commentError, setCommentError] = useState<string | null>(null);
   const [pushingCommentId, setPushingCommentId] = useState<string | null>(null);
+  const [statusImportListId, setStatusImportListId] = useState('');
+  const [statusImportCandidates, setStatusImportCandidates] = useState<Array<{ id: string; name: string }>>([]);
+  const [importingStatuses, setImportingStatuses] = useState(false);
 
   const [analyzing, setAnalyzing] = useState(false);
   const [proposalError, setProposalError] = useState<string | null>(null);
@@ -341,7 +351,50 @@ export default function ListView(): JSX.Element {
     setModalTitleDraft(selectedItem.title || '');
     setModalDescriptionDraft(selectedItem.description || '');
     setModalStatusValue(selectedItem.status_id ?? selectedItem.status ?? 'pending');
+    setItemModalSettingsOpen(false);
+    setMoveTargetListId('');
   }, [selectedItem]);
+
+  useEffect(() => {
+    if (!selectedItem || !list?.focal_id) {
+      setPeerLists([]);
+      return;
+    }
+    const loadPeerLists = async (): Promise<void> => {
+      try {
+        const rows = await focalBoardService.getListsForFocal(list.focal_id);
+        const mapped: Array<{ id: string; name: string }> = (rows || [])
+          .filter((entry: any) => entry.id !== list.id)
+          .map((entry: any) => ({ id: entry.id, name: entry.name }));
+        setPeerLists(mapped);
+      } catch {
+        setPeerLists([]);
+      }
+    };
+    void loadPeerLists();
+  }, [selectedItem, list?.focal_id, list?.id]);
+
+  useEffect(() => {
+    if (!statusManagerOpen || !list?.focal_id || !list?.id) {
+      setStatusImportCandidates([]);
+      setStatusImportListId('');
+      return;
+    }
+    const loadStatusImportCandidates = async (): Promise<void> => {
+      try {
+        const rows = await focalBoardService.getListsForFocal(list.focal_id);
+        const candidates: Array<{ id: string; name: string }> = (rows || [])
+          .filter((entry: any) => entry.id !== list.id)
+          .map((entry: any) => ({ id: entry.id, name: entry.name }));
+        setStatusImportCandidates(candidates);
+        setStatusImportListId((prev) => (prev && candidates.some((entry) => entry.id === prev) ? prev : candidates[0]?.id || ''));
+      } catch {
+        setStatusImportCandidates([]);
+        setStatusImportListId('');
+      }
+    };
+    void loadStatusImportCandidates();
+  }, [statusManagerOpen, list?.focal_id, list?.id]);
 
   useEffect(() => {
     if (!listId) return;
@@ -758,6 +811,8 @@ export default function ListView(): JSX.Element {
     setCommentError(null);
     setSelectedActionForThreadId(null);
     setActiveCommentScope(null);
+    setItemModalSettingsOpen(false);
+    setMoveTargetListId('');
   };
 
   const handleSaveItemFromModal = async (): Promise<void> => {
@@ -789,6 +844,67 @@ export default function ListView(): JSX.Element {
       setError(err?.message || 'Failed to update item');
     } finally {
       setSavingItem(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!selectedItem) return;
+    if (descriptionAutosaveTimerRef.current != null) {
+      window.clearTimeout(descriptionAutosaveTimerRef.current);
+    }
+    const initialDescription = selectedItem.description || '';
+    if (modalDescriptionDraft === initialDescription) {
+      return;
+    }
+    descriptionAutosaveTimerRef.current = window.setTimeout(async () => {
+      try {
+        setDescriptionAutosaveBusy(true);
+        const updated = await focalBoardService.updateItem(selectedItem.id, {
+          description: modalDescriptionDraft.trim() || null
+        });
+        updateItemLocally(selectedItem.id, {
+          description: updated.description
+        });
+      } catch (err: any) {
+        setError(err?.message || 'Failed to autosave description');
+      } finally {
+        setDescriptionAutosaveBusy(false);
+      }
+    }, 620);
+    return () => {
+      if (descriptionAutosaveTimerRef.current != null) {
+        window.clearTimeout(descriptionAutosaveTimerRef.current);
+      }
+    };
+  }, [modalDescriptionDraft, selectedItem]);
+
+  const handleMoveItemToList = async (): Promise<void> => {
+    if (!selectedItem || !moveTargetListId) return;
+    setMovingItem(true);
+    try {
+      await focalBoardService.updateItem(selectedItem.id, { lane_id: moveTargetListId });
+      setItems((prev) => prev.filter((entry) => entry.id !== selectedItem.id));
+      closeItemModal();
+    } catch (err: any) {
+      setError(err?.message || 'Failed to move item');
+    } finally {
+      setMovingItem(false);
+    }
+  };
+
+  const handleDeleteItemFromModal = async (): Promise<void> => {
+    if (!selectedItem) return;
+    const approved = window.confirm(`Delete "${selectedItem.title}"? This cannot be undone.`);
+    if (!approved) return;
+    setDeletingItem(true);
+    try {
+      await focalBoardService.deleteItem(selectedItem.id);
+      setItems((prev) => prev.filter((entry) => entry.id !== selectedItem.id));
+      closeItemModal();
+    } catch (err: any) {
+      setError(err?.message || 'Failed to delete item');
+    } finally {
+      setDeletingItem(false);
     }
   };
 
@@ -845,16 +961,43 @@ export default function ListView(): JSX.Element {
     setPushingCommentId(comment.id);
     setCommentError(null);
     try {
+      const scopeItemId =
+        activeCommentScope.type === 'item' ? activeCommentScope.scopeId : selectedItem?.id || undefined;
+      const scopedItem = scopeItemId ? items.find((entry) => entry.id === scopeItemId) || null : selectedItem || null;
+      const scopedAction =
+        activeCommentScope.type === 'action'
+          ? scopedItem?.actions?.find((entry) => entry.id === activeCommentScope.scopeId) || null
+          : null;
+      const scopedFieldContext = scopedItem
+        ? listFields.map((field) => {
+            const value = getFieldValueForItem(scopedItem.id, field.id);
+            const display = getDisplayValue(field, value);
+            return `- ${field.name}: ${display}`;
+          })
+        : [];
+
       const aiContext = {
         focal_id: list?.focal_id || list?.focals?.id || undefined,
         list_id: list?.id || undefined,
-        item_id: activeCommentScope.type === 'item' ? activeCommentScope.scopeId : selectedItem?.id || undefined,
+        item_id: scopeItemId,
         action_id: activeCommentScope.type === 'action' ? activeCommentScope.scopeId : undefined
       };
       const prompt = [
         'Treat this comment as actionable workspace input.',
+        'You can update lists/items/actions/time blocks when warranted by the comment.',
+        'Ground every suggestion in the provided live item context and field values.',
         'Based on current workspace state, suggest specific next steps and any concrete updates needed.',
         'If an update requires confirmation, ask one short question at the end.',
+        '',
+        `List: ${list?.name || 'Unknown list'}`,
+        `Item: ${scopedItem?.title || 'Unknown item'}`,
+        `Description: ${(scopedItem?.description || '').trim() || 'None'}`,
+        activeCommentScope.type === 'action'
+          ? `Action: ${scopedAction?.title || 'Unknown action'}`
+          : 'Action: (item-level thread)',
+        '',
+        'Custom fields:',
+        ...(scopedFieldContext.length > 0 ? scopedFieldContext : ['- None']),
         '',
         `Comment: ${body}`
       ].join('\n');
@@ -1438,6 +1581,49 @@ export default function ListView(): JSX.Element {
       setStatusColorDraft(STATUS_COLORS[0]);
     } catch (err: any) {
       setError(err?.message || 'Failed to create status');
+    }
+  };
+
+  const handleImportStatusesFromList = async (): Promise<void> => {
+    if (!user || !list?.id || !statusImportListId || !canManagePersistedStatuses) {
+      return;
+    }
+    setImportingStatuses(true);
+    try {
+      const sourceStatuses = await focalBoardService.getLaneStatuses(statusImportListId);
+      if (!sourceStatuses?.length) {
+        return;
+      }
+      const existingKeys = new Set(statuses.map((status) => status.key));
+      let nextOrder = statuses.length;
+      const createdRows: LaneStatus[] = [];
+      for (const source of sourceStatuses) {
+        const baseKey = normalizeStatusKey(source.name || source.key || 'status') || 'status';
+        let key = baseKey;
+        let suffix = 2;
+        while (existingKeys.has(key)) {
+          key = `${baseKey}_${suffix}`;
+          suffix += 1;
+        }
+        existingKeys.add(key);
+        const created = await focalBoardService.createLaneStatus(list.id, user.id, {
+          key,
+          name: source.name,
+          color: source.color || STATUS_COLORS[0],
+          group_key: source.group_key || key,
+          order_num: nextOrder,
+          is_default: false
+        });
+        nextOrder += 1;
+        createdRows.push(created);
+      }
+      if (createdRows.length > 0) {
+        setStatuses((prev) => [...prev, ...createdRows]);
+      }
+    } catch (err: any) {
+      setError(err?.message || 'Failed to import statuses');
+    } finally {
+      setImportingStatuses(false);
     }
   };
 
@@ -2235,7 +2421,9 @@ export default function ListView(): JSX.Element {
           <section className="list-item-modal" onClick={(event) => event.stopPropagation()}>
             <header className="list-item-modal-head">
               <h2>{selectedItem.title}</h2>
-              <button type="button" onClick={closeItemModal}>Close</button>
+              <button type="button" className="list-item-modal-close" onClick={closeItemModal} aria-label="Close item panel">
+                <CloseIcon size={16} />
+              </button>
             </header>
 
             <div className="list-item-modal-body">
@@ -2258,6 +2446,7 @@ export default function ListView(): JSX.Element {
                     rows={5}
                   />
                 </label>
+                {descriptionAutosaveBusy && <p className="list-item-autosave-note">Saving description…</p>}
 
                 <div className="list-item-field">
                   <span>Status</span>
@@ -2267,6 +2456,25 @@ export default function ListView(): JSX.Element {
                     onChange={(next: LaneStatus) => setModalStatusValue(next.id ?? next.key)}
                     onManageStatuses={() => setStatusManagerOpen(true)}
                   />
+                </div>
+
+                <div className="list-item-field list-item-column-values">
+                  <span>Column values</span>
+                  {(listFields || []).length === 0 ? (
+                    <p className="list-item-column-empty">No custom columns yet.</p>
+                  ) : (
+                    <div className="list-item-column-grid">
+                      {listFields.map((field) => {
+                        const fieldValue = getFieldValueForItem(selectedItem.id, field.id);
+                        return (
+                          <div key={field.id} className="list-item-column-row">
+                            <strong>{field.name}</strong>
+                            <span>{getDisplayValue(field, fieldValue)}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
 
                 <div className="list-item-modal-actions">
@@ -2304,6 +2512,38 @@ export default function ListView(): JSX.Element {
                 </div>
 
                 <div className="list-item-modal-save-row">
+                  <div className="list-item-modal-settings-wrap">
+                    <button
+                      type="button"
+                      className="list-item-settings-btn"
+                      onClick={() => setItemModalSettingsOpen((prev) => !prev)}
+                      aria-label="Item settings"
+                    >
+                      <GearSix size={16} weight="regular" />
+                    </button>
+                    <div className={`list-item-settings-slideout ${itemModalSettingsOpen ? 'open' : ''}`.trim()}>
+                      <div className="list-item-settings-group">
+                        <span>Move to list</span>
+                        <select value={moveTargetListId} onChange={(event) => setMoveTargetListId(event.target.value)}>
+                          <option value="">Choose list</option>
+                          {peerLists.map((entry) => (
+                            <option key={entry.id} value={entry.id}>
+                              {entry.name}
+                            </option>
+                          ))}
+                        </select>
+                        <button type="button" onClick={() => void handleMoveItemToList()} disabled={!moveTargetListId || movingItem}>
+                          {movingItem ? 'Moving…' : 'Move'}
+                        </button>
+                      </div>
+                      <button type="button" className="danger" onClick={() => void handleDeleteItemFromModal()} disabled={deletingItem}>
+                        {deletingItem ? 'Deleting…' : 'Delete'}
+                      </button>
+                      <button type="button" disabled>
+                        Merge (Soon)
+                      </button>
+                    </div>
+                  </div>
                   <button type="button" onClick={() => void handleSaveItemFromModal()} disabled={savingItem}>
                     {savingItem ? 'Saving...' : 'Save changes'}
                   </button>
@@ -2505,6 +2745,22 @@ export default function ListView(): JSX.Element {
               <p className="list-status-manager-note">
                 Run the latest migration first to enable custom status management.
               </p>
+            )}
+
+            {canManagePersistedStatuses && statusImportCandidates.length > 0 && (
+              <div className="list-status-import-row">
+                <span>Inherit statuses from another list</span>
+                <select value={statusImportListId} onChange={(event) => setStatusImportListId(event.target.value)}>
+                  {statusImportCandidates.map((entry) => (
+                    <option key={entry.id} value={entry.id}>
+                      {entry.name}
+                    </option>
+                  ))}
+                </select>
+                <button type="button" onClick={() => void handleImportStatusesFromList()} disabled={!statusImportListId || importingStatuses}>
+                  {importingStatuses ? 'Importing…' : 'Import'}
+                </button>
+              </div>
             )}
 
             <div className="list-status-manager-list">

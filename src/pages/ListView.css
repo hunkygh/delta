@@ -680,19 +680,22 @@
   color: var(--color-text-primary);
 }
 
-.list-item-modal-head button {
+.list-item-modal-close {
+  width: 32px;
   height: 32px;
   border: none;
-  border-radius: 8px;
-  background: transparent;
+  border-radius: 999px;
+  background: rgb(240, 240, 240);
   color: var(--color-text-secondary);
-  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
 }
 
-.list-item-modal-head button:hover,
-.list-item-modal-head button:focus-visible {
-  background: var(--color-bg-hover);
+.list-item-modal-close:hover,
+.list-item-modal-close:focus-visible {
+  background: rgb(230, 230, 230);
 }
 
 .list-item-modal-body {
@@ -722,6 +725,48 @@
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: #71717a;
+}
+
+.list-item-column-values {
+  gap: 8px;
+}
+
+.list-item-column-grid {
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 10px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.list-item-column-row {
+  min-height: 30px;
+  display: grid;
+  grid-template-columns: minmax(120px, 0.9fr) 1fr;
+  align-items: center;
+  gap: 10px;
+  padding: 0 10px;
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.list-item-column-row:first-child {
+  border-top: none;
+}
+
+.list-item-column-row strong {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.list-item-column-row span {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.list-item-column-empty {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-muted);
 }
 
 .list-item-field input,
@@ -758,10 +803,118 @@
 
 .list-item-modal-save-row {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 
-.list-item-modal-save-row button {
+.list-item-modal-save-row > button {
+  margin-left: auto;
+}
+
+.list-item-autosave-note {
+  margin: -4px 0 0;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.list-item-modal-settings-wrap {
+  position: relative;
+}
+
+.list-item-settings-btn {
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 999px;
+  background: rgb(240, 240, 240);
+  color: var(--color-text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.list-item-settings-btn:hover,
+.list-item-settings-btn:focus-visible {
+  background: rgb(230, 230, 230);
+}
+
+.list-item-settings-slideout {
+  position: absolute;
+  left: calc(100% + 8px);
+  bottom: 0;
+  width: 246px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 12px;
+  background: var(--color-surface-float);
+  box-shadow: var(--shadow-soft);
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+  opacity: 0;
+  transform: translateX(-8px);
+  pointer-events: none;
+  transition: opacity 180ms cubic-bezier(0.22, 1, 0.36, 1), transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+  z-index: 5;
+}
+
+.list-item-settings-slideout.open {
+  opacity: 1;
+  transform: translateX(0);
+  pointer-events: auto;
+}
+
+.list-item-settings-group {
+  display: grid;
+  gap: 6px;
+}
+
+.list-item-settings-group span {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+}
+
+.list-item-settings-group select {
+  width: 100%;
+  min-height: 32px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--color-text-primary);
+  font-size: 12px;
+  padding: 0 8px;
+}
+
+.list-item-settings-slideout button {
+  min-height: 30px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--color-text-primary);
+  font-size: 12px;
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.list-item-settings-slideout button:hover:not(:disabled),
+.list-item-settings-slideout button:focus-visible:not(:disabled) {
+  background: var(--color-bg-hover);
+}
+
+.list-item-settings-slideout button.danger {
+  border-color: #dc2626;
+  color: #dc2626;
+}
+
+.list-item-settings-slideout button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.list-item-modal-save-row > button {
   height: 30px;
   border: 1px solid #111827;
   border-radius: 8px;
@@ -772,7 +925,7 @@
   cursor: pointer;
 }
 
-.list-item-modal-save-row button:disabled {
+.list-item-modal-save-row > button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
 }
@@ -1007,6 +1160,47 @@
 
 .list-item-comment-send-icon {
   color: #ffffff;
+}
+
+.list-status-import-row {
+  border: 1px solid var(--color-border-default);
+  border-radius: 10px;
+  background: var(--color-surface-card);
+  padding: 8px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 180px auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.list-status-import-row span {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.list-status-import-row select {
+  min-height: 30px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 8px;
+  padding: 0 8px;
+  background: #fff;
+  color: var(--color-text-primary);
+  font-size: 12px;
+}
+
+.list-status-import-row button {
+  min-height: 30px;
+  border-radius: 8px;
+  border: none;
+  background: var(--color-text-primary);
+  color: var(--color-text-inverse);
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.list-status-import-row button:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .list-status-manager {
