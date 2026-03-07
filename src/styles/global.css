@@ -7009,13 +7009,13 @@ textarea::placeholder {
    Sidebar Locked + Spaces Popout
    ========================================== */
 .sidebar-nav.sidebar-locked {
-  width: 72px !important;
+  width: 78px !important;
   border-radius: 14px !important;
   top: calc(var(--header-height-sm) + 5px) !important;
   left: 5px !important;
   height: calc(100vh - var(--header-height-sm) - 10px) !important;
   padding: 5px 0 !important;
-  background: rgb(32, 32, 32) !important;
+  background: rgb(0, 0, 0) !important;
   border: none !important;
   box-shadow: none !important;
 }
@@ -7032,13 +7032,24 @@ textarea::placeholder {
 
 .sidebar-nav.sidebar-locked .sidebar-nav-item {
   width: 100% !important;
-  min-height: 42px;
+  min-height: 52px;
   padding: 6px 4px !important;
   display: grid !important;
   justify-items: center;
   align-content: center;
   gap: 3px;
   background: transparent !important;
+}
+
+.sidebar-nav.sidebar-locked .sidebar-nav-item svg,
+.sidebar-nav.sidebar-locked .focals-primary-icon svg {
+  width: 22px !important;
+  height: 22px !important;
+}
+
+.sidebar-nav.sidebar-locked .focals-primary-icon,
+.sidebar-nav.sidebar-locked .focals-primary-icon svg {
+  color: rgb(204, 204, 204) !important;
 }
 
 .sidebar-nav.sidebar-locked .sidebar-nav-text {
@@ -7070,7 +7081,9 @@ textarea::placeholder {
 .sidebar-nav.sidebar-locked .focal-item.selected .focals-primary-icon,
 .sidebar-nav.sidebar-locked .focal-list-item.selected svg {
   color: rgb(255, 255, 255) !important;
-  filter: drop-shadow(0 0 7px rgba(0, 122, 255, 0.95)) drop-shadow(0 0 16px rgba(0, 122, 255, 0.55));
+  filter: drop-shadow(0 0 10px rgba(0, 122, 255, 1))
+    drop-shadow(0 0 24px rgba(0, 122, 255, 0.95))
+    drop-shadow(0 0 38px rgba(0, 122, 255, 0.78));
 }
 
 .sidebar-nav.sidebar-locked .sidebar-nav-item:hover .sidebar-nav-text,
@@ -7104,6 +7117,18 @@ textarea::placeholder {
 
 .focals-popout .focal-item,
 .focals-popout .focal-list-item {
+  color: rgb(32, 32, 32) !important;
+}
+
+.focals-popout .focal-item > span,
+.focals-popout .focal-item:hover > span,
+.focals-popout .focal-item:focus-visible > span,
+.focals-popout .focal-item.selected > span,
+.focals-popout .focal-list-item,
+.focals-popout .focal-list-item:hover,
+.focals-popout .focal-list-item:focus-visible,
+.focals-popout .focal-list-item.selected,
+.focals-popout .focal-expand-btn {
   color: rgb(32, 32, 32) !important;
 }
 

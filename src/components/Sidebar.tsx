@@ -47,21 +47,32 @@ export default function Sidebar({
     ? location.pathname.replace('/focals/list/', '').replace('/spaces/list/', '')
     : null;
 
-  // Close dropdowns when sidebar collapses
+  // Reset inline create UI when dropdown closes.
   useEffect(() => {
-    if (!isExpanded) {
+    if (!focalsDropdownOpen) {
       setShowNewFocalInput(false);
       setNewFocalName('');
       setCreateError('');
-      setFocalsDropdownOpen(false);
-      setExpandedFocalIds({});
     }
-  }, [isExpanded]);
+  }, [focalsDropdownOpen]);
 
   useEffect(() => {
     if (!currentFocalId) return;
     setExpandedFocalIds((prev) => (prev[currentFocalId] ? prev : { ...prev, [currentFocalId]: true }));
   }, [currentFocalId]);
+
+  useEffect(() => {
+    if (!focalsDropdownOpen || focals.length === 0) return;
+    setExpandedFocalIds((prev) => {
+      const next = { ...prev };
+      focals.forEach((focal) => {
+        if (!next[focal.id]) {
+          next[focal.id] = true;
+        }
+      });
+      return next;
+    });
+  }, [focalsDropdownOpen, focals]);
 
   useEffect(() => {
     if (isExpanded) {
@@ -139,11 +150,11 @@ export default function Sidebar({
   };
 
   useEffect(() => {
-    if (!focalsDropdownOpen || !isExpanded || !user) {
+    if (!focalsDropdownOpen || !user) {
       return;
     }
     void loadListsForUser();
-  }, [focalsDropdownOpen, isExpanded, user]);
+  }, [focalsDropdownOpen, user]);
 
   useEffect(() => {
     if (!user || !listsRefreshToken) {
@@ -265,7 +276,7 @@ export default function Sidebar({
                 }}
               >
                 <span className="focals-primary-icon" aria-hidden="true">
-                  <ApertureIcon />
+                  <ApertureIcon size={20} color="currentColor" />
                 </span>
                 <span className="sidebar-nav-text">Spaces</span>
                 <span className={`focals-parent-toggle ${focalsDropdownOpen ? 'visible' : ''}`.trim()} aria-hidden="true">

@@ -96,6 +96,7 @@ type AttachTreeNode = {
 type IndexedList = {
   id: string;
   name: string;
+  focalId: string;
   focalName: string;
   items: Array<{ id: string; title: string }>;
 };
@@ -178,11 +179,12 @@ export default function MobileCalendarWireframe(): JSX.Element {
   const [itemDrawerCommentDraft, setItemDrawerCommentDraft] = useState('');
   const [itemDrawerCommentSubmitting, setItemDrawerCommentSubmitting] = useState(false);
   const [calendarAttachTree, setCalendarAttachTree] = useState<AttachTreeNode[]>([]);
-  const [taskDrawerScope, setTaskDrawerScope] = useState<'items' | 'lists'>('items');
   const [taskDrawerSearch, setTaskDrawerSearch] = useState('');
   const [taskDrawerListId, setTaskDrawerListId] = useState<string | null>(null);
   const [taskDrawerPendingKey, setTaskDrawerPendingKey] = useState<string | null>(null);
   const [taskDrawerLoading, setTaskDrawerLoading] = useState(false);
+  const [taskDrawerExpandedFocals, setTaskDrawerExpandedFocals] = useState<Record<string, boolean>>({});
+  const [taskDrawerExpandedLists, setTaskDrawerExpandedLists] = useState<Record<string, boolean>>({});
 
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatDraft, setChatDraft] = useState('');
@@ -289,6 +291,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
         rows.push({
           id: listId,
           name: listNode.label || listNode.name || listNode.title || 'Untitled list',
+          focalId,
           focalName: focalName || focalId || 'Space',
           items: itemNodes
             .map((itemNode) => {
@@ -309,6 +312,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
         rows.push({
           id: list.id,
           name: list.name,
+          focalId,
           focalName,
           items: (itemsByList[list.id] || []).map((item) => ({ id: item.id, title: item.title }))
         });
@@ -317,42 +321,44 @@ export default function MobileCalendarWireframe(): JSX.Element {
     return rows;
   }, [calendarAttachTree, focals, itemsByList, listsByFocal]);
 
-  const indexedItems = useMemo(
-    () =>
-      indexedLists.flatMap((list) =>
-        list.items.map((item) => ({
-          ...item,
-          listId: list.id,
-          listName: list.name,
-          focalName: list.focalName
-        }))
-      ),
-    [indexedLists]
-  );
-
   const taskSearchQuery = taskDrawerSearch.trim().toLowerCase();
-  const taskListResults = useMemo(() => {
-    if (!taskSearchQuery) return indexedLists;
-    return indexedLists.filter(
-      (list) =>
-        list.name.toLowerCase().includes(taskSearchQuery) ||
-        list.focalName.toLowerCase().includes(taskSearchQuery)
-    );
-  }, [indexedLists, taskSearchQuery]);
-
-  const taskItemResults = useMemo(() => {
-    if (!taskSearchQuery) return indexedItems;
-    return indexedItems.filter(
-      (item) =>
-        item.title.toLowerCase().includes(taskSearchQuery) ||
-        item.listName.toLowerCase().includes(taskSearchQuery) ||
-        item.focalName.toLowerCase().includes(taskSearchQuery)
-    );
-  }, [indexedItems, taskSearchQuery]);
   const taskHasExactMatch = useMemo(() => {
     if (!taskSearchQuery) return false;
-    return indexedItems.some((item) => item.title.trim().toLowerCase() === taskSearchQuery);
-  }, [indexedItems, taskSearchQuery]);
+    return indexedLists.some((list) => list.items.some((item) => item.title.trim().toLowerCase() === taskSearchQuery));
+  }, [indexedLists, taskSearchQuery]);
+  const taskTreeRows = useMemo(() => {
+    const grouped = new Map<string, { focalId: string; focalName: string; lists: IndexedList[] }>();
+    indexedLists.forEach((list) => {
+      const focalId = list.focalId || 'unassigned';
+      const existing = grouped.get(focalId);
+      if (existing) {
+        existing.lists.push(list);
+      } else {
+        grouped.set(focalId, { focalId, focalName: list.focalName || 'Space', lists: [list] });
+      }
+    });
+    const rows = Array.from(grouped.values()).map((entry) => ({
+      ...entry,
+      lists: entry.lists.sort((a, b) => a.name.localeCompare(b.name))
+    }));
+    rows.sort((a, b) => a.focalName.localeCompare(b.focalName));
+    if (!taskSearchQuery) return rows;
+    return rows
+      .map((focal) => {
+        const focalMatches = focal.focalName.toLowerCase().includes(taskSearchQuery);
+        const lists = focal.lists
+          .map((list) => {
+            const listMatches = list.name.toLowerCase().includes(taskSearchQuery);
+            const items = list.items.filter((item) => item.title.toLowerCase().includes(taskSearchQuery));
+            if (focalMatches || listMatches) return list;
+            if (items.length > 0) return { ...list, items };
+            return null;
+          })
+          .filter(Boolean) as IndexedList[];
+        return { ...focal, lists };
+      })
+      .filter((focal) => focal.lists.length > 0);
+  }, [indexedLists, taskSearchQuery]);
 
   const scopeTitle = useMemo(() => {
     if (activeNav === 'docs') return 'Docs';
@@ -1118,10 +1124,11 @@ export default function MobileCalendarWireframe(): JSX.Element {
   };
 
   const openAddTaskDrawer = (blockId: string): void => {
-    setTaskDrawerScope('items');
     setTaskDrawerSearch('');
     setTaskDrawerPendingKey(null);
     setTaskDrawerListId(inferListForBlock(blockId));
+    setTaskDrawerExpandedFocals({});
+    setTaskDrawerExpandedLists({});
     setDrawer({ open: true, mode: 'addTask', blockId });
     void ensureTaskDrawerIndexData();
   };
@@ -1131,30 +1138,6 @@ export default function MobileCalendarWireframe(): JSX.Element {
     try {
       await upsertBlockContentItems(blockId, item.listId, [item.id]);
       addItemsIntoBlockState(blockId, [{ id: item.id, title: item.title, listId: item.listId }]);
-    } finally {
-      setTaskDrawerPendingKey(null);
-    }
-  };
-
-  const attachListToBlock = async (blockId: string, list: IndexedList): Promise<void> => {
-    setTaskDrawerPendingKey(`list:${list.id}`);
-    try {
-      let itemRows = list.items;
-      if (!itemRows.length) {
-        const fetched = await focalBoardService.getItemsByListId(list.id);
-        itemRows = (fetched || []).map((row: any) => ({ id: row.id, title: row.title }));
-      }
-      if (itemRows.length > 0) {
-        await upsertBlockContentItems(
-          blockId,
-          list.id,
-          itemRows.map((item) => item.id)
-        );
-        addItemsIntoBlockState(
-          blockId,
-          itemRows.map((item) => ({ id: item.id, title: item.title, listId: list.id }))
-        );
-      }
     } finally {
       setTaskDrawerPendingKey(null);
     }
@@ -1170,8 +1153,9 @@ export default function MobileCalendarWireframe(): JSX.Element {
       try {
         created = await focalBoardService.createItem(chosenListId, user.id, title);
       } catch (firstError) {
-        if (!chosenListId && indexedLists[0]?.id) {
-          chosenListId = indexedLists[0].id;
+        const fallbackList = indexedLists[0]?.id || null;
+        if (!chosenListId && fallbackList) {
+          chosenListId = fallbackList;
           setTaskDrawerListId(chosenListId);
           created = await focalBoardService.createItem(chosenListId, user.id, title);
         } else {
@@ -2413,86 +2397,97 @@ export default function MobileCalendarWireframe(): JSX.Element {
           <div className="mobile-drawer-body">
             {drawer.mode === 'addTask' && drawer.blockId && (
               <div className="mobile-task-drawer">
-                <div className="mobile-task-drawer-toggle">
-                  <button
-                    type="button"
-                    className={taskDrawerScope === 'items' ? 'active' : ''}
-                    onClick={() => setTaskDrawerScope('items')}
-                  >
-                    Items
-                  </button>
-                  <button
-                    type="button"
-                    className={taskDrawerScope === 'lists' ? 'active' : ''}
-                    onClick={() => setTaskDrawerScope('lists')}
-                  >
-                    Lists
-                  </button>
-                </div>
                 <label className="mobile-task-drawer-search">
                   <input
                     type="text"
-                    placeholder={taskDrawerScope === 'items' ? 'Search items...' : 'Search lists...'}
+                    placeholder="Search"
                     value={taskDrawerSearch}
                     onChange={(event) => setTaskDrawerSearch(event.target.value)}
                   />
                 </label>
                 <div className="mobile-task-drawer-results">
                   {taskDrawerLoading && <div className="mobile-task-drawer-empty">Loading lists and items…</div>}
-                  {taskDrawerScope === 'items' ? (
-                    <>
-                      {taskItemResults.map((item) => (
-                        <div key={item.id} className="mobile-task-drawer-result-row">
-                          <div className="mobile-task-drawer-result-copy">
-                            <strong>{item.title}</strong>
-                            <span>{item.focalName} · {item.listName}</span>
-                          </div>
-                          <button
-                            type="button"
-                            className="mobile-task-drawer-result-add"
-                            disabled={taskDrawerPendingKey === `item:${item.id}`}
-                            onClick={() => void attachExistingItemToBlock(drawer.blockId as string, item)}
-                          >
-                            Add
-                          </button>
-                        </div>
-                      ))}
-                      {!!taskDrawerSearch.trim() && !taskHasExactMatch && (
-                        <div className="mobile-task-drawer-create-row">
-                          <div className="mobile-task-drawer-result-copy">
-                            <strong>{taskDrawerSearch.trim()}</strong>
-                            <span>Create new item{taskDrawerListId ? '' : ' (unassigned if supported)'}</span>
-                          </div>
-                          <button
-                            type="button"
-                            className="mobile-task-drawer-create"
-                            disabled={taskDrawerPendingKey === 'create'}
-                            onClick={() => void createNewTaskFromDrawer(drawer.blockId as string)}
-                          >
-                            Create New
-                          </button>
-                        </div>
-                      )}
-                    </>
-                  ) : (
-                    <>
-                      {taskListResults.map((list) => (
-                        <div key={list.id} className="mobile-task-drawer-result-row">
-                          <div className="mobile-task-drawer-result-copy">
-                            <strong>{list.name}</strong>
-                            <span>{list.focalName} · {list.items.length} item{list.items.length === 1 ? '' : 's'}</span>
-                          </div>
-                          <button
-                            type="button"
-                            className="mobile-task-drawer-result-add"
-                            disabled={taskDrawerPendingKey === `list:${list.id}`}
-                            onClick={() => void attachListToBlock(drawer.blockId as string, list)}
-                          >
-                            Add
-                          </button>
-                        </div>
-                      ))}
-                    </>
+                  {!taskDrawerLoading && taskTreeRows.length === 0 && (
+                    <div className="mobile-task-drawer-empty">No matching lists</div>
+                  )}
+                  {taskTreeRows.map((focal) => {
+                    const focalExpanded = taskDrawerExpandedFocals[focal.focalId] ?? true;
+                    return (
+                      <div key={focal.focalId} className="mobile-task-drawer-focal">
+                        <button
+                          type="button"
+                          className={`mobile-task-drawer-tree-toggle ${focalExpanded ? 'expanded' : ''}`}
+                          onClick={() =>
+                            setTaskDrawerExpandedFocals((prev) => ({ ...prev, [focal.focalId]: !focalExpanded }))
+                          }
+                        >
+                          <ChevronDown size={14} />
+                          <span>{focal.focalName}</span>
+                        </button>
+                        {focalExpanded && focal.lists.map((list) => {
+                          const listExpanded = taskDrawerExpandedLists[list.id] ?? (taskSearchQuery ? true : taskDrawerListId === list.id);
+                          return (
+                            <div key={list.id} className="mobile-task-drawer-list">
+                              <button
+                                type="button"
+                                className={`mobile-task-drawer-tree-toggle list ${listExpanded ? 'expanded' : ''}`}
+                                onClick={() => {
+                                  setTaskDrawerListId(list.id);
+                                  setTaskDrawerExpandedLists((prev) => ({ ...prev, [list.id]: !listExpanded }));
+                                }}
+                              >
+                                <ChevronDown size={13} />
+                                <span>{list.name}</span>
+                              </button>
+                              {listExpanded && (
+                                <div className="mobile-task-drawer-items">
+                                  {list.items.map((item) => {
+                                    const isAdded = !!activeDrawerBlock?.items.some((entry) => entry.id === item.id);
+                                    return (
+                                      <div key={item.id} className="mobile-task-drawer-result-row">
+                                        <div className="mobile-task-drawer-result-copy">
+                                          <strong>{item.title}</strong>
+                                        </div>
+                                        <button
+                                          type="button"
+                                          className={`mobile-task-drawer-result-add ${isAdded ? 'added' : ''}`}
+                                          disabled={isAdded || taskDrawerPendingKey === `item:${item.id}`}
+                                          onClick={() =>
+                                            void attachExistingItemToBlock(drawer.blockId as string, {
+                                              id: item.id,
+                                              title: item.title,
+                                              listId: list.id
+                                            })
+                                          }
+                                        >
+                                          {isAdded ? <CheckCircle2 size={14} /> : 'Add'}
+                                        </button>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
+                  {!!taskDrawerSearch.trim() && !taskHasExactMatch && (
+                    <div className="mobile-task-drawer-create-row">
+                      <div className="mobile-task-drawer-result-copy">
+                        <strong>{taskDrawerSearch.trim()}</strong>
+                        <span>Create new item{taskDrawerListId ? '' : ' (pick a list first)'}</span>
+                      </div>
+                      <button
+                        type="button"
+                        className="mobile-task-drawer-create"
+                        disabled={taskDrawerPendingKey === 'create'}
+                        onClick={() => void createNewTaskFromDrawer(drawer.blockId as string)}
+                      >
+                        Create New
+                      </button>
+                    </div>
                   )}
                 </div>
               </div>
