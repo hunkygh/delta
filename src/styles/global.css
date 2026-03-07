@@ -7018,10 +7018,14 @@ textarea::placeholder {
   background: rgb(0, 0, 0) !important;
   border: none !important;
   box-shadow: none !important;
+  overflow: visible !important;
 }
 
 .sidebar-nav.sidebar-locked .sidebar-content {
-  padding: 0 6px !important;
+  padding: 0 5px !important;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
   align-items: center !important;
 }
 
@@ -7033,12 +7037,14 @@ textarea::placeholder {
 .sidebar-nav.sidebar-locked .sidebar-nav-item {
   width: 100% !important;
   min-height: 52px;
-  padding: 6px 4px !important;
+  padding: 6px 0 !important;
   display: grid !important;
   justify-items: center;
   align-content: center;
   gap: 3px;
   background: transparent !important;
+  position: relative;
+  isolation: isolate;
 }
 
 .sidebar-nav.sidebar-locked .sidebar-nav-item svg,
@@ -7060,6 +7066,15 @@ textarea::placeholder {
   color: rgb(204, 204, 204) !important;
 }
 
+.sidebar-nav.sidebar-locked .focals-toggle {
+  padding-right: 0 !important;
+}
+
+.sidebar-nav.sidebar-locked .sidebar-nav-item > * {
+  position: relative;
+  z-index: 1;
+}
+
 .sidebar-nav.sidebar-locked .sidebar-nav-item:hover,
 .sidebar-nav.sidebar-locked .sidebar-nav-item:focus-visible,
 .sidebar-nav.sidebar-locked .sidebar-nav-item.active,
@@ -7073,6 +7088,22 @@ textarea::placeholder {
   color: rgb(255, 255, 255) !important;
 }
 
+.sidebar-nav.sidebar-locked .sidebar-nav-item.active::after,
+.sidebar-nav.sidebar-locked .focal-item.selected::after {
+  content: '';
+  position: absolute;
+  top: 7px;
+  left: 50%;
+  width: 34px;
+  height: 28px;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: radial-gradient(circle at 50% 55%, rgba(0, 122, 255, 0.98) 0%, rgba(0, 122, 255, 0.62) 42%, rgba(0, 122, 255, 0) 82%);
+  filter: blur(6px);
+  z-index: 0;
+  pointer-events: none;
+}
+
 .sidebar-nav.sidebar-locked .sidebar-nav-item:hover svg,
 .sidebar-nav.sidebar-locked .sidebar-nav-item:focus-visible svg,
 .sidebar-nav.sidebar-locked .sidebar-nav-item.active svg,
@@ -7081,9 +7112,9 @@ textarea::placeholder {
 .sidebar-nav.sidebar-locked .focal-item.selected .focals-primary-icon,
 .sidebar-nav.sidebar-locked .focal-list-item.selected svg {
   color: rgb(255, 255, 255) !important;
-  filter: drop-shadow(0 0 10px rgba(0, 122, 255, 1))
-    drop-shadow(0 0 24px rgba(0, 122, 255, 0.95))
-    drop-shadow(0 0 38px rgba(0, 122, 255, 0.78));
+  filter: drop-shadow(0 0 13px rgba(0, 122, 255, 1))
+    drop-shadow(0 0 28px rgba(0, 122, 255, 1))
+    drop-shadow(0 0 46px rgba(0, 122, 255, 0.85));
 }
 
 .sidebar-nav.sidebar-locked .sidebar-nav-item:hover .sidebar-nav-text,

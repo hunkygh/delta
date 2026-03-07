@@ -146,6 +146,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
   const [drawer, setDrawer] = useState<DrawerState>({ open: false, mode: 'peek', blockId: null });
   const [isDrawerDragging, setIsDrawerDragging] = useState(false);
   const [drawerDragY, setDrawerDragY] = useState(0);
+  const [drawerClosing, setDrawerClosing] = useState(false);
   const [touchStartX, setTouchStartX] = useState<number | null>(null);
   const [touchStartY, setTouchStartY] = useState<number | null>(null);
   const [isViewGestureDragging, setIsViewGestureDragging] = useState(false);
@@ -168,6 +169,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
   const [viewedDate, setViewedDate] = useState<Date>(() => new Date());
   const [blocks, setBlocks] = useState<MobileBlock[]>([]);
   const [completed, setCompleted] = useState<Record<string, boolean>>({});
+  const [showCompletedInDrawer, setShowCompletedInDrawer] = useState(false);
   const [expandedTasksByBlock, setExpandedTasksByBlock] = useState<Record<string, boolean>>({});
   const [subtaskComposerByItem, setSubtaskComposerByItem] = useState<Record<string, boolean>>({});
   const [subtaskDraftByItem, setSubtaskDraftByItem] = useState<Record<string, string>>({});
@@ -827,11 +829,24 @@ export default function MobileCalendarWireframe(): JSX.Element {
     day: 'numeric'
   });
 
-  const openPeekDrawer = (blockId: string): void => setDrawer({ open: true, mode: 'peek', blockId });
-  const openEditDrawer = (blockId: string): void => setDrawer({ open: true, mode: 'edit', blockId });
+  const openPeekDrawer = (blockId: string): void => {
+    setDrawerClosing(false);
+    setShowCompletedInDrawer(false);
+    setDrawer({ open: true, mode: 'peek', blockId });
+  };
+  const openFullDrawer = (blockId: string): void => {
+    setDrawerClosing(false);
+    setShowCompletedInDrawer(false);
+    setDrawer({ open: true, mode: 'full', blockId });
+  };
+  const openEditDrawer = (blockId: string): void => {
+    setDrawerClosing(false);
+    setDrawer({ open: true, mode: 'edit', blockId });
+  };
   const openItemDrawer = (blockId: string, itemId: string): void => {
     setItemDrawerPanel('details');
     setItemDrawerCommentDraft('');
+    setDrawerClosing(false);
     setDrawer({ open: true, mode: 'item', blockId, itemId });
   };
 
@@ -865,7 +880,12 @@ export default function MobileCalendarWireframe(): JSX.Element {
     setDrawerDragY(0);
     setItemDrawerPanel('details');
     setItemDrawerCommentDraft('');
-    setDrawer({ open: false, mode: 'peek', blockId: null });
+    setDrawerClosing(true);
+    window.setTimeout(() => {
+      setDrawer({ open: false, mode: 'peek', blockId: null });
+      setDrawerClosing(false);
+      setShowCompletedInDrawer(false);
+    }, 220);
   };
 
   const onDrawerTouchStart = (event: TouchEvent): void => {
@@ -1124,6 +1144,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
   };
 
   const openAddTaskDrawer = (blockId: string): void => {
+    setDrawerClosing(false);
     setTaskDrawerSearch('');
     setTaskDrawerPendingKey(null);
     setTaskDrawerListId(inferListForBlock(blockId));
@@ -1829,11 +1850,18 @@ export default function MobileCalendarWireframe(): JSX.Element {
                     const top = rawTop + blockGap / 2;
                     const height = Math.max(rawHeight - blockGap, 24);
                     const isCurrent = block.id === currentBlockId;
+                    const visibleItems = block.items.filter((item) => !completed[item.id]);
+                    const expandedInline = isCurrent || expandedTasksByBlock[block.id];
+                    const canToggleTasks = !isCurrent && visibleItems.length > 0;
+                    const reservedHeight = 42 + (canToggleTasks ? 24 : 0);
+                    const maxInlineItems = Math.max(0, Math.min(3, Math.floor((height - reservedHeight) / 32)));
+                    const renderedItems = expandedInline ? visibleItems.slice(0, maxInlineItems) : [];
+                    const hiddenItemCount = expandedInline ? Math.max(0, visibleItems.length - renderedItems.length) : 0;
                     return (
                       <article
                         key={block.id}
                         className={`mobile-time-block ${isCurrent ? 'current' : ''}`}
-                        style={{ top: `${top}px`, minHeight: `${height}px` }}
+                        style={{ top: `${top}px`, height: `${height}px` }}
                         onClick={() => openPeekDrawer(block.id)}
                         onPointerDown={() => startLongPress(block.id)}
                         onPointerUp={clearLongPress}
@@ -1857,7 +1885,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                           </div>
                         </div>
 
-                        {!isCurrent && block.items.length > 0 && (
+                        {canToggleTasks && (
                           <button
                             type="button"
                             className="mobile-block-show-tasks"
@@ -1871,9 +1899,9 @@ export default function MobileCalendarWireframe(): JSX.Element {
                           </button>
                         )}
 
-                        {(isCurrent || expandedTasksByBlock[block.id]) && (
+                        {expandedInline && (
                           <div className="mobile-time-block-items">
-                            {block.items.map((item) => (
+                            {renderedItems.map((item) => (
                               <div key={item.id} className="mobile-item-row">
                                 <button
                                   type="button"
@@ -1962,6 +1990,18 @@ export default function MobileCalendarWireframe(): JSX.Element {
                                 )}
                               </div>
                             ))}
+                            {hiddenItemCount > 0 && (
+                              <button
+                                type="button"
+                                className="mobile-block-view-more"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  openFullDrawer(block.id);
+                                }}
+                              >
+                                View more ({hiddenItemCount})
+                              </button>
+                            )}
                           </div>
                         )}
                       </article>
@@ -2372,7 +2412,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
 
       {drawer.open && (
         <div
-          className={`mobile-drawer ${drawer.mode} ${isDrawerDragging ? 'dragging' : ''}`.trim()}
+          className={`mobile-drawer ${drawer.mode} ${isDrawerDragging ? 'dragging' : ''} ${drawerClosing ? 'closing' : ''}`.trim()}
           style={{ transform: `translateY(${drawerDragY}px)` }}
         >
           <div
@@ -2501,7 +2541,9 @@ export default function MobileCalendarWireframe(): JSX.Element {
                   <h4>Attached items</h4>
                   {activeDrawerBlock?.items?.length ? (
                     <div className="mobile-drawer-linked-list">
-                      {activeDrawerBlock.items.map((item) => (
+                      {activeDrawerBlock.items
+                        .filter((item) => showCompletedInDrawer || !completed[item.id])
+                        .map((item) => (
                         <div key={item.id} className="mobile-drawer-linked-item">
                           <div className="mobile-drawer-linked-title">{item.name}</div>
                           {!!item.subItems?.length && (
@@ -2515,6 +2557,20 @@ export default function MobileCalendarWireframe(): JSX.Element {
                           )}
                         </div>
                       ))}
+                      {!!activeDrawerBlock.items.filter((item) => completed[item.id]).length && (
+                        <button
+                          type="button"
+                          className="mobile-drawer-show-completed"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setShowCompletedInDrawer((prev) => !prev);
+                          }}
+                        >
+                          {showCompletedInDrawer
+                            ? 'Hide completed'
+                            : `Show completed (${activeDrawerBlock.items.filter((item) => completed[item.id]).length})`}
+                        </button>
+                      )}
                     </div>
                   ) : (
                     <div className="mobile-drawer-empty">No attached items yet.</div>
