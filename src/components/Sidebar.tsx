@@ -1,10 +1,10 @@
-import { Calendar, Settings, FileText, Plus, CornerDownLeft, User, LogOut } from 'lucide-react';
+import { Calendar, Settings, FileText, Plus, CornerDownLeft, LogOut, SlidersHorizontal } from 'lucide-react';
+import { Mountains } from '@phosphor-icons/react';
 import type { User as SupabaseUser } from '@supabase/supabase-js';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useState, useEffect, useRef } from 'react';
 import { authService } from '../services/authService';
 import { focalBoardService } from '../services/focalBoardService';
-import ApertureIcon from './icons/ApertureIcon';
 
 interface SidebarProps {
   user?: SupabaseUser | null;
@@ -31,11 +31,14 @@ export default function Sidebar({
   const [isCreating, setIsCreating] = useState(false);
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
   const [focalsDropdownOpen, setFocalsDropdownOpen] = useState(false);
+  const [focalsDropdownPinned, setFocalsDropdownPinned] = useState(false);
   const [focalLists, setFocalLists] = useState<Record<string, any[]>>({});
   const [loadingLists, setLoadingLists] = useState(false);
   const [listsLoadError, setListsLoadError] = useState('');
   const [expandedFocalIds, setExpandedFocalIds] = useState<Record<string, boolean>>({});
   const resizeStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const hoverOpenTimerRef = useRef<number | null>(null);
+  const hoverCloseTimerRef = useRef<number | null>(null);
   const pathParts = location.pathname.split('/').filter(Boolean);
   const currentFocalIdFromPath = (pathParts[0] === 'focals' || pathParts[0] === 'spaces') && pathParts[1] && pathParts[1] !== 'list'
     ? pathParts[1]
@@ -46,33 +49,16 @@ export default function Sidebar({
   const currentListId = location.pathname.startsWith('/focals/list/') || location.pathname.startsWith('/spaces/list/')
     ? location.pathname.replace('/focals/list/', '').replace('/spaces/list/', '')
     : null;
+  const isFocalsDropdownVisible = focalsDropdownOpen || focalsDropdownPinned;
 
   // Reset inline create UI when dropdown closes.
   useEffect(() => {
-    if (!focalsDropdownOpen) {
+    if (!isFocalsDropdownVisible) {
       setShowNewFocalInput(false);
       setNewFocalName('');
       setCreateError('');
     }
-  }, [focalsDropdownOpen]);
-
-  useEffect(() => {
-    if (!currentFocalId) return;
-    setExpandedFocalIds((prev) => (prev[currentFocalId] ? prev : { ...prev, [currentFocalId]: true }));
-  }, [currentFocalId]);
-
-  useEffect(() => {
-    if (!focalsDropdownOpen || focals.length === 0) return;
-    setExpandedFocalIds((prev) => {
-      const next = { ...prev };
-      focals.forEach((focal) => {
-        if (!next[focal.id]) {
-          next[focal.id] = true;
-        }
-      });
-      return next;
-    });
-  }, [focalsDropdownOpen, focals]);
+  }, [isFocalsDropdownVisible]);
 
   useEffect(() => {
     if (isExpanded) {
@@ -92,7 +78,9 @@ export default function Sidebar({
         setShowSettingsMenu(false);
       }
       if (focalsContainer && !focalsContainer.contains(target)) {
+        clearHoverCloseTimer();
         setFocalsDropdownOpen(false);
+        setFocalsDropdownPinned(false);
       }
     };
 
@@ -101,6 +89,33 @@ export default function Sidebar({
       document.removeEventListener('mousedown', handleClickOutside);
     };
   }, []);
+
+  useEffect(() => {
+    return () => {
+      if (hoverOpenTimerRef.current) {
+        window.clearTimeout(hoverOpenTimerRef.current);
+      }
+      if (hoverCloseTimerRef.current) {
+        window.clearTimeout(hoverCloseTimerRef.current);
+      }
+    };
+  }, []);
+
+  const clearHoverCloseTimer = (): void => {
+    if (hoverCloseTimerRef.current) {
+      window.clearTimeout(hoverCloseTimerRef.current);
+      hoverCloseTimerRef.current = null;
+    }
+  };
+
+  const scheduleHoverClose = (): void => {
+    if (focalsDropdownPinned) return;
+    clearHoverCloseTimer();
+    hoverCloseTimerRef.current = window.setTimeout(() => {
+      setFocalsDropdownOpen(false);
+      hoverCloseTimerRef.current = null;
+    }, 320);
+  };
 
   useEffect(() => {
     const loadFocals = async () => {
@@ -154,11 +169,11 @@ export default function Sidebar({
   };
 
   useEffect(() => {
-    if (!focalsDropdownOpen || !user) {
+    if (!isFocalsDropdownVisible || !user) {
       return;
     }
     void loadListsForUser();
-  }, [focalsDropdownOpen, user]);
+  }, [isFocalsDropdownVisible, user]);
 
   useEffect(() => {
     if (!user || !listsRefreshToken) {
@@ -257,8 +272,22 @@ export default function Sidebar({
   };
 
   return (
-    <nav className="sidebar-nav sidebar-locked">
+    <nav className={`sidebar-nav sidebar-locked ${isFocalsDropdownVisible ? 'sidebar-has-focals-active' : ''}`.trim()}>
       <div className="sidebar-content">
+        <button
+          type="button"
+          className="sidebar-top-logo"
+          aria-label="Open Delta AI"
+          onClick={() => {
+            window.dispatchEvent(
+              new CustomEvent('delta:ai-open-with-context', {
+                detail: { source: 'header' }
+              })
+            );
+          }}
+        >
+          <img src="/Delta-AI-Button.png" alt="Delta AI" />
+        </button>
         <div className="sidebar-nav-items">
           <button className={`sidebar-nav-item ${isActivePath('/') ? 'active' : ''}`.trim()} onClick={() => navigate('/')}>
             <Calendar size={14} />
@@ -270,21 +299,57 @@ export default function Sidebar({
         <div className="sidebar-divider-item" />
         
         <div className="sidebar-nav-items">
-          <div className="focals-dropdown-container">
+          <div
+            className="focals-dropdown-container"
+            onMouseEnter={() => {
+              clearHoverCloseTimer();
+              if (focalsDropdownPinned) {
+                return;
+              }
+              if (hoverOpenTimerRef.current) {
+                window.clearTimeout(hoverOpenTimerRef.current);
+              }
+              hoverOpenTimerRef.current = window.setTimeout(() => {
+                setFocalsDropdownOpen(true);
+                hoverOpenTimerRef.current = null;
+              }, 500);
+            }}
+            onMouseLeave={() => {
+              if (hoverOpenTimerRef.current) {
+                window.clearTimeout(hoverOpenTimerRef.current);
+                hoverOpenTimerRef.current = null;
+              }
+              scheduleHoverClose();
+            }}
+            onFocusCapture={() => {
+              if (!focalsDropdownPinned) {
+                setFocalsDropdownOpen(true);
+              }
+            }}
+            onBlurCapture={(event) => {
+              const nextFocused = event.relatedTarget as Node | null;
+              if (!event.currentTarget.contains(nextFocused)) {
+                if (!focalsDropdownPinned) {
+                  setFocalsDropdownOpen(false);
+                }
+              }
+            }}
+          >
             <div className="focals-parent-row">
               <button
-                className={`sidebar-nav-item focals-toggle ${focalsDropdownOpen ? 'active' : ''}`.trim()}
+                className={`sidebar-nav-item focals-toggle ${isFocalsDropdownVisible ? 'active' : ''}`.trim()}
                 onClick={(e) => {
                   e.stopPropagation();
-                  setFocalsDropdownOpen(!focalsDropdownOpen);
+                  setFocalsDropdownPinned(true);
+                  setFocalsDropdownOpen(true);
                 }}
               >
                 <span className="focals-primary-icon" aria-hidden="true">
-                  <ApertureIcon size={20} color="currentColor" />
+                  <Mountains size={20} weight="regular" />
                 </span>
                 <span className="sidebar-nav-text">Spaces</span>
-                <span className={`focals-parent-toggle ${focalsDropdownOpen ? 'visible' : ''}`.trim()} aria-hidden="true">
-                  <RoundedTriangle expanded={Boolean(focalsDropdownOpen)} />
+                <span className={`focals-parent-toggle ${isFocalsDropdownVisible ? 'visible' : ''}`.trim()} aria-hidden="true">
+                  <RoundedTriangle expanded={Boolean(isFocalsDropdownVisible)} />
                 </span>
               </button>
               <button
@@ -303,8 +368,12 @@ export default function Sidebar({
             </div>
             
             {/* Focals popout */}
-            {focalsDropdownOpen && (
-              <div className="focals-dropdown show focals-popout">
+            {isFocalsDropdownVisible && (
+              <div
+                className="focals-dropdown show focals-popout"
+                onMouseEnter={() => clearHoverCloseTimer()}
+                onMouseLeave={() => scheduleHoverClose()}
+              >
                 {/* Only show focals list when there are focals */}
                 {focals.length > 0 && (
                   focals.map((focal) => (
@@ -417,29 +486,24 @@ export default function Sidebar({
           
           {showSettingsMenu && (
             <div className="settings-dropdown">
-              <div className="settings-header">
-                <div className="user-info">
-                  <User size={14} />
-                  <span>{user?.email}</span>
-                </div>
-              </div>
-              <div className="settings-divider"></div>
               <button
                 className="settings-option"
                 onClick={() => {
                   setShowSettingsMenu(false);
                   navigate('/settings');
                 }}
+                aria-label="Preferences"
+                title="Preferences"
               >
-                <Settings size={14} />
-                <span>Preferences</span>
+                <SlidersHorizontal size={16} />
               </button>
               <button
                 className="settings-option logout"
                 onClick={handleLogout}
+                aria-label="Sign out"
+                title="Sign out"
               >
-                <LogOut size={14} />
-                <span>Sign Out</span>
+                <LogOut size={16} />
               </button>
             </div>
           )}

@@ -72,6 +72,14 @@ const isMissingItemOccurrencesTableError = (error) =>
         error.message.toLowerCase().includes('schema cache'))
   );
 
+const isMissingActionOccurrencesTableError = (error) =>
+  Boolean(
+    error?.message &&
+      error.message.toLowerCase().includes('action_occurrences') &&
+      (error.message.toLowerCase().includes('does not exist') ||
+        error.message.toLowerCase().includes('schema cache'))
+  );
+
 const isMissingTimeBlocksTableError = (error) =>
   Boolean(
     error?.message &&
@@ -397,7 +405,7 @@ export const focalBoardService = {
     return (data || []).map((lane, index) => ({
       ...lane,
       item_label: lane.item_label || 'Items',
-      action_label: lane.action_label || 'Actions',
+      action_label: lane.action_label || 'Tasks',
       order_num: lane.order_num ?? index,
       mode: lane.mode || 'one_off'
     }));
@@ -423,7 +431,7 @@ export const focalBoardService = {
     return (data || []).map((lane, index) => ({
       ...lane,
       item_label: lane.item_label || 'Items',
-      action_label: lane.action_label || 'Actions',
+      action_label: lane.action_label || 'Tasks',
       order_num: lane.order_num ?? index,
       mode: lane.mode || 'one_off'
     }));
@@ -877,7 +885,56 @@ export const focalBoardService = {
     });
   },
 
-  async setOccurrenceCompletion({ itemId, timeBlockId, scheduledStartUtc, scheduledEndUtc, checked, userId }) {
+  async setOccurrenceCompletion({ itemId, actionId, timeBlockId, scheduledStartUtc, scheduledEndUtc, checked, userId }) {
+    if (actionId && !itemId) {
+      return this.setTaskOccurrenceCompletion({
+        actionId,
+        timeBlockId,
+        scheduledStartUtc,
+        scheduledEndUtc,
+        checked,
+        userId
+      });
+    }
+    if (!itemId) {
+      throw new Error('itemId is required');
+    }
+
+    const { data: actions, error: actionsError } = await supabase
+      .from('actions')
+      .select('id')
+      .eq('item_id', itemId);
+    if (actionsError && !isMissingTableOrSchemaCacheError(actionsError, 'actions')) {
+      throw actionsError;
+    }
+    if ((actions || []).length > 0) {
+      const nowIso = new Date().toISOString();
+      const scheduledStart = utcIso(scheduledStartUtc);
+      const scheduledEnd = utcIso(scheduledEndUtc);
+      const rows = (actions || []).map((row) => ({
+        user_id: userId,
+        action_id: row.id,
+        time_block_id: timeBlockId,
+        scheduled_start: scheduledStart,
+        scheduled_end: scheduledEnd,
+        completion_state: checked ? 'completed' : 'pending',
+        completed_at: checked ? nowIso : null,
+        updated_at: nowIso
+      }));
+
+      const { data, error } = await supabase
+        .from('action_occurrences')
+        .upsert(rows, { onConflict: 'action_id,time_block_id,scheduled_start' })
+        .select();
+
+      if (!error) {
+        return (data || [])[0] || null;
+      }
+      if (!isMissingActionOccurrencesTableError(error)) {
+        throw error;
+      }
+    }
+
     const scheduledStart = utcIso(scheduledStartUtc);
     const scheduledEnd = utcIso(scheduledEndUtc);
     const row = {
@@ -906,6 +963,39 @@ export const focalBoardService = {
     return data;
   },
 
+  async setTaskOccurrenceCompletion({ actionId, timeBlockId, scheduledStartUtc, scheduledEndUtc, checked, userId }) {
+    if (!actionId || !timeBlockId || !scheduledStartUtc || !scheduledEndUtc || !userId) {
+      throw new Error('actionId, timeBlockId, scheduledStartUtc, scheduledEndUtc, and userId are required');
+    }
+
+    const scheduledStart = utcIso(scheduledStartUtc);
+    const scheduledEnd = utcIso(scheduledEndUtc);
+    const row = {
+      user_id: userId,
+      action_id: actionId,
+      time_block_id: timeBlockId,
+      scheduled_start: scheduledStart,
+      scheduled_end: scheduledEnd,
+      completion_state: checked ? 'completed' : 'pending',
+      completed_at: checked ? new Date().toISOString() : null,
+      updated_at: new Date().toISOString()
+    };
+
+    const { data, error } = await supabase
+      .from('action_occurrences')
+      .upsert(row, { onConflict: 'action_id,time_block_id,scheduled_start' })
+      .select()
+      .single();
+
+    if (error) {
+      if (isMissingActionOccurrencesTableError(error)) {
+        throw new Error('Action occurrences table does not exist. Run the latest migration.');
+      }
+      throw error;
+    }
+    return data;
+  },
+
   async getRecurringListMvpView(listId, weekStartUtc, weekEndUtc) {
     const list = await this.getListDetail(listId);
     const weekStart = weekStartUtc ? new Date(weekStartUtc) : getUtcWeekStart(new Date());
@@ -919,7 +1009,7 @@ export const focalBoardService = {
         list,
         week_start: utcIso(weekStart),
         week_end: utcIso(weekEnd),
-        summary: { scheduled_count: 0, completed_count: 0 },
+        summary: { scheduled_count: 0, completed_count: 0, task_scheduled_count: 0, task_completed_count: 0 },
         items: []
       };
     }
@@ -937,12 +1027,17 @@ export const focalBoardService = {
           list,
           week_start: utcIso(weekStart),
           week_end: utcIso(weekEnd),
-          summary: { scheduled_count: 0, completed_count: 0 },
+          summary: { scheduled_count: 0, completed_count: 0, task_scheduled_count: 0, task_completed_count: 0 },
           items: (list.items || []).map((item) => ({
             ...item,
             recurring: {
               scheduled_count: 0,
               completed_count: 0,
+              task_scheduled_count: 0,
+              task_completed_count: 0,
+              active_task_total_count: 0,
+              active_task_completed_count: 0,
+              active_completion_state: 'pending',
               streak: 0,
               next_occurrence: null,
               last_completed: null,
@@ -960,12 +1055,15 @@ export const focalBoardService = {
         list,
         week_start: utcIso(weekStart),
         week_end: utcIso(weekEnd),
-        summary: { scheduled_count: 0, completed_count: 0 },
+        summary: { scheduled_count: 0, completed_count: 0, task_scheduled_count: 0, task_completed_count: 0 },
         items: (list.items || []).map((item) => ({
           ...item,
           recurring: {
             scheduled_count: 0,
             completed_count: 0,
+            task_scheduled_count: 0,
+            task_completed_count: 0,
+            active_completion_state: 'pending',
             streak: 0,
             next_occurrence: null,
             last_completed: null,
@@ -986,12 +1084,15 @@ export const focalBoardService = {
           list,
           week_start: utcIso(weekStart),
           week_end: utcIso(weekEnd),
-          summary: { scheduled_count: 0, completed_count: 0 },
+          summary: { scheduled_count: 0, completed_count: 0, task_scheduled_count: 0, task_completed_count: 0 },
           items: (list.items || []).map((item) => ({
             ...item,
             recurring: {
               scheduled_count: 0,
               completed_count: 0,
+              task_scheduled_count: 0,
+              task_completed_count: 0,
+              active_completion_state: 'pending',
               streak: 0,
               next_occurrence: null,
               last_completed: null,
@@ -1011,6 +1112,26 @@ export const focalBoardService = {
       linkByItem.set(link.item_id, existing);
     }
 
+    const actionsResult = await supabase
+      .from('actions')
+      .select('id,item_id')
+      .in('item_id', itemIds);
+
+    if (actionsResult.error && !isMissingTableOrSchemaCacheError(actionsResult.error, 'actions')) {
+      throw actionsResult.error;
+    }
+
+    const actionsByItemId = new Map();
+    const actionIdToItemId = new Map();
+    for (const row of actionsResult.data || []) {
+      const existing = actionsByItemId.get(row.item_id) || [];
+      existing.push(row.id);
+      actionsByItemId.set(row.item_id, existing);
+      actionIdToItemId.set(row.id, row.item_id);
+    }
+    const actionIds = [...new Set((actionsResult.data || []).map((row) => row.id).filter(Boolean))];
+    const itemIdsWithActions = new Set(actionsByItemId.keys());
+
     const occurrencesResult = await supabase
       .from('item_occurrences')
       .select('item_id,time_block_id,scheduled_start,scheduled_end,completion_state,completed_at')
@@ -1027,8 +1148,51 @@ export const focalBoardService = {
       occurrenceMap.set(`${row.item_id}:${row.time_block_id}:${utcIso(row.scheduled_start)}`, row);
     }
 
+    let actionOccurrenceRows = [];
+    if (actionIds.length > 0) {
+      const actionOccurrencesResult = await supabase
+        .from('action_occurrences')
+        .select('action_id,time_block_id,scheduled_start,scheduled_end,completion_state,completed_at')
+        .in('action_id', actionIds)
+        .gte('scheduled_start', utcIso(lookbackStart))
+        .lte('scheduled_start', utcIso(addDays(weekEnd, 35)));
+
+      if (actionOccurrencesResult.error && !isMissingActionOccurrencesTableError(actionOccurrencesResult.error)) {
+        throw actionOccurrencesResult.error;
+      }
+      actionOccurrenceRows = actionOccurrencesResult.error ? [] : (actionOccurrencesResult.data || []);
+    }
+
+    const actionCompletionMap = new Map();
+    const actionCompletedRowsByItem = new Map();
+    for (const row of actionOccurrenceRows) {
+      const itemId = actionIdToItemId.get(row.action_id);
+      if (!itemId) continue;
+      const key = `${itemId}:${row.time_block_id}:${utcIso(row.scheduled_start)}`;
+      const existingState = actionCompletionMap.get(key) || 'pending';
+      if (row.completion_state === 'completed') {
+        actionCompletionMap.set(key, 'completed');
+      } else if (!actionCompletionMap.has(key)) {
+        actionCompletionMap.set(key, existingState);
+      }
+      if (row.completion_state === 'completed') {
+        const list = actionCompletedRowsByItem.get(itemId) || [];
+        list.push({
+          item_id: itemId,
+          time_block_id: row.time_block_id,
+          scheduled_start: row.scheduled_start,
+          scheduled_end: row.scheduled_end,
+          completion_state: row.completion_state,
+          completed_at: row.completed_at
+        });
+        actionCompletedRowsByItem.set(itemId, list);
+      }
+    }
+
     let totalScheduled = 0;
     let totalCompleted = 0;
+    let totalTaskScheduled = 0;
+    let totalTaskCompleted = 0;
 
     const recurringItems = (list.items || []).map((item) => {
       const itemLinks = linkByItem.get(item.id) || [];
@@ -1066,24 +1230,60 @@ export const focalBoardService = {
       const uniquePast = [...new Map(lookbackExpected.map((occ) => [`${occ.time_block_id}:${occ.scheduled_start}`, occ])).values()]
         .sort((a, b) => utcMs(b.scheduled_start) - utcMs(a.scheduled_start));
 
+      const getCompletionStateForOccurrence = (occurrence) => {
+        const key = `${item.id}:${occurrence.time_block_id}:${occurrence.scheduled_start}`;
+        if (itemIdsWithActions.has(item.id)) {
+          return actionCompletionMap.get(key) || 'pending';
+        }
+        const row = occurrenceMap.get(key);
+        return row?.completion_state || 'pending';
+      };
+
       const completedThisWeek = uniqueThisWeek.filter((occ) => {
-        const row = occurrenceMap.get(`${item.id}:${occ.time_block_id}:${occ.scheduled_start}`);
-        return row?.completion_state === 'completed';
+        return getCompletionStateForOccurrence(occ) === 'completed';
       }).length;
 
       let streak = 0;
       for (const occ of uniquePast) {
-        const row = occurrenceMap.get(`${item.id}:${occ.time_block_id}:${occ.scheduled_start}`);
-        if (row?.completion_state === 'completed') {
+        if (getCompletionStateForOccurrence(occ) === 'completed') {
           streak += 1;
         } else {
           break;
         }
       }
 
-      const completedRows = occurrenceRows
-        .filter((row) => row.item_id === item.id && row.completion_state === 'completed')
-        .sort((a, b) => utcMs(b.completed_at || b.scheduled_start) - utcMs(a.completed_at || a.scheduled_start));
+      const completedRows = (
+        itemIdsWithActions.has(item.id)
+          ? (actionCompletedRowsByItem.get(item.id) || [])
+          : occurrenceRows.filter((row) => row.item_id === item.id && row.completion_state === 'completed')
+      ).sort((a, b) => utcMs(b.completed_at || b.scheduled_start) - utcMs(a.completed_at || a.scheduled_start));
+
+      const actionIdsForItem = actionsByItemId.get(item.id) || [];
+      const hasTasks = actionIdsForItem.length > 0;
+      const actionIdSetForItem = new Set(actionIdsForItem);
+      const taskScheduledCount = hasTasks
+        ? uniqueThisWeek.length * actionIdsForItem.length
+        : uniqueThisWeek.length;
+      const taskCompletedCount = hasTasks
+        ? actionOccurrenceRows.filter((row) => {
+            if (row.completion_state !== 'completed') return false;
+            if (!actionIdSetForItem.has(row.action_id)) return false;
+            const startMs = utcMs(row.scheduled_start);
+            return startMs >= weekStart.getTime() && startMs <= weekEnd.getTime();
+          }).length
+        : completedThisWeek;
+      const activeTaskTotalCount = hasTasks ? actionIdsForItem.length : 0;
+      const activeTaskCompletedCount =
+        hasTasks && activeOccurrence
+          ? actionOccurrenceRows.filter((row) => {
+              if (!actionIdSetForItem.has(row.action_id)) return false;
+              if (row.completion_state !== 'completed') return false;
+              return (
+                row.time_block_id === activeOccurrence.time_block_id &&
+                utcIso(row.scheduled_start) === activeOccurrence.scheduled_start
+              );
+            }).length
+          : 0;
 
       const nextOccurrence = nextCandidates.sort((a, b) => utcMs(a.scheduled_start) - utcMs(b.scheduled_start))[0] || null;
       const activeOccurrence =
@@ -1093,15 +1293,81 @@ export const focalBoardService = {
           const nowMs = now.getTime();
           return nowMs >= startMs && nowMs <= endMs;
         }) || nextOccurrence;
+      const activeCompletionState = activeOccurrence ? getCompletionStateForOccurrence(activeOccurrence) : 'pending';
+
+      const recurringTasks = (item.actions || []).map((action) => {
+        const thisWeekForTask = uniqueThisWeek;
+        const pastForTask = uniquePast;
+        const completedTaskThisWeek = actionOccurrenceRows.filter((row) => {
+          if (row.action_id !== action.id) return false;
+          if (row.completion_state !== 'completed') return false;
+          const startMs = utcMs(row.scheduled_start);
+          return startMs >= weekStart.getTime() && startMs <= weekEnd.getTime();
+        }).length;
+
+        let taskStreak = 0;
+        for (const occ of pastForTask) {
+          const row = actionOccurrenceRows.find(
+            (entry) =>
+              entry.action_id === action.id &&
+              entry.time_block_id === occ.time_block_id &&
+              utcIso(entry.scheduled_start) === occ.scheduled_start
+          );
+          if (row?.completion_state === 'completed') {
+            taskStreak += 1;
+          } else {
+            break;
+          }
+        }
+
+        const nextTaskOccurrence = nextOccurrence;
+        const activeTaskOccurrence = activeOccurrence || nextTaskOccurrence;
+        const activeTaskCompletionState = activeTaskOccurrence
+          ? (
+              actionOccurrenceRows.find(
+                (entry) =>
+                  entry.action_id === action.id &&
+                  entry.time_block_id === activeTaskOccurrence.time_block_id &&
+                  utcIso(entry.scheduled_start) === activeTaskOccurrence.scheduled_start
+              )?.completion_state || 'pending'
+            )
+          : 'pending';
+
+        const taskLastCompleted =
+          actionOccurrenceRows
+            .filter((row) => row.action_id === action.id && row.completion_state === 'completed')
+            .sort((a, b) => utcMs(b.completed_at || b.scheduled_start) - utcMs(a.completed_at || a.scheduled_start))[0] || null;
+
+        return {
+          ...action,
+          recurring: {
+            scheduled_count: thisWeekForTask.length,
+            completed_count: completedTaskThisWeek,
+            streak: taskStreak,
+            next_occurrence: nextTaskOccurrence,
+            current_or_next_occurrence: activeTaskOccurrence,
+            last_completed: taskLastCompleted,
+            active_completion_state: activeTaskCompletionState
+          }
+        };
+      });
 
       totalScheduled += uniqueThisWeek.length;
       totalCompleted += completedThisWeek;
+      totalTaskScheduled += taskScheduledCount;
+      totalTaskCompleted += taskCompletedCount;
 
       return {
         ...item,
+        actions: recurringTasks,
         recurring: {
           scheduled_count: uniqueThisWeek.length,
           completed_count: completedThisWeek,
+          task_scheduled_count: taskScheduledCount,
+          task_completed_count: taskCompletedCount,
+          active_task_total_count: activeTaskTotalCount,
+          active_task_completed_count: activeTaskCompletedCount,
+          active_completion_state: activeCompletionState,
           streak,
           next_occurrence: nextOccurrence,
           current_or_next_occurrence: activeOccurrence,
@@ -1116,7 +1382,9 @@ export const focalBoardService = {
       week_end: utcIso(weekEnd),
       summary: {
         scheduled_count: totalScheduled,
-        completed_count: totalCompleted
+        completed_count: totalCompleted,
+        task_scheduled_count: totalTaskScheduled,
+        task_completed_count: totalTaskCompleted
       },
       items: recurringItems
     };

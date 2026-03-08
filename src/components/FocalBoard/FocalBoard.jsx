@@ -60,7 +60,7 @@ const FocalBoard = ({ userId, selectedFocalFromNav, selectedFocalIdFromNav }) =>
         selectedFocal.id,
         newLaneName.trim(),
         newItemLabel.trim() || newLaneName.trim(),
-        newActionLabel.trim() || 'Actions'
+        newActionLabel.trim() || 'Tasks'
       );
       setNewLaneName('');
       setNewItemLabel('');
@@ -389,7 +389,7 @@ const FocalBoard = ({ userId, selectedFocalFromNav, selectedFocalIdFromNav }) =>
                 return (
                   <button key={lane.id} type="button" className="lists-table-row" onClick={() => handleOpenList(lane)}>
                     <span className="lists-row-name">{lane.name}</span>
-                    <span className="lists-row-muted">{lane.item_label || 'Items'} / {lane.action_label || 'Actions'}</span>
+                    <span className="lists-row-muted">{lane.item_label || 'Items'} / {lane.action_label || 'Tasks'}</span>
                     <span className="lists-row-progress">
                       {isRecurring ? (
                         <span>{recurringSummary ? `${recurringSummary.completed}/${recurringSummary.scheduled}` : '—'}</span>

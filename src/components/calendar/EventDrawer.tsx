@@ -1,4 +1,3 @@
-import { Atom } from '@phosphor-icons/react';
 import { useEffect, useMemo, useState } from 'react';
 import type { CustomRecurrenceConfig, RecurrenceRule } from '../../types/Event';
 import Button from '../Button';
@@ -77,9 +76,24 @@ interface EventDrawerProps {
     itemIds: string[]
   ) => void;
   occurrenceWeekday: 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun' | null;
-  occurrenceItems: Array<{ id: string; title: string; completed: boolean }>;
-  onToggleOccurrenceItem: (itemId: string, checked: boolean) => void;
-  onOpenOccurrenceItem?: (itemId: string) => void;
+  occurrenceItems: Array<{
+    id: string;
+    title: string;
+    completed: boolean;
+    kind: 'task' | 'item';
+    parentItemId?: string;
+  }>;
+  onToggleOccurrenceItem: (
+    entry: { id: string; title: string; completed: boolean; kind: 'task' | 'item'; parentItemId?: string },
+    checked: boolean
+  ) => void;
+  onOpenOccurrenceItem?: (entry: {
+    id: string;
+    title: string;
+    completed: boolean;
+    kind: 'task' | 'item';
+    parentItemId?: string;
+  }) => void;
   onCancel: () => void;
   onSave: () => void;
 }
@@ -333,7 +347,7 @@ export default function EventDrawer({
             autoFocus
           />
           <button type="button" className="calendar-event-drawer-top-ai-btn" onClick={onAskDelta} aria-label="Ask Delta">
-            <Atom size={14} weight="fill" aria-hidden="true" />
+            <img className="delta-ai-button-icon" src="/Delta-AI-Button.png" alt="" aria-hidden="true" width={14} height={14} />
           </button>
         </div>
 
@@ -732,12 +746,12 @@ export default function EventDrawer({
                       <input
                         type="checkbox"
                         checked={entry.completed}
-                        onChange={(event) => onToggleOccurrenceItem(entry.id, event.target.checked)}
+                        onChange={(event) => onToggleOccurrenceItem(entry, event.target.checked)}
                       />
                       <button
                         type="button"
                         className="calendar-event-contents-item-link"
-                        onClick={() => onOpenOccurrenceItem?.(entry.id)}
+                        onClick={() => onOpenOccurrenceItem?.(entry)}
                       >
                         {entry.title}
                       </button>
@@ -758,7 +772,7 @@ export default function EventDrawer({
                 onClick={onOptimizeBlock}
                 disabled={isOptimizingBlock}
               >
-                <Atom size={13} weight="fill" aria-hidden="true" />
+                <img className="delta-ai-button-icon" src="/Delta-AI-Button.png" alt="" aria-hidden="true" width={13} height={13} />
                 {isOptimizingBlock ? 'Optimizing...' : 'Optimize Block'}
               </button>
               {optimizeSource && (

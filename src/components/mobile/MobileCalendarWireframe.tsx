@@ -16,13 +16,13 @@ import {
   ChevronRight,
   ChevronDown,
   FileText,
-  Compass,
   CalendarDays,
   CheckSquare,
   ArrowLeft,
   Folder,
   SlidersHorizontal
 } from 'lucide-react';
+import { Mountains } from '@phosphor-icons/react';
 import { useAuth } from '../../context/AuthContext';
 import chatService from '../../services/chatService';
 import chatPersistence from '../../services/chatPersistence';
@@ -486,7 +486,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
               id: list.id,
               name: list.name,
               item_label: list.item_label || 'Items',
-              action_label: list.action_label || 'Actions'
+              action_label: list.action_label || 'Tasks'
             }))
           ] as const;
         })
@@ -1108,7 +1108,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
           id: list.id,
           name: list.name,
           item_label: list.item_label || 'Items',
-          action_label: list.action_label || 'Actions'
+          action_label: list.action_label || 'Tasks'
         });
         acc[focalId] = bucket;
         return acc;
@@ -1208,7 +1208,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
   const getContextualAddSpec = (): { label: string; icon: any } => {
     if (activeNav === 'calendar') return { label: 'Time Block', icon: CalendarPlus };
     if (activeNav === 'docs') return { label: 'Note +', icon: FileText };
-    if (mobileScope.level === 'focals') return { label: 'Space +', icon: Compass };
+    if (mobileScope.level === 'focals') return { label: 'Space +', icon: Mountains };
     if (mobileScope.level === 'focal') return { label: 'List +', icon: Folder };
     return { label: 'Item +', icon: CheckSquare };
   };
@@ -1289,7 +1289,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
         await focalBoardService.createFocal(user.id, name);
         await loadFocals();
       } else if (addSheet.type === 'list' && addSheet.focalId) {
-        await focalBoardService.createLane(addSheet.focalId, user.id, name, 'Items', 'Actions');
+        await focalBoardService.createLane(addSheet.focalId, user.id, name, 'Items', 'Tasks');
         await loadFocals();
       } else if (addSheet.type === 'item' && addSheet.listId) {
         await focalBoardService.createItem(addSheet.listId, user.id, name);
@@ -1739,7 +1739,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
             <article key={list.id} className="mobile-focal-card" onClick={() => openList(mobileScope.focalId as string, list.id)}>
               <header>
                 <h3>{list.name}</h3>
-                <span>{list.item_label || 'Items'} / {list.action_label || 'Actions'}</span>
+                <span>{list.item_label || 'Items'} / {list.action_label || 'Tasks'}</span>
               </header>
             </article>
           ))}
@@ -2193,7 +2193,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                 <span>Docs</span>
               </button>
               <button type="button" className={activeNav === 'focals' ? 'active' : ''} onClick={() => setActiveNav('focals')}>
-                <Compass size={15} />
+                <Mountains size={15} weight="regular" />
                 <span>Spaces</span>
               </button>
               <button type="button" className={activeNav === 'calendar' ? 'active' : ''} onClick={() => setActiveNav('calendar')}>

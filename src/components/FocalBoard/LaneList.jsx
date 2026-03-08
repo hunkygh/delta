@@ -33,7 +33,7 @@ const LaneList = ({
       await onCreateLane(
         laneName.trim(),
         newItemLabel.trim() || laneName.trim(),
-        newActionLabel.trim() || 'Actions'
+        newActionLabel.trim() || 'Tasks'
       );
       setNewLaneName('');
       setNewItemLabel('');
@@ -48,7 +48,7 @@ const LaneList = ({
     setEditingLaneId(lane.id);
     setLaneTermsDraft({
       itemLabel: lane.item_label || '',
-      actionLabel: lane.action_label || 'Actions'
+      actionLabel: lane.action_label || 'Tasks'
     });
   };
 
@@ -56,7 +56,7 @@ const LaneList = ({
     try {
       await onUpdateLane(laneId, {
         item_label: laneTermsDraft.itemLabel.trim() || 'Items',
-        action_label: laneTermsDraft.actionLabel.trim() || 'Actions'
+        action_label: laneTermsDraft.actionLabel.trim() || 'Tasks'
       });
       setEditingLaneId(null);
     } catch (error) {
@@ -88,7 +88,7 @@ const LaneList = ({
                 >
                   {lane.item_label || 'Items'}
                   <span className="lane-title-separator"> / </span>
-                  <span className="lane-title-secondary">{lane.action_label || 'Actions'}</span>
+                  <span className="lane-title-secondary">{lane.action_label || 'Tasks'}</span>
                 </button>
               </h3>
               <span className="lane-count">{laneItems.length}</span>
@@ -126,7 +126,7 @@ const LaneList = ({
                   onChange={(event) =>
                     setLaneTermsDraft((prev) => ({ ...prev, actionLabel: event.target.value }))
                   }
-                  placeholder="Actions"
+                  placeholder="Tasks"
                 />
               </label>
               <div className="lane-label-editor-actions">
@@ -147,7 +147,7 @@ const LaneList = ({
             laneId={lane.id}
             userId={userId}
             itemLabel={lane.item_label || 'Items'}
-            actionLabel={lane.action_label || 'Actions'}
+            actionLabel={lane.action_label || 'Tasks'}
             laneStatuses={lane.lane_statuses || []}
             getItemActions={getActionsForItem}
             onCreateItem={onCreateItem}

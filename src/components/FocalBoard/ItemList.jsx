@@ -10,7 +10,7 @@ const ItemList = ({
   laneId,
   userId,
   itemLabel = 'Items',
-  actionLabel = 'Actions',
+  actionLabel = 'Tasks',
   getItemActions,
   laneStatuses = [],
   onCreateItem,

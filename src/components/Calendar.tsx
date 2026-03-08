@@ -186,7 +186,7 @@ export default function Calendar({
   const [attachSelection, setAttachSelection] = useState<Record<string, AttachSelectionConfig>>({});
   const [timeBlockContentRules, setTimeBlockContentRules] = useState<Record<string, TimeBlockContentRule[]>>({});
   const [resolvedItemsByOccurrence, setResolvedItemsByOccurrence] = useState<
-    Record<string, Array<{ id: string; title: string; completed: boolean }>>
+    Record<string, Array<{ id: string; title: string; completed: boolean; kind: 'task' | 'item'; parentItemId?: string }>>
   >({});
   const [occurrenceContext, setOccurrenceContext] = useState<OccurrenceContext | null>(null);
   const [contentMode, setContentMode] = useState<'all' | 'weekday'>('all');
@@ -681,7 +681,29 @@ export default function Calendar({
           resolvedIds.forEach((itemId: string) => allItemIds.add(itemId));
         }
 
-        const completionRows = await calendarService.getOccurrenceCompletionRows({
+        const actions = await calendarService.getActionsForItems({ itemIds: [...allItemIds] });
+        const actionIds = [...new Set(actions.map((entry: any) => entry.id).filter(Boolean))];
+        const actionsByItemId = new Map<string, Array<{ id: string; title: string }>>();
+        for (const action of actions) {
+          const list = actionsByItemId.get(action.item_id) || [];
+          list.push({
+            id: action.id,
+            title: action.title || 'Untitled task'
+          });
+          actionsByItemId.set(action.item_id, list);
+        }
+
+        const taskCompletionRows =
+          actionIds.length > 0
+            ? await calendarService.getOccurrenceTaskCompletionRows({
+                timeBlockIds: sourceIds,
+                rangeStartUtc: weekStart.toISOString(),
+                rangeEndUtc: weekEnd.toISOString(),
+                actionIds
+              })
+            : [];
+
+        const itemCompletionRows = await calendarService.getOccurrenceCompletionRows({
           timeBlockIds: sourceIds,
           rangeStartUtc: weekStart.toISOString(),
           rangeEndUtc: weekEnd.toISOString(),
@@ -689,23 +711,59 @@ export default function Calendar({
         });
         if (!active) return;
 
-        const completedMap = new Map<string, boolean>();
-        for (const row of completionRows) {
+        const taskCompletedMap = new Map<string, boolean>();
+        for (const row of taskCompletionRows) {
           if (row.completion_state === 'completed') {
-            completedMap.set(`${row.item_id}:${row.time_block_id}:${new Date(row.scheduled_start).toISOString()}`, true);
+            taskCompletedMap.set(`${row.action_id}:${row.time_block_id}:${new Date(row.scheduled_start).toISOString()}`, true);
           }
         }
 
-        const nextResolved: Record<string, Array<{ id: string; title: string; completed: boolean }>> = {};
+        const itemCompletedMap = new Map<string, boolean>();
+        for (const row of itemCompletionRows) {
+          if (row.completion_state === 'completed') {
+            itemCompletedMap.set(`${row.item_id}:${row.time_block_id}:${new Date(row.scheduled_start).toISOString()}`, true);
+          }
+        }
+
+        const nextResolved: Record<
+          string,
+          Array<{ id: string; title: string; completed: boolean; kind: 'task' | 'item'; parentItemId?: string }>
+        > = {};
         for (const event of baseVisibleEvents) {
           const sourceId = event.sourceEventId ?? event.id;
           const occurrenceStartUtc = new Date(event.start).toISOString();
           const itemIds = perOccurrenceItemIds.get(event.id) || [];
-          nextResolved[event.id] = itemIds.map((itemId) => ({
-            id: itemId,
-            title: itemTitleById.get(itemId) || 'Untitled',
-            completed: completedMap.get(`${itemId}:${sourceId}:${occurrenceStartUtc}`) === true
-          }));
+          const entries: Array<{
+            id: string;
+            title: string;
+            completed: boolean;
+            kind: 'task' | 'item';
+            parentItemId?: string;
+          }> = [];
+
+          for (const itemId of itemIds) {
+            const itemTasks = actionsByItemId.get(itemId) || [];
+            if (itemTasks.length > 0) {
+              for (const task of itemTasks) {
+                entries.push({
+                  id: task.id,
+                  title: task.title,
+                  completed: taskCompletedMap.get(`${task.id}:${sourceId}:${occurrenceStartUtc}`) === true,
+                  kind: 'task',
+                  parentItemId: itemId
+                });
+              }
+              continue;
+            }
+
+            entries.push({
+              id: itemId,
+              title: itemTitleById.get(itemId) || 'Untitled',
+              completed: itemCompletedMap.get(`${itemId}:${sourceId}:${occurrenceStartUtc}`) === true,
+              kind: 'item'
+            });
+          }
+          nextResolved[event.id] = entries;
         }
         setResolvedItemsByOccurrence(nextResolved);
       } catch (error) {
@@ -873,24 +931,45 @@ export default function Calendar({
     });
   };
 
-  const handleToggleOccurrenceItem = async (itemId: string, checked: boolean): Promise<void> => {
+  const handleToggleOccurrenceItem = async (
+    entry: { id: string; title: string; completed: boolean; kind: 'task' | 'item'; parentItemId?: string },
+    checked: boolean
+  ): Promise<void> => {
     if (!occurrenceContext) return;
-    await calendarService.setOccurrenceItemCompletion({
-      itemId,
-      timeBlockId: occurrenceContext.sourceEventId,
-      scheduledStartUtc: occurrenceContext.scheduledStartUtc,
-      scheduledEndUtc: occurrenceContext.scheduledEndUtc,
-      checked
-    });
+    if (entry.kind === 'task') {
+      await calendarService.setOccurrenceTaskCompletion({
+        actionId: entry.id,
+        timeBlockId: occurrenceContext.sourceEventId,
+        scheduledStartUtc: occurrenceContext.scheduledStartUtc,
+        scheduledEndUtc: occurrenceContext.scheduledEndUtc,
+        checked
+      });
+    } else {
+      await calendarService.setOccurrenceItemCompletion({
+        itemId: entry.id,
+        timeBlockId: occurrenceContext.sourceEventId,
+        scheduledStartUtc: occurrenceContext.scheduledStartUtc,
+        scheduledEndUtc: occurrenceContext.scheduledEndUtc,
+        checked
+      });
+    }
     setResolvedItemsByOccurrence((prev) => ({
       ...prev,
-      [occurrenceContext.instanceId]: (prev[occurrenceContext.instanceId] || []).map((entry) =>
-        entry.id === itemId ? { ...entry, completed: checked } : entry
+      [occurrenceContext.instanceId]: (prev[occurrenceContext.instanceId] || []).map((row) =>
+        row.id === entry.id ? { ...row, completed: checked } : row
       )
     }));
   };
 
-  const handleOpenOccurrenceItem = (itemId: string): void => {
+  const handleOpenOccurrenceItem = (entry: {
+    id: string;
+    title: string;
+    completed: boolean;
+    kind: 'task' | 'item';
+    parentItemId?: string;
+  }): void => {
+    const itemId = entry.kind === 'task' ? entry.parentItemId : entry.id;
+    if (!itemId) return;
     const listId = listIdByItemId.get(itemId);
     if (!listId) {
       return;
@@ -1976,7 +2055,7 @@ export default function Calendar({
             onContentWeekdayItemsChange={(weekday, itemIds) => void handleWeekdayItemsChange(weekday, itemIds)}
             occurrenceWeekday={occurrenceContext?.weekday || null}
             occurrenceItems={activeOccurrenceItems}
-            onToggleOccurrenceItem={(itemId, checked) => void handleToggleOccurrenceItem(itemId, checked)}
+            onToggleOccurrenceItem={(entry, checked) => void handleToggleOccurrenceItem(entry, checked)}
             onOpenOccurrenceItem={handleOpenOccurrenceItem}
             onCancel={closeModal}
             onSave={saveEvent}

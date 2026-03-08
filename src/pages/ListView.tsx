@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { ChevronRight, X as CloseIcon } from 'lucide-react';
-import { Atom, GearSix, PaperPlaneTilt, Plus } from '@phosphor-icons/react';
+import { ArrowRightLeft, ChevronRight, Eye, EyeOff, GitMerge, Trash2, X as CloseIcon } from 'lucide-react';
+import { GearSix, PaperPlaneTilt, Plus } from '@phosphor-icons/react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import StatusSelect from '../components/FocalBoard/StatusSelect';
 import ProposalReviewTable from '../components/ProposalReviewTable';
@@ -30,12 +30,14 @@ interface ActionItem {
   id: string;
   title: string;
   status?: string;
+  recurring?: RecurringItemMeta;
 }
 
 interface ListItem {
   id: string;
   title: string;
   description?: string | null;
+  order_num?: number;
   status?: string;
   status_id?: string | null;
   signal_label?: string;
@@ -52,6 +54,11 @@ interface RecurringOccurrence {
 interface RecurringItemMeta {
   scheduled_count: number;
   completed_count: number;
+  task_scheduled_count?: number;
+  task_completed_count?: number;
+  active_task_total_count?: number;
+  active_task_completed_count?: number;
+  active_completion_state?: 'pending' | 'completed' | 'skipped' | 'missed';
   streak: number;
   next_occurrence: RecurringOccurrence | null;
   current_or_next_occurrence: RecurringOccurrence | null;
@@ -63,6 +70,7 @@ interface RecurringItemMeta {
 
 interface RecurringListItem extends ListItem {
   recurring?: RecurringItemMeta;
+  actions?: ActionItem[];
 }
 
 interface ThreadComment {
@@ -186,7 +194,12 @@ export default function ListView(): JSX.Element {
   const [listMode, setListMode] = useState<'one_off' | 'recurring'>('one_off');
   const [items, setItems] = useState<ListItem[]>([]);
   const [recurringItems, setRecurringItems] = useState<RecurringListItem[]>([]);
-  const [recurringSummary, setRecurringSummary] = useState<{ scheduled_count: number; completed_count: number }>({
+  const [recurringSummary, setRecurringSummary] = useState<{
+    scheduled_count: number;
+    completed_count: number;
+    task_scheduled_count?: number;
+    task_completed_count?: number;
+  }>({
     scheduled_count: 0,
     completed_count: 0
   });
@@ -216,6 +229,7 @@ export default function ListView(): JSX.Element {
   const [newFieldType, setNewFieldType] = useState<ListFieldType>('status');
   const [newOptionByField, setNewOptionByField] = useState<Record<string, string>>({});
   const [settingsMenuOpen, setSettingsMenuOpen] = useState(false);
+  const [showCompletedSubtasks, setShowCompletedSubtasks] = useState(false);
   const [renameMode, setRenameMode] = useState(false);
   const [renameDraft, setRenameDraft] = useState('');
   const settingsMenuRef = useRef<HTMLDivElement | null>(null);
@@ -229,6 +243,7 @@ export default function ListView(): JSX.Element {
   const [columnPopoverPinned, setColumnPopoverPinned] = useState(true);
   const [columnPopoverOptions, setColumnPopoverOptions] = useState<ColumnOptionDraft[]>([]);
   const [draggingFieldId, setDraggingFieldId] = useState<string | null>(null);
+  const [draggingItemId, setDraggingItemId] = useState<string | null>(null);
 
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [modalTitleDraft, setModalTitleDraft] = useState('');
@@ -236,6 +251,7 @@ export default function ListView(): JSX.Element {
   const [modalStatusValue, setModalStatusValue] = useState<string | null>('pending');
   const [savingItem, setSavingItem] = useState(false);
   const [itemModalSettingsOpen, setItemModalSettingsOpen] = useState(false);
+  const [itemMoveMenuOpen, setItemMoveMenuOpen] = useState(false);
   const [moveTargetListId, setMoveTargetListId] = useState('');
   const [peerLists, setPeerLists] = useState<Array<{ id: string; name: string }>>([]);
   const [movingItem, setMovingItem] = useState(false);
@@ -271,7 +287,9 @@ export default function ListView(): JSX.Element {
       try {
         const data = await focalBoardService.getListDetail(listId);
         setList(data);
-        setListMode((data.mode as 'one_off' | 'recurring') || 'one_off');
+        // Stage 1 model shift: lists are always item containers in UI.
+        // Recurrence remains task-level behavior, not list-mode behavior.
+        setListMode('one_off');
         setItems((data.items || []).map((item: any) => ({ ...item, actions: item.actions || [] })));
         setRecurringItems([]);
         setRecurringSummary({ scheduled_count: 0, completed_count: 0 });
@@ -352,6 +370,7 @@ export default function ListView(): JSX.Element {
     setModalDescriptionDraft(selectedItem.description || '');
     setModalStatusValue(selectedItem.status_id ?? selectedItem.status ?? 'pending');
     setItemModalSettingsOpen(false);
+    setItemMoveMenuOpen(false);
     setMoveTargetListId('');
   }, [selectedItem]);
 
@@ -611,6 +630,66 @@ export default function ListView(): JSX.Element {
     setItems((prev) => prev.map((entry) => (entry.id === itemId ? { ...entry, ...patch } : entry)));
   };
 
+  const handleDropItem = useCallback(
+    async (targetItemId: string, targetStatus: LaneStatus, sourceItemId?: string): Promise<void> => {
+      const activeSourceId = sourceItemId || draggingItemId;
+      if (!activeSourceId || activeSourceId === targetItemId) return;
+
+      const movingItem = items.find((entry) => entry.id === activeSourceId);
+      if (!movingItem) return;
+
+      const nextItems = [...items];
+      const sourceIndex = nextItems.findIndex((entry) => entry.id === activeSourceId);
+      const targetIndexBeforeRemoval = nextItems.findIndex((entry) => entry.id === targetItemId);
+      if (sourceIndex < 0 || targetIndexBeforeRemoval < 0) return;
+
+      const [moved] = nextItems.splice(sourceIndex, 1);
+      const targetIndex = nextItems.findIndex((entry) => entry.id === targetItemId);
+      if (targetIndex < 0) return;
+
+      nextItems.splice(targetIndex, 0, {
+        ...moved,
+        status: targetStatus.key || 'pending',
+        status_id: targetStatus.id ?? null
+      });
+      setItems(nextItems);
+      setDraggingItemId(null);
+
+      const byGroup = new Map<string, ListItem[]>();
+      for (const entry of nextItems) {
+        const groupKey = entry.status_id ?? entry.status ?? 'pending';
+        const group = byGroup.get(groupKey) || [];
+        group.push(entry);
+        byGroup.set(groupKey, group);
+      }
+
+      const updates: Array<{ id: string; payload: Record<string, any> }> = [];
+      for (const [, groupItems] of byGroup) {
+        groupItems.forEach((entry, index) => {
+          updates.push({
+            id: entry.id,
+            payload: {
+              order_num: index,
+              status: entry.status || 'pending',
+              status_id: entry.status_id ?? null
+            }
+          });
+        });
+      }
+
+      try {
+        await Promise.all(updates.map((entry) => focalBoardService.updateItem(entry.id, entry.payload)));
+      } catch (err: any) {
+        setError(err?.message || 'Failed to reorder items');
+        if (listId) {
+          const refreshed = await focalBoardService.getListDetail(listId);
+          setItems((refreshed.items || []).map((entry: any) => ({ ...entry, actions: entry.actions || [] })));
+        }
+      }
+    },
+    [draggingItemId, items, listId]
+  );
+
   const handleModeChange = async (mode: 'one_off' | 'recurring'): Promise<void> => {
     if (!list?.id || mode === listMode) {
       return;
@@ -631,8 +710,9 @@ export default function ListView(): JSX.Element {
       return;
     }
     const target = item.recurring.current_or_next_occurrence;
-    const currentlyCompleted = item.recurring.completed_count > 0 &&
-      item.recurring.last_completed?.scheduled_start === target.scheduled_start;
+    const currentlyCompleted =
+      item.recurring.active_completion_state === 'completed' ||
+      (item.recurring.completed_count > 0 && item.recurring.last_completed?.scheduled_start === target.scheduled_start);
 
     try {
       await focalBoardService.setOccurrenceCompletion({
@@ -647,6 +727,28 @@ export default function ListView(): JSX.Element {
       await loadRecurringViewData();
     } catch (err: any) {
       setRecurringError(err?.message || 'Failed to update occurrence');
+    }
+  };
+
+  const handleToggleRecurringTaskOccurrence = async (item: RecurringListItem, action: ActionItem): Promise<void> => {
+    if (!user || !action.recurring?.current_or_next_occurrence) {
+      return;
+    }
+    const target = action.recurring.current_or_next_occurrence;
+    const currentlyCompleted = action.recurring.active_completion_state === 'completed';
+
+    try {
+      await focalBoardService.setTaskOccurrenceCompletion({
+        actionId: action.id,
+        timeBlockId: target.time_block_id,
+        scheduledStartUtc: target.scheduled_start,
+        scheduledEndUtc: target.scheduled_end,
+        checked: !currentlyCompleted,
+        userId: user.id
+      });
+      await loadRecurringViewData();
+    } catch (err: any) {
+      setRecurringError(err?.message || 'Failed to update task occurrence');
     }
   };
 
@@ -812,6 +914,7 @@ export default function ListView(): JSX.Element {
     setSelectedActionForThreadId(null);
     setActiveCommentScope(null);
     setItemModalSettingsOpen(false);
+    setItemMoveMenuOpen(false);
     setMoveTargetListId('');
   };
 
@@ -878,11 +981,12 @@ export default function ListView(): JSX.Element {
     };
   }, [modalDescriptionDraft, selectedItem]);
 
-  const handleMoveItemToList = async (): Promise<void> => {
-    if (!selectedItem || !moveTargetListId) return;
+  const handleMoveItemToList = async (targetListIdArg?: string): Promise<void> => {
+    const targetListId = targetListIdArg || moveTargetListId;
+    if (!selectedItem || !targetListId) return;
     setMovingItem(true);
     try {
-      await focalBoardService.updateItem(selectedItem.id, { lane_id: moveTargetListId });
+      await focalBoardService.updateItem(selectedItem.id, { lane_id: targetListId });
       setItems((prev) => prev.filter((entry) => entry.id !== selectedItem.id));
       closeItemModal();
     } catch (err: any) {
@@ -1848,7 +1952,7 @@ export default function ListView(): JSX.Element {
   }
 
   const itemTerm = list.item_label || 'Items';
-  const actionTerm = list.action_label || 'Actions';
+  const actionTerm = list.action_label || 'Tasks';
   const oneOffRowTemplate = pinnedFields.length
     ? `auto auto minmax(140px,1fr) repeat(${pinnedFields.length}, minmax(120px, 1fr))`
     : 'auto auto minmax(140px, 1fr)';
@@ -1897,20 +2001,36 @@ export default function ListView(): JSX.Element {
           >
             <GearSix size={18} weight="regular" />
           </button>
-          {settingsMenuOpen && (
-            <div className="list-settings-menu">
-              <button type="button" onClick={() => void handleAnalyze()} disabled={analyzing}>
-                <Atom size={13} weight="fill" />
-                {analyzing ? 'Analyzing...' : 'Analyze'}
-              </button>
-              <button type="button" onClick={() => void handleModeChange(listMode === 'one_off' ? 'recurring' : 'one_off')}>
-                {listMode === 'one_off' ? 'Switch to recurring' : 'Switch to one-off'}
-              </button>
-              <button type="button" className="danger" onClick={() => void handleDeleteList()}>
-                Delete list
-              </button>
-            </div>
-          )}
+          <div className={`list-settings-menu ${settingsMenuOpen ? 'open' : ''}`.trim()}>
+            <button
+              type="button"
+              className="list-settings-icon-btn"
+              onClick={() => void handleAnalyze()}
+              disabled={analyzing}
+              aria-label={analyzing ? 'Analyzing list' : 'Analyze list'}
+              title={analyzing ? 'Analyzing list' : 'Analyze list'}
+            >
+              <img className="delta-ai-button-icon" src="/Delta-AI-Button.png" alt="" aria-hidden="true" width={14} height={14} />
+            </button>
+            <button
+              type="button"
+              className="list-settings-icon-btn"
+              onClick={() => setShowCompletedSubtasks((prev) => !prev)}
+              aria-label={showCompletedSubtasks ? 'Hide completed tasks' : 'Show completed tasks'}
+              title={showCompletedSubtasks ? 'Hide completed tasks' : 'Show completed tasks'}
+            >
+              {showCompletedSubtasks ? <EyeOff size={16} /> : <Eye size={16} />}
+            </button>
+            <button
+              type="button"
+              className="list-settings-icon-btn danger"
+              onClick={() => void handleDeleteList()}
+              aria-label="Delete list"
+              title="Delete list"
+            >
+              <Trash2 size={16} />
+            </button>
+          </div>
         </div>
       </div>
 
@@ -2109,15 +2229,34 @@ export default function ListView(): JSX.Element {
                   </span>
                 </div>
                 {groupedItems.map((item) => {
-                  const actions = item.actions || [];
+                  const actions = showCompletedSubtasks
+                    ? (item.actions || [])
+                    : (item.actions || []).filter((action) => action.status !== 'completed');
                   const isExpanded = Boolean(expandedByItem[item.id]);
 
                   return (
                     <article className="list-item-block" key={item.id}>
                       <div
-                        className="list-item-row"
+                        className={`list-item-row ${draggingItemId === item.id ? 'dragging' : ''}`.trim()}
                         style={{ gridTemplateColumns: oneOffRowTemplate }}
                         onClick={() => openItemModal(item)}
+                        draggable
+                        onDragStart={(event) => {
+                          setDraggingItemId(item.id);
+                          event.dataTransfer.effectAllowed = 'move';
+                          event.dataTransfer.setData('text/plain', item.id);
+                        }}
+                        onDragEnd={() => setDraggingItemId(null)}
+                        onDragOver={(event) => {
+                          event.preventDefault();
+                          event.dataTransfer.dropEffect = 'move';
+                        }}
+                        onDrop={(event) => {
+                          event.preventDefault();
+                          const sourceId = event.dataTransfer.getData('text/plain') || draggingItemId;
+                          if (!sourceId) return;
+                          void handleDropItem(item.id, status, sourceId);
+                        }}
                       >
                         <button
                           type="button"
@@ -2252,7 +2391,8 @@ export default function ListView(): JSX.Element {
           <header className="list-recurring-head">
             <h2>Recurring View</h2>
             <span>
-              This week: {recurringSummary.completed_count}/{recurringSummary.scheduled_count}
+              Tasks this week: {(recurringSummary.task_completed_count ?? recurringSummary.completed_count)}/
+              {(recurringSummary.task_scheduled_count ?? recurringSummary.scheduled_count)}
             </span>
           </header>
           {recurringLoading && <p className="list-recurring-note">Loading recurring schedule...</p>}
@@ -2269,8 +2409,12 @@ export default function ListView(): JSX.Element {
                   activeOccurrence &&
                     item.recurring?.last_completed?.scheduled_start === activeOccurrence.scheduled_start
                 );
-                const actions = item.actions || [];
+                const actions = showCompletedSubtasks
+                  ? (item.actions || [])
+                  : (item.actions || []).filter((action) => action.status !== 'completed');
                 const isExpanded = Boolean(expandedByItem[item.id]);
+                const activeTaskTotal = item.recurring?.active_task_total_count ?? 0;
+                const activeTaskCompleted = item.recurring?.active_task_completed_count ?? 0;
                 return (
                   <article className="list-item-block recurring-item-block" key={`rec-${item.id}`}>
                     <div
@@ -2300,7 +2444,14 @@ export default function ListView(): JSX.Element {
                       >
                         {isChecked ? 'Completed' : 'Mark done'}
                       </button>
-                      <span className="list-item-title">{item.title}</span>
+                      <span className="list-item-title recurring-title-with-progress">
+                        <span>{item.title}</span>
+                        {activeTaskTotal > 0 && (
+                          <span className="list-item-task-progress">
+                            {activeTaskCompleted}/{activeTaskTotal} tasks completed
+                          </span>
+                        )}
+                      </span>
                       {pinnedFields.map((field) => (
                         <span key={`rec-${item.id}-${field.id}`} className="list-item-field-cell">
                           {renderPinnedFieldCell(item, field)}
@@ -2310,7 +2461,10 @@ export default function ListView(): JSX.Element {
                         <span>Next: {formatOccurrenceTime(item.recurring?.next_occurrence?.scheduled_start)}</span>
                         <span>Last: {formatOccurrenceTime(item.recurring?.last_completed?.completed_at || item.recurring?.last_completed?.scheduled_start)}</span>
                         <span>Streak: {item.recurring?.streak || 0}</span>
-                        <span>This week: {item.recurring?.completed_count || 0}/{item.recurring?.scheduled_count || 0}</span>
+                        <span>
+                          Tasks this week: {(item.recurring?.task_completed_count ?? item.recurring?.completed_count ?? 0)}/
+                          {(item.recurring?.task_scheduled_count ?? item.recurring?.scheduled_count ?? 0)}
+                        </span>
                       </span>
                     </div>
 
@@ -2318,6 +2472,17 @@ export default function ListView(): JSX.Element {
                       <div className="list-item-actions">
                         {actions.map((action) => (
                           <div className="list-action-row" key={action.id}>
+                            <button
+                              type="button"
+                              className={`list-recurring-check ${action.recurring?.active_completion_state === 'completed' ? 'checked' : ''}`.trim()}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void handleToggleRecurringTaskOccurrence(item, action);
+                              }}
+                              disabled={!action.recurring?.current_or_next_occurrence}
+                            >
+                              {action.recurring?.active_completion_state === 'completed' ? 'Done' : 'Do'}
+                            </button>
                             <StatusSelect
                               statuses={statuses}
                               value={action.status}
@@ -2516,32 +2681,54 @@ export default function ListView(): JSX.Element {
                     <button
                       type="button"
                       className="list-item-settings-btn"
-                      onClick={() => setItemModalSettingsOpen((prev) => !prev)}
+                      onClick={() => {
+                        setItemModalSettingsOpen((prev) => !prev);
+                        setItemMoveMenuOpen(false);
+                      }}
                       aria-label="Item settings"
                     >
                       <GearSix size={16} weight="regular" />
                     </button>
                     <div className={`list-item-settings-slideout ${itemModalSettingsOpen ? 'open' : ''}`.trim()}>
-                      <div className="list-item-settings-group">
-                        <span>Move to list</span>
-                        <select value={moveTargetListId} onChange={(event) => setMoveTargetListId(event.target.value)}>
-                          <option value="">Choose list</option>
-                          {peerLists.map((entry) => (
-                            <option key={entry.id} value={entry.id}>
-                              {entry.name}
-                            </option>
-                          ))}
-                        </select>
-                        <button type="button" onClick={() => void handleMoveItemToList()} disabled={!moveTargetListId || movingItem}>
-                          {movingItem ? 'Moving…' : 'Move'}
+                      <button
+                        type="button"
+                        className="list-item-settings-icon-btn"
+                        onClick={() => setItemMoveMenuOpen((prev) => !prev)}
+                        aria-label="Move item"
+                        title="Move item"
+                      >
+                        <ArrowRightLeft size={16} />
+                      </button>
+                      <button
+                        type="button"
+                        className="list-item-settings-icon-btn danger"
+                        onClick={() => void handleDeleteItemFromModal()}
+                        disabled={deletingItem}
+                        aria-label={deletingItem ? 'Deleting item' : 'Delete item'}
+                        title={deletingItem ? 'Deleting item' : 'Delete item'}
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                      <button type="button" className="list-item-settings-icon-btn" disabled aria-label="Merge item (soon)" title="Merge item (soon)">
+                        <GitMerge size={16} />
+                      </button>
+                    </div>
+                    <div className={`list-item-move-menu ${itemMoveMenuOpen ? 'open' : ''}`.trim()}>
+                      {peerLists.length === 0 && <p>No lists available</p>}
+                      {peerLists.map((entry) => (
+                        <button
+                          key={entry.id}
+                          type="button"
+                          onClick={() => {
+                            setMoveTargetListId(entry.id);
+                            setItemMoveMenuOpen(false);
+                            void handleMoveItemToList(entry.id);
+                          }}
+                          disabled={movingItem}
+                        >
+                          {entry.name}
                         </button>
-                      </div>
-                      <button type="button" className="danger" onClick={() => void handleDeleteItemFromModal()} disabled={deletingItem}>
-                        {deletingItem ? 'Deleting…' : 'Delete'}
-                      </button>
-                      <button type="button" disabled>
-                        Merge (Soon)
-                      </button>
+                      ))}
                     </div>
                   </div>
                   <button type="button" onClick={() => void handleSaveItemFromModal()} disabled={savingItem}>

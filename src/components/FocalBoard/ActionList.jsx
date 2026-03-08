@@ -6,7 +6,7 @@ const ActionList = ({
   actions,
   itemId,
   userId,
-  actionLabel = 'Actions',
+  actionLabel = 'Tasks',
   onCreateAction,
   onUpdateAction,
   laneStatuses = [],

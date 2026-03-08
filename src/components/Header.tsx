@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { Calendar, Search, X, ArrowDown, ChevronDown } from 'lucide-react';
-import { Atom, Microphone, PaperPlaneTilt } from '@phosphor-icons/react';
+import { Microphone, PaperPlaneTilt } from '@phosphor-icons/react';
 import type { User } from '@supabase/supabase-js';
 import type { ChatContext, ChatDebugMeta, ChatMessage, ChatProposal } from '../types/chat';
 import chatPersistence from '../services/chatPersistence';
@@ -358,7 +358,7 @@ export default function Header({
       } else if (proposal.type === 'create_focal') {
         await focalBoardService.createFocal(user.id, proposal.title);
       } else if (proposal.type === 'create_list') {
-        await focalBoardService.createLane(proposal.focal_id, user.id, proposal.title, 'Items', 'Actions');
+        await focalBoardService.createLane(proposal.focal_id, user.id, proposal.title, 'Items', 'Tasks');
       } else if (proposal.type === 'create_item') {
         await focalBoardService.createItem(proposal.list_id, user.id, proposal.title);
       } else if (proposal.type === 'create_action') {
@@ -411,18 +411,6 @@ export default function Header({
           />
         </div>
         
-        {/* Ask Delta button - right side */}
-        <button 
-          className={`ask-delta-button ${isAiOpen ? 'active' : ''}`.trim()} 
-          onClick={onToggleAi}
-          data-user={user?.id ?? 'anonymous'}
-          aria-expanded={isAiOpen}
-          aria-controls="delta-ai-panel"
-          aria-label="Ask Delta"
-        >
-          <Atom className="ai-atom-icon" weight="fill" />
-          <span>Delta AI</span>
-        </button>
       </div>
       
       {/* AI Chat Panel */}
@@ -431,7 +419,7 @@ export default function Header({
           <div className="delta-ai-panel-inner">
             <div className="delta-ai-panel-header">
               <div className="delta-ai-panel-title">
-              <Atom className="ai-atom-icon" weight="fill" />
+              <img className="ai-atom-icon delta-ai-button-icon" src="/Delta-AI-Button.png" alt="" aria-hidden="true" />
               <span>Delta AI</span>
               </div>
               <button className="delta-ai-close-btn" onClick={onCloseAi} aria-label="Close Delta panel">

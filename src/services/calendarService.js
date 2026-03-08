@@ -32,6 +32,9 @@ const isMissingTimeBlockContentRulesTableError = (error) =>
 const isMissingItemOccurrencesTableError = (error) =>
   isMissingTableOrSchemaCacheError(error, 'item_occurrences');
 
+const isMissingActionOccurrencesTableError = (error) =>
+  isMissingTableOrSchemaCacheError(error, 'action_occurrences');
+
 const WEEKDAY_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 
 const parseAttachTag = (tag) => {
@@ -529,11 +532,101 @@ export const calendarService = {
     if (!Array.isArray(timeBlockIds) || timeBlockIds.length === 0 || !Array.isArray(itemIds) || itemIds.length === 0) {
       return [];
     }
-    let query = supabase
+    const { data: actions, error: actionsError } = await supabase
+      .from('actions')
+      .select('id,item_id')
+      .in('item_id', itemIds);
+    if (actionsError && !isMissingTableOrSchemaCacheError(actionsError, 'actions')) {
+      throw actionsError;
+    }
+
+    const actionIdsByItem = new Map();
+    for (const row of actions || []) {
+      const list = actionIdsByItem.get(row.item_id) || [];
+      list.push(row.id);
+      actionIdsByItem.set(row.item_id, list);
+    }
+
+    const itemsWithActions = new Set(actionIdsByItem.keys());
+    const actionIds = [...new Set((actions || []).map((row) => row.id).filter(Boolean))];
+    const actionToItemId = new Map((actions || []).map((row) => [row.id, row.item_id]));
+
+    const taskCompletedRows = [];
+    if (actionIds.length > 0) {
+      let actionQuery = supabase
+        .from('action_occurrences')
+        .select('action_id,time_block_id,scheduled_start,completion_state')
+        .in('time_block_id', timeBlockIds)
+        .in('action_id', actionIds);
+      if (rangeStartUtc) {
+        actionQuery = actionQuery.gte('scheduled_start', rangeStartUtc);
+      }
+      if (rangeEndUtc) {
+        actionQuery = actionQuery.lte('scheduled_start', rangeEndUtc);
+      }
+      const { data: actionRows, error: actionRowsError } = await actionQuery;
+      if (actionRowsError && !isMissingActionOccurrencesTableError(actionRowsError)) {
+        throw actionRowsError;
+      }
+      if (!actionRowsError) {
+        const seen = new Set();
+        for (const row of actionRows || []) {
+          if (row.completion_state !== 'completed') continue;
+          const itemId = actionToItemId.get(row.action_id);
+          if (!itemId) continue;
+          const scheduledStart = new Date(row.scheduled_start).toISOString();
+          const key = `${itemId}|${row.time_block_id}|${scheduledStart}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          taskCompletedRows.push({
+            item_id: itemId,
+            time_block_id: row.time_block_id,
+            scheduled_start: scheduledStart,
+            scheduled_end: null,
+            completion_state: 'completed',
+            completed_at: null
+          });
+        }
+      }
+    }
+
+    let itemQuery = supabase
       .from('item_occurrences')
       .select('item_id,time_block_id,scheduled_start,scheduled_end,completion_state,completed_at')
       .in('time_block_id', timeBlockIds)
       .in('item_id', itemIds);
+    if (rangeStartUtc) {
+      itemQuery = itemQuery.gte('scheduled_start', rangeStartUtc);
+    }
+    if (rangeEndUtc) {
+      itemQuery = itemQuery.lte('scheduled_start', rangeEndUtc);
+    }
+    const { data: itemRows, error: itemRowsError } = await itemQuery;
+    if (itemRowsError && !isMissingItemOccurrencesTableError(itemRowsError)) {
+      throw itemRowsError;
+    }
+
+    const mergedRows = [...taskCompletedRows];
+
+    for (const row of itemRows || []) {
+      if (itemsWithActions.has(row.item_id)) {
+        continue;
+      }
+      mergedRows.push(row);
+    }
+
+    return mergedRows;
+  },
+
+  async getOccurrenceTaskCompletionRows({ timeBlockIds, rangeStartUtc, rangeEndUtc, actionIds }) {
+    if (!Array.isArray(timeBlockIds) || timeBlockIds.length === 0 || !Array.isArray(actionIds) || actionIds.length === 0) {
+      return [];
+    }
+    let query = supabase
+      .from('action_occurrences')
+      .select('action_id,time_block_id,scheduled_start,scheduled_end,completion_state,completed_at')
+      .in('time_block_id', timeBlockIds)
+      .in('action_id', actionIds);
     if (rangeStartUtc) {
       query = query.gte('scheduled_start', rangeStartUtc);
     }
@@ -542,7 +635,7 @@ export const calendarService = {
     }
     const { data, error } = await query;
     if (error) {
-      if (isMissingItemOccurrencesTableError(error)) {
+      if (isMissingActionOccurrencesTableError(error)) {
         return [];
       }
       throw error;
@@ -568,6 +661,25 @@ export const calendarService = {
     });
   },
 
+  async getActionsForItems({ itemIds }) {
+    if (!Array.isArray(itemIds) || itemIds.length === 0) {
+      return [];
+    }
+    const { data, error } = await supabase
+      .from('actions')
+      .select('id,item_id,title,order_num')
+      .in('item_id', itemIds)
+      .order('order_num', { ascending: true });
+
+    if (error) {
+      if (isMissingTableOrSchemaCacheError(error, 'actions')) {
+        return [];
+      }
+      throw error;
+    }
+    return data || [];
+  },
+
   async setOccurrenceItemCompletion({
     userId,
     itemId,
@@ -582,6 +694,40 @@ export const calendarService = {
     const resolvedUserId = userId || (await getAuthedUserId());
     const normalizedStart = new Date(scheduledStartUtc).toISOString();
     const normalizedEnd = new Date(scheduledEndUtc).toISOString();
+
+    const { data: actions, error: actionsError } = await supabase
+      .from('actions')
+      .select('id')
+      .eq('item_id', itemId);
+    if (actionsError && !isMissingTableOrSchemaCacheError(actionsError, 'actions')) {
+      throw actionsError;
+    }
+
+    if ((actions || []).length > 0) {
+      const nowIso = new Date().toISOString();
+      const actionRows = (actions || []).map((action) => ({
+        user_id: resolvedUserId,
+        action_id: action.id,
+        time_block_id: timeBlockId,
+        scheduled_start: normalizedStart,
+        scheduled_end: normalizedEnd,
+        completion_state: checked ? 'completed' : 'pending',
+        completed_at: checked ? nowIso : null,
+        updated_at: nowIso
+      }));
+
+      const { data: actionData, error: actionError } = await supabase
+        .from('action_occurrences')
+        .upsert(actionRows, { onConflict: 'action_id,time_block_id,scheduled_start' })
+        .select('*');
+
+      if (!actionError) {
+        return (actionData || [])[0] || null;
+      }
+      if (!isMissingActionOccurrencesTableError(actionError)) {
+        throw actionError;
+      }
+    }
 
     const row = {
       user_id: resolvedUserId,
@@ -609,6 +755,47 @@ export const calendarService = {
     return data;
   },
 
+  async setOccurrenceTaskCompletion({
+    userId,
+    actionId,
+    timeBlockId,
+    scheduledStartUtc,
+    scheduledEndUtc,
+    checked
+  }) {
+    if (!actionId || !timeBlockId || !scheduledStartUtc || !scheduledEndUtc) {
+      throw new Error('actionId, timeBlockId, scheduledStartUtc, and scheduledEndUtc are required');
+    }
+    const resolvedUserId = userId || (await getAuthedUserId());
+    const normalizedStart = new Date(scheduledStartUtc).toISOString();
+    const normalizedEnd = new Date(scheduledEndUtc).toISOString();
+
+    const row = {
+      user_id: resolvedUserId,
+      action_id: actionId,
+      time_block_id: timeBlockId,
+      scheduled_start: normalizedStart,
+      scheduled_end: normalizedEnd,
+      completion_state: checked ? 'completed' : 'pending',
+      completed_at: checked ? new Date().toISOString() : null,
+      updated_at: new Date().toISOString()
+    };
+
+    const { data, error } = await supabase
+      .from('action_occurrences')
+      .upsert(row, { onConflict: 'action_id,time_block_id,scheduled_start' })
+      .select('*')
+      .single();
+
+    if (error) {
+      if (isMissingActionOccurrencesTableError(error)) {
+        throw new Error('Action occurrences table does not exist. Run the latest migration.');
+      }
+      throw error;
+    }
+    return data;
+  },
+
   async getOccurrenceItemCompletionStates({ timeBlockId, scheduledStartUtc, itemIds }) {
     if (!timeBlockId || !scheduledStartUtc || !Array.isArray(itemIds)) {
       throw new Error('timeBlockId, scheduledStartUtc, and itemIds are required');
@@ -617,26 +804,98 @@ export const calendarService = {
       return {};
     }
     const normalizedStart = new Date(scheduledStartUtc).toISOString();
+
+    const { data: actions, error: actionsError } = await supabase
+      .from('actions')
+      .select('id,item_id')
+      .in('item_id', itemIds);
+    if (actionsError && !isMissingTableOrSchemaCacheError(actionsError, 'actions')) {
+      throw actionsError;
+    }
+
+    const actionIds = [...new Set((actions || []).map((row) => row.id).filter(Boolean))];
+    const actionToItemId = new Map((actions || []).map((row) => [row.id, row.item_id]));
+    const itemsWithActions = new Set((actions || []).map((row) => row.item_id));
+
+    const stateMap = {};
+    for (const itemId of itemIds) {
+      stateMap[itemId] = 'pending';
+    }
+
+    if (actionIds.length > 0) {
+      const { data: actionRows, error: actionRowsError } = await supabase
+        .from('action_occurrences')
+        .select('action_id,completion_state')
+        .eq('time_block_id', timeBlockId)
+        .eq('scheduled_start', normalizedStart)
+        .in('action_id', actionIds);
+
+      if (actionRowsError && !isMissingActionOccurrencesTableError(actionRowsError)) {
+        throw actionRowsError;
+      }
+      if (!actionRowsError) {
+        for (const row of actionRows || []) {
+          const itemId = actionToItemId.get(row.action_id);
+          if (!itemId) continue;
+          if (row.completion_state === 'completed') {
+            stateMap[itemId] = 'completed';
+          }
+        }
+      }
+    }
+
+    const itemIdsWithoutActions = itemIds.filter((itemId) => !itemsWithActions.has(itemId));
+    if (itemIdsWithoutActions.length === 0) {
+      return stateMap;
+    }
+
     const { data, error } = await supabase
       .from('item_occurrences')
       .select('item_id,completion_state')
       .eq('time_block_id', timeBlockId)
       .eq('scheduled_start', normalizedStart)
-      .in('item_id', itemIds);
+      .in('item_id', itemIdsWithoutActions);
 
     if (error) {
       if (isMissingItemOccurrencesTableError(error)) {
+        return stateMap;
+      }
+      throw error;
+    }
+    for (const row of data || []) {
+      stateMap[row.item_id] = row.completion_state || 'pending';
+    }
+    return stateMap;
+  },
+
+  async getOccurrenceTaskCompletionStates({ timeBlockId, scheduledStartUtc, actionIds }) {
+    if (!timeBlockId || !scheduledStartUtc || !Array.isArray(actionIds)) {
+      throw new Error('timeBlockId, scheduledStartUtc, and actionIds are required');
+    }
+    if (actionIds.length === 0) {
+      return {};
+    }
+    const normalizedStart = new Date(scheduledStartUtc).toISOString();
+    const { data, error } = await supabase
+      .from('action_occurrences')
+      .select('action_id,completion_state')
+      .eq('time_block_id', timeBlockId)
+      .eq('scheduled_start', normalizedStart)
+      .in('action_id', actionIds);
+
+    if (error) {
+      if (isMissingActionOccurrencesTableError(error)) {
         return {};
       }
       throw error;
     }
 
     const stateMap = {};
-    for (const itemId of itemIds) {
-      stateMap[itemId] = 'pending';
+    for (const actionId of actionIds) {
+      stateMap[actionId] = 'pending';
     }
     for (const row of data || []) {
-      stateMap[row.item_id] = row.completion_state || 'pending';
+      stateMap[row.action_id] = row.completion_state || 'pending';
     }
     return stateMap;
   },
