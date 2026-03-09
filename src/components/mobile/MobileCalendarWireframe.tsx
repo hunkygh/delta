@@ -242,14 +242,19 @@ export default function MobileCalendarWireframe(): JSX.Element {
   const [captureConfirmation, setCaptureConfirmation] = useState<{
     open: boolean;
     text: string;
+    aiText: string;
+    proposals: ChatProposal[];
     routing: boolean;
     error: string | null;
   }>({
     open: false,
     text: '',
+    aiText: '',
+    proposals: [],
     routing: false,
     error: null
   });
+  const [captureDismissedProposalIds, setCaptureDismissedProposalIds] = useState<Record<string, boolean>>({});
   const [voiceTranscript, setVoiceTranscript] = useState('');
   const [voiceRecording, setVoiceRecording] = useState(false);
   const [voiceBars, setVoiceBars] = useState<number[]>([8, 14, 10, 16, 11, 13, 9, 15]);
@@ -882,16 +887,13 @@ export default function MobileCalendarWireframe(): JSX.Element {
   }, [drawer.open, drawer.mode, activeDrawerItem?.id, activeDrawerItem?.listId]);
 
   useEffect(() => {
-    if (view !== 'calendar' || activeNav !== 'calendar' || !currentBlockId) return;
+    if (view !== 'calendar' || activeNav !== 'calendar' || !isTodayView) return;
     const container = timelineScrollRef.current;
     if (!container) return;
-    const currentBlock = blocks.find((block) => block.id === currentBlockId);
-    if (!currentBlock) return;
-    const blockTop = (currentBlock.startMin - DAY_START_MIN) * PX_PER_MIN;
-    const blockGap = 8;
-    const target = Math.max(0, blockTop + blockGap / 2);
+    // Keep current-time line around ~80% viewport height on first load/view return.
+    const target = Math.max(0, nowTop - container.clientHeight * 0.8);
     container.scrollTo({ top: target, behavior: 'smooth' });
-  }, [view, activeNav, currentBlockId, blocks]);
+  }, [view, activeNav, isTodayView, nowTop]);
 
   useEffect(() => {
     if (currentBlockId) {
@@ -942,7 +944,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
   }, [chatMessages, view]);
 
   const onTouchStart = (event: TouchEvent): void => {
-    if (timelineDraftGestureRef.current.touchId != null) return;
+    if (timelineDraftGestureRef.current.active) return;
     if (addSheet.open || drawer.open) return;
     const touch = event.touches[0];
     setTouchStartX(touch.clientX);
@@ -959,7 +961,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
   };
 
   const onTouchMove = (event: TouchEvent): void => {
-    if (timelineDraftGestureRef.current.touchId != null) return;
+    if (timelineDraftGestureRef.current.active) return;
     if (touchStartX == null || touchStartY == null || addSheet.open || drawer.open) return;
     const touch = event.touches[0];
     const dx = touch.clientX - touchStartX;
@@ -998,7 +1000,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
   };
 
   const onTouchEnd = (event: TouchEvent): void => {
-    if (timelineDraftGestureRef.current.touchId != null) return;
+    if (timelineDraftGestureRef.current.active) return;
     if (touchStartX == null || touchStartY == null) return;
     const touch = event.changedTouches[0];
     const dx = touch.clientX - touchStartX;
@@ -2311,16 +2313,21 @@ export default function MobileCalendarWireframe(): JSX.Element {
     stopVoiceAnimation();
     setCaptureMode('none');
     await persistCaptureToDocs(text, 'quick_text');
-    setCaptureConfirmation({ open: true, text, routing: false, error: null });
-    if (captureConfirmTimerRef.current) window.clearTimeout(captureConfirmTimerRef.current);
-    captureConfirmTimerRef.current = window.setTimeout(() => {
-      setCaptureConfirmation((prev) => ({ ...prev, open: false }));
-    }, 3200);
+    setCaptureDismissedProposalIds({});
+    setCaptureConfirmation({
+      open: true,
+      text,
+      aiText: '',
+      proposals: [],
+      routing: true,
+      error: null
+    });
+    void routeCaptureNow(text);
   };
 
-  const routeCaptureNow = async (): Promise<void> => {
-    const text = captureConfirmation.text.trim();
-    if (!text || chatSending || captureConfirmation.routing) return;
+  const routeCaptureNow = async (captureText?: string): Promise<void> => {
+    const text = (captureText ?? captureConfirmation.text).trim();
+    if (!text || chatSending) return;
     setCaptureConfirmation((prev) => ({ ...prev, routing: true, error: null }));
     setChatSending(true);
     try {
@@ -2348,49 +2355,30 @@ export default function MobileCalendarWireframe(): JSX.Element {
         proposals: reply.proposals || []
       };
       setChatMessages((prev) => [...prev, assistantMessage]);
-
-      const proposals = reply.proposals || [];
-      let appliedCount = 0;
-      for (const proposal of proposals) {
-        try {
-          await applyMobileProposalMutation(proposal, null);
-          appliedCount += 1;
-          setApprovedMobileProposalIds((prev) => ({ ...prev, [proposal.id]: true }));
-        } catch {
-          // Keep routing robust: continue applying remaining proposals
-        }
-      }
-
-      setView('ai');
-      if (appliedCount > 0) {
-        setChatMessages((prev) => [
-          ...prev,
-          {
-            id: makeId(),
-            role: 'assistant',
-            content: `Routed and applied ${appliedCount} action${appliedCount === 1 ? '' : 's'}.`,
-            created_at: Date.now()
-          }
-        ]);
-      }
-      setCaptureConfirmation({ open: false, text: '', routing: false, error: null });
+      setCaptureConfirmation((prev) => ({
+        ...prev,
+        open: true,
+        text,
+        aiText: reply.text || 'No response generated.',
+        proposals: reply.proposals || [],
+        routing: false,
+        error: null
+      }));
     } catch {
       setCaptureConfirmation((prev) => ({
         ...prev,
         routing: false,
-        error: 'Routing failed. You can review this in AI.'
+        error: 'AI analysis failed. You can review this in AI.'
       }));
     } finally {
       setChatSending(false);
     }
   };
 
-  useEffect(() => {
-    return () => {
-      if (captureConfirmTimerRef.current) {
-        window.clearTimeout(captureConfirmTimerRef.current);
-      }
-    };
+  useEffect(() => () => {
+    if (captureConfirmTimerRef.current) {
+      window.clearTimeout(captureConfirmTimerRef.current);
+    }
   }, []);
 
   const renderCalendarHeader = (): JSX.Element => (
@@ -3169,54 +3157,51 @@ export default function MobileCalendarWireframe(): JSX.Element {
                   <Type size={16} />
                   <span>Capture</span>
                 </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setQuickPanelOpen(false);
+                    setView('ai');
+                  }}
+                >
+                  <img src="/Delta-AI-Button.png" alt="" aria-hidden="true" />
+                  <span>Delta AI</span>
+                </button>
               </div>
             )}
             {captureMode === 'text' && (
-              <div className="mobile-text-capture-bar unified">
-                <div className="mobile-capture-mode-tabs">
-                  <button
-                    type="button"
-                    className={captureInputMode === 'text' ? 'active' : ''}
-                    onClick={() => {
-                      stopVoiceAnimation();
-                      setCaptureInputMode('text');
-                      window.setTimeout(() => textCaptureRef.current?.focus(), 30);
-                    }}
-                  >
-                    Text
-                  </button>
-                  <button
-                    type="button"
-                    className={captureInputMode === 'voice' ? 'active' : ''}
-                    onClick={() => {
-                      setCaptureInputMode('voice');
-                      void startVoiceCapture();
-                    }}
-                  >
-                    Voice
-                  </button>
+              <div className={`mobile-text-capture-bar ${captureInputMode === 'voice' ? 'voice' : 'text'}`.trim()}>
+                <div className={`mobile-capture-input-shell ${captureInputMode === 'voice' ? 'voice' : 'text'}`.trim()}>
+                  {captureInputMode === 'voice' ? (
+                    <>
+                      <div className="mobile-capture-voice-gradient" aria-hidden="true" />
+                      <div className="mobile-capture-voice-content">
+                        <span className={`mobile-capture-voice-text ${voiceTranscript.trim() ? '' : 'placeholder'}`.trim()}>
+                          {voiceTranscript || (voiceRecording ? 'Listening…' : 'Tap voice capture to start')}
+                        </span>
+                        <div className="mobile-capture-voice-bars" aria-hidden="true">
+                          {voiceBars.map((height, idx) => (
+                            <span key={`bar-${idx}`} style={{ height: `${height}px` }} />
+                          ))}
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <textarea
+                      ref={textCaptureRef}
+                      rows={1}
+                      value={textCaptureDraft}
+                      readOnly={false}
+                      placeholder="Capture quickly…"
+                      onChange={(event) => {
+                        setTextCaptureDraft(event.target.value);
+                        const target = event.target;
+                        target.style.height = '0px';
+                        target.style.height = `${Math.min(target.scrollHeight, 148)}px`;
+                      }}
+                    />
+                  )}
                 </div>
-                <textarea
-                  ref={textCaptureRef}
-                  rows={1}
-                  value={captureInputMode === 'voice' ? voiceTranscript : textCaptureDraft}
-                  readOnly={captureInputMode === 'voice'}
-                  placeholder={captureInputMode === 'voice' ? 'Listening…' : 'Capture quickly…'}
-                  onChange={(event) => {
-                    if (captureInputMode === 'voice') return;
-                    setTextCaptureDraft(event.target.value);
-                    const target = event.target;
-                    target.style.height = '0px';
-                    target.style.height = `${Math.min(target.scrollHeight, 148)}px`;
-                  }}
-                />
-                {captureInputMode === 'voice' && (
-                  <div className="mobile-voice-bars" aria-hidden="true">
-                    {voiceBars.map((height, idx) => (
-                      <span key={`bar-${idx}`} style={{ height: `${height}px` }} />
-                    ))}
-                  </div>
-                )}
                 <button
                   type="button"
                   className="mobile-capture-send"
@@ -3274,34 +3259,86 @@ export default function MobileCalendarWireframe(): JSX.Element {
           <div className="mobile-capture-confirm-copy">
             <strong>Captured to Notes</strong>
             <span>{captureConfirmation.text}</span>
+            {captureConfirmation.routing && <em>Delta is analyzing this capture…</em>}
+            {captureConfirmation.aiText && !captureConfirmation.routing && (
+              <p className="mobile-capture-confirm-ai">{captureConfirmation.aiText}</p>
+            )}
           </div>
           {captureConfirmation.error && (
             <p className="mobile-capture-confirm-error">{captureConfirmation.error}</p>
           )}
+          {!captureConfirmation.routing &&
+            captureConfirmation.proposals
+              .filter((proposal) => !captureDismissedProposalIds[proposal.id])
+              .map((proposal) => (
+                <div key={proposal.id} className="mobile-ai-proposal-card mobile-capture-proposal-card">
+                  <p>{proposal.type === 'resolve_time_conflict' ? proposal.event_title : proposal.title}</p>
+                  {(proposal.type === 'create_action' ||
+                    proposal.type === 'create_follow_up_action' ||
+                    proposal.type === 'create_time_block' ||
+                    proposal.type === 'resolve_time_conflict') && (
+                    <input
+                      type="text"
+                      className="mobile-ai-proposal-input"
+                      placeholder="Optional description"
+                      value={mobileProposalNotes[proposal.id] ?? proposal.notes ?? ''}
+                      onChange={(event) =>
+                        setMobileProposalNotes((prev) => ({ ...prev, [proposal.id]: event.target.value }))
+                      }
+                    />
+                  )}
+                  <div className="mobile-ai-proposal-actions">
+                    <button
+                      type="button"
+                      className="approve"
+                      disabled={Boolean(approvedMobileProposalIds[proposal.id]) || applyingMobileProposalId === proposal.id}
+                      onClick={() => void handleApproveMobileProposal(proposal)}
+                    >
+                      {approvedMobileProposalIds[proposal.id]
+                        ? 'Applied'
+                        : applyingMobileProposalId === proposal.id
+                          ? 'Applying…'
+                          : 'Apply'}
+                    </button>
+                    <button
+                      type="button"
+                      className="dismiss"
+                      disabled={Boolean(approvedMobileProposalIds[proposal.id]) || applyingMobileProposalId === proposal.id}
+                      onClick={() =>
+                        setCaptureDismissedProposalIds((prev) => ({ ...prev, [proposal.id]: true }))
+                      }
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              ))}
           <div className="mobile-capture-confirm-actions">
-            <button
-              type="button"
-              className="route"
-              onClick={() => void routeCaptureNow()}
-              disabled={captureConfirmation.routing || chatSending}
-            >
-              {captureConfirmation.routing ? 'Routing…' : 'Route Now'}
-            </button>
             <button
               type="button"
               className="review"
               onClick={() => {
                 setView('ai');
                 setChatDraft(captureConfirmation.text);
-                setCaptureConfirmation({ open: false, text: '', routing: false, error: null });
+                setCaptureConfirmation((prev) => ({ ...prev, open: false }));
               }}
+              disabled={captureConfirmation.routing || chatSending}
             >
               Review in AI
             </button>
             <button
               type="button"
               className="done"
-              onClick={() => setCaptureConfirmation({ open: false, text: '', routing: false, error: null })}
+              onClick={() =>
+                setCaptureConfirmation({
+                  open: false,
+                  text: '',
+                  aiText: '',
+                  proposals: [],
+                  routing: false,
+                  error: null
+                })
+              }
             >
               Done
             </button>

@@ -1738,7 +1738,7 @@
     position: absolute;
     left: 14px;
     right: 14px;
-    bottom: calc(20px + env(safe-area-inset-bottom));
+    bottom: calc(10px + env(safe-area-inset-bottom));
     display: flex;
     align-items: center;
     gap: 12px;
@@ -1804,6 +1804,12 @@
     width: 22px;
     height: 22px;
     color: var(--color-text-secondary);
+  }
+
+  .mobile-quick-panel button img {
+    width: 18px;
+    height: 18px;
+    object-fit: contain;
   }
 
   .mobile-quick-panel button span {
@@ -1962,94 +1968,96 @@
     right: 0;
     left: 0;
     bottom: 82px;
-    min-height: 66px;
-    border-radius: 24px;
-    border: 2.2px solid #d4d9e1;
-    background: rgba(247, 249, 252, 0.88);
-    box-shadow:
-      0 0 0 1px rgba(255, 255, 255, 0.65) inset,
-      0 0 24px rgba(97, 174, 233, 0.24),
-      0 8px 18px rgba(20, 26, 33, 0.14);
-    padding: 10px 54px 10px 12px;
     z-index: 16;
-    animation: mobile-capture-in 240ms cubic-bezier(0.22, 1, 0.36, 1);
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    min-height: 48px;
+    animation: mobile-capture-in 220ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .mobile-capture-input-shell {
+    position: relative;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 46px;
+    border: 1px solid #d7dde6;
+    border-radius: 14px;
+    background: #ffffff;
+    box-shadow: 0 4px 14px rgba(20, 26, 33, 0.12);
     overflow: hidden;
   }
 
-  .mobile-text-capture-bar::before {
-    content: '';
-    position: absolute;
-    inset: -24%;
-    background: radial-gradient(circle at 18% 50%, rgba(95, 192, 228, 0.2), transparent 44%),
-      radial-gradient(circle at 82% 45%, rgba(143, 104, 210, 0.14), transparent 42%);
-    animation: mobile-capture-bg 6.4s ease-in-out infinite alternate;
-    pointer-events: none;
-  }
-
-  .mobile-text-capture-bar textarea {
-    position: relative;
-    z-index: 1;
+  .mobile-capture-input-shell.text textarea {
     width: 100%;
-    min-height: 42px;
+    min-height: 46px;
     max-height: 148px;
     border: none;
     border-radius: 14px;
-    background: rgba(255, 255, 255, 0.82);
+    background: transparent;
     color: #2f3640;
     font-family: var(--font-body);
     font-size: 14px;
     line-height: 1.38;
-    padding: 10px 12px;
+    padding: 11px 12px;
     resize: none;
     overflow-y: auto;
     outline: none;
   }
 
-  .mobile-text-capture-bar.unified {
-    min-height: 108px;
-    padding: 8px 54px 10px 12px;
-    display: grid;
-    gap: 8px;
-    align-content: start;
-  }
-
-  .mobile-capture-mode-tabs {
-    position: relative;
-    z-index: 1;
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    width: fit-content;
-    padding: 2px;
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.72);
-  }
-
-  .mobile-capture-mode-tabs button {
-    min-height: 24px;
-    border: none;
-    border-radius: 999px;
-    padding: 0 10px;
-    background: transparent;
-    color: #5f6876;
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
-  }
-
-  .mobile-capture-mode-tabs button.active {
-    background: rgba(226, 232, 242, 0.92);
-    color: #2f3742;
-  }
-
-  .mobile-text-capture-bar.unified textarea {
+  .mobile-capture-input-shell.voice {
     min-height: 46px;
   }
 
-  .mobile-capture-send {
+  .mobile-capture-voice-gradient {
     position: absolute;
-    right: 12px;
-    bottom: 12px;
+    inset: 0;
+    background: linear-gradient(115deg, rgba(91, 190, 228, 0.2), rgba(141, 105, 209, 0.18), rgba(103, 214, 176, 0.18));
+    background-size: 220% 220%;
+    animation: mobile-voice-field-shift 2.2s ease-in-out infinite;
+    pointer-events: none;
+  }
+
+  .mobile-capture-voice-content {
+    position: relative;
+    min-height: 46px;
+    padding: 7px 12px 6px;
+    display: grid;
+    gap: 4px;
+    align-content: center;
+  }
+
+  .mobile-capture-voice-text {
+    font-size: 14px;
+    line-height: 1.28;
+    color: #2f3640;
+    max-height: 38px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .mobile-capture-voice-text.placeholder {
+    color: #6b7280;
+  }
+
+  .mobile-capture-voice-bars {
+    display: flex;
+    align-items: flex-end;
+    gap: 3px;
+    height: 10px;
+  }
+
+  .mobile-capture-voice-bars span {
+    flex: 1 1 auto;
+    min-width: 3px;
+    border-radius: 999px;
+    background: #2f353f;
+    opacity: 0.85;
+    transition: height 90ms linear;
+  }
+
+  .mobile-capture-send {
+    position: relative;
     width: 40px;
     height: 40px;
     border: none;
@@ -2059,7 +2067,7 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    z-index: 2;
+    z-index: 1;
   }
 
   .mobile-capture-send:disabled {
@@ -2083,6 +2091,18 @@
     }
     100% {
       transform: translate3d(3%, 2%, 0) scale(1.04);
+    }
+  }
+
+  @keyframes mobile-voice-field-shift {
+    0% {
+      background-position: 0% 50%;
+    }
+    50% {
+      background-position: 100% 50%;
+    }
+    100% {
+      background-position: 0% 50%;
     }
   }
 
@@ -2220,8 +2240,20 @@
     font-size: 11px;
     color: var(--color-text-secondary);
     line-height: 1.35;
-    max-height: 38px;
-    overflow: hidden;
+  }
+
+  .mobile-capture-confirm-copy em {
+    margin-top: 2px;
+    font-size: 11px;
+    color: var(--color-text-muted);
+    font-style: normal;
+  }
+
+  .mobile-capture-confirm-ai {
+    margin: 4px 0 0;
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--color-text-primary);
   }
 
   .mobile-capture-confirm-error {
@@ -2243,11 +2275,6 @@
     font-size: 12px;
     font-weight: 600;
     padding: 0 10px;
-  }
-
-  .mobile-capture-confirm-actions .route {
-    background: var(--color-accent-primary);
-    color: #fff;
   }
 
   .mobile-capture-confirm-actions .review {
@@ -3291,6 +3318,12 @@
   .mobile-wireframe-root .mobile-day-nav button:hover,
   .mobile-wireframe-root .mobile-day-nav button:focus-visible {
     background: var(--color-bg-hover);
+  }
+
+  .mobile-wireframe-root .mobile-day-nav .mobile-day-nav-ai img {
+    width: 18px;
+    height: 18px;
+    object-fit: contain;
   }
 
   .mobile-wireframe-root .mobile-wireframe-scroll {
