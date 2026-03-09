@@ -30,11 +30,27 @@ const isMissingLaneStatusesTableError = (error) =>
         error.message.toLowerCase().includes('schema cache'))
   );
 
+const isMissingLaneSubtaskStatusesTableError = (error) =>
+  Boolean(
+    error?.message &&
+      error.message.toLowerCase().includes('lane_subtask_statuses') &&
+      (error.message.toLowerCase().includes('does not exist') ||
+        error.message.toLowerCase().includes('schema cache'))
+  );
+
 const isMissingItemsStatusIdColumnError = (error) =>
   Boolean(
     error?.message &&
       error.message.includes("'status_id'") &&
       error.message.includes("'items'") &&
+      error.message.toLowerCase().includes('schema cache')
+  );
+
+const isMissingActionsSubtaskStatusIdColumnError = (error) =>
+  Boolean(
+    error?.message &&
+      error.message.includes("'subtask_status_id'") &&
+      error.message.includes("'actions'") &&
       error.message.toLowerCase().includes('schema cache')
   );
 
@@ -283,6 +299,37 @@ const defaultLaneStatuses = (userId, laneId) => [
     is_default: false
   }
 ];
+
+const defaultLaneSubtaskStatuses = (userId, laneId) => [
+  {
+    user_id: userId,
+    lane_id: laneId,
+    key: 'not_started',
+    name: 'Not started',
+    color: '#94a3b8',
+    group_key: 'todo',
+    order_num: 0,
+    is_default: true
+  },
+  {
+    user_id: userId,
+    lane_id: laneId,
+    key: 'done',
+    name: 'Done',
+    color: '#22c55e',
+    group_key: 'done',
+    order_num: 1,
+    is_default: false
+  }
+];
+
+const stableHash = (value = '') => {
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = ((hash * 31) + value.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash).toString(16);
+};
 
 // Focal Board Service - uses shared Supabase client
 export const focalBoardService = {
@@ -542,6 +589,13 @@ export const focalBoardService = {
         throw error;
       }
 
+      const { error: subtaskStatusesError } = await supabase
+        .from('lane_subtask_statuses')
+        .insert(defaultLaneSubtaskStatuses(userId, data.id));
+      if (subtaskStatusesError && !isMissingLaneSubtaskStatusesTableError(subtaskStatusesError)) {
+        console.warn('Failed to seed lane subtask statuses:', subtaskStatusesError.message);
+      }
+
       return data;
     } catch (error) {
       throw error;
@@ -606,6 +660,22 @@ export const focalBoardService = {
     return data;
   },
 
+  async getLaneSubtaskStatuses(laneId) {
+    const { data, error } = await supabase
+      .from('lane_subtask_statuses')
+      .select('*')
+      .eq('lane_id', laneId)
+      .order('order_num', { ascending: true });
+
+    if (error) {
+      if (isMissingLaneSubtaskStatusesTableError(error)) {
+        return [];
+      }
+      throw error;
+    }
+    return data;
+  },
+
   async createLaneStatus(laneId, userId, payload) {
     const { data, error } = await supabase
       .from('lane_statuses')
@@ -631,6 +701,31 @@ export const focalBoardService = {
     return data;
   },
 
+  async createLaneSubtaskStatus(laneId, userId, payload) {
+    const { data, error } = await supabase
+      .from('lane_subtask_statuses')
+      .insert([{
+        lane_id: laneId,
+        user_id: userId,
+        key: payload.key,
+        name: payload.name,
+        color: payload.color,
+        group_key: payload.group_key ?? 'todo',
+        order_num: payload.order_num ?? 0,
+        is_default: Boolean(payload.is_default)
+      }])
+      .select()
+      .single();
+
+    if (error) {
+      if (isMissingLaneSubtaskStatusesTableError(error)) {
+        throw new Error('Lane subtask statuses table does not exist. Run the latest migration.');
+      }
+      throw error;
+    }
+    return data;
+  },
+
   async updateLaneStatus(id, updates) {
     const { data, error } = await supabase
       .from('lane_statuses')
@@ -648,6 +743,23 @@ export const focalBoardService = {
     return data;
   },
 
+  async updateLaneSubtaskStatus(id, updates) {
+    const { data, error } = await supabase
+      .from('lane_subtask_statuses')
+      .update(updates)
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) {
+      if (isMissingLaneSubtaskStatusesTableError(error)) {
+        throw new Error('Lane subtask statuses table does not exist. Run the latest migration.');
+      }
+      throw error;
+    }
+    return data;
+  },
+
   async deleteLaneStatus(id) {
     const { error } = await supabase
       .from('lane_statuses')
@@ -657,6 +769,20 @@ export const focalBoardService = {
     if (error) {
       if (isMissingLaneStatusesTableError(error)) {
         throw new Error('Lane statuses table does not exist. Run the latest migration.');
+      }
+      throw error;
+    }
+  },
+
+  async deleteLaneSubtaskStatus(id) {
+    const { error } = await supabase
+      .from('lane_subtask_statuses')
+      .delete()
+      .eq('id', id);
+
+    if (error) {
+      if (isMissingLaneSubtaskStatusesTableError(error)) {
+        throw new Error('Lane subtask statuses table does not exist. Run the latest migration.');
       }
       throw error;
     }
@@ -751,7 +877,7 @@ export const focalBoardService = {
     return data;
   },
 
-  async createAction(itemId, userId, title, description = null, scheduledAt = null) {
+  async createAction(itemId, userId, title, description = null, scheduledAt = null, subtaskStatus = null) {
     // Get the highest order_num for this item
     const { data: existingActions } = await supabase
       .from('actions')
@@ -769,13 +895,31 @@ export const focalBoardService = {
         user_id: userId,
         title,
         description,
-        status: 'pending',
+        status: subtaskStatus?.key || 'not_started',
+        subtask_status_id: subtaskStatus?.id || null,
         scheduled_at: scheduledAt,
         order_num: nextOrder
       }])
       .select()
       .single();
-    
+
+    if (error && isMissingActionsSubtaskStatusIdColumnError(error)) {
+      const fallback = await supabase
+        .from('actions')
+        .insert([{
+          item_id: itemId,
+          user_id: userId,
+          title,
+          description,
+          status: subtaskStatus?.key || 'not_started',
+          scheduled_at: scheduledAt,
+          order_num: nextOrder
+        }])
+        .select()
+        .single();
+      if (fallback.error) throw fallback.error;
+      return fallback.data;
+    }
     if (error) throw error;
     return data;
   },
@@ -819,13 +963,25 @@ export const focalBoardService = {
   },
 
   async updateAction(id, updates) {
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from('actions')
       .update(updates)
       .eq('id', id)
       .select()
       .single();
-    
+
+    if (error && isMissingActionsSubtaskStatusIdColumnError(error)) {
+      const { subtask_status_id, ...fallbackUpdates } = updates;
+      const fallback = await supabase
+        .from('actions')
+        .update(fallbackUpdates)
+        .eq('id', id)
+        .select()
+        .single();
+      data = fallback.data;
+      error = fallback.error;
+    }
+
     if (error) throw error;
     return data;
   },
@@ -1440,6 +1596,24 @@ export const focalBoardService = {
       contract_valid: true,
       contract_errors: []
     };
+  },
+
+  async applyChatProposalAtomic({ userId, proposal, noteOverride = null, idempotencyKey = null }) {
+    if (!userId) throw new Error('Sign in is required to apply action proposals');
+    if (!proposal?.type) throw new Error('Invalid proposal payload');
+
+    const key =
+      idempotencyKey ||
+      proposal.id ||
+      `chat:${proposal.type}:${stableHash(JSON.stringify({ userId, proposal, noteOverride: noteOverride || null }))}`;
+
+    const { data, error } = await supabase.rpc('apply_chat_proposal', {
+      p_idempotency_key: key,
+      p_proposal: proposal,
+      p_note_override: noteOverride
+    });
+    if (error) throw error;
+    return data || { status: 'applied', type: proposal.type };
   },
 
   // BATCH OPERATIONS

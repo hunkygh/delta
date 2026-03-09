@@ -7,7 +7,6 @@ import type { ChatContext, ChatDebugMeta, ChatMessage, ChatProposal } from '../t
 import chatPersistence from '../services/chatPersistence';
 import chatService from '../services/chatService';
 import focalBoardService from '../services/focalBoardService';
-import { calendarService } from '../services/calendarService';
 import docsService from '../services/docsService';
 
 interface HeaderProps {
@@ -368,55 +367,12 @@ export default function Header({
     if (!user?.id) return;
     try {
       const noteOverride = (proposalNotes[proposal.id] || '').trim() || null;
-      if (proposal.type === 'create_follow_up_action') {
-        await focalBoardService.createAction(
-          proposal.item_id,
-          user.id,
-          proposal.title,
-          noteOverride ?? proposal.notes ?? null
-        );
-      } else if (proposal.type === 'create_focal') {
-        await focalBoardService.createFocal(user.id, proposal.title);
-      } else if (proposal.type === 'create_list') {
-        await focalBoardService.createLane(proposal.focal_id, user.id, proposal.title, 'Items', 'Tasks');
-      } else if (proposal.type === 'create_item') {
-        await focalBoardService.createItem(proposal.list_id, user.id, proposal.title);
-      } else if (proposal.type === 'create_action') {
-        const createdAction = await focalBoardService.createAction(
-          proposal.item_id,
-          user.id,
-          proposal.title,
-          noteOverride ?? proposal.notes ?? null,
-          proposal.scheduled_at ?? null
-        );
-        if (proposal.time_block_id) {
-          await focalBoardService.linkActionToTimeBlock({
-            actionId: createdAction.id,
-            timeBlockId: proposal.time_block_id,
-            userId: user.id,
-            laneId: proposal.lane_id || null
-          });
-        }
-      } else if (proposal.type === 'create_time_block') {
-        await calendarService.createTimeBlockFromProposal(user.id, {
-          ...proposal,
-          notes: noteOverride ?? proposal.notes ?? null
-        });
-      } else if (proposal.type === 'resolve_time_conflict') {
-        await calendarService.patchTimeBlock(proposal.conflict_time_block_id, {
-          start_time: proposal.conflict_new_start_utc,
-          end_time: proposal.conflict_new_end_utc
-        });
-        await calendarService.createTimeBlockFromProposal(user.id, {
-          id: `${proposal.id}-event`,
-          type: 'create_time_block',
-          title: proposal.event_title,
-          scheduled_start_utc: proposal.event_start_utc,
-          scheduled_end_utc: proposal.event_end_utc,
-          lane_id: proposal.lane_id || null,
-          notes: noteOverride ?? proposal.notes ?? null
-        });
-      }
+      await focalBoardService.applyChatProposalAtomic({
+        userId: user.id,
+        proposal,
+        noteOverride,
+        idempotencyKey: proposal.id
+      });
       setApprovedProposalIds((prev) => ({ ...prev, [proposal.id]: true }));
       setProposalNotes((prev) => {
         const next = { ...prev };
@@ -434,7 +390,7 @@ export default function Header({
       insertMessage({
         id: crypto.randomUUID(),
         role: 'assistant',
-        content: `Could not apply proposal: ${error?.message || 'Unknown error'}.`,
+        content: 'I could not apply that update safely right now. Nothing was partially applied.',
         created_at: Date.now()
       });
     }
@@ -505,8 +461,11 @@ export default function Header({
                     ) : (
                       <div className="delta-ai-assistant-block">
                         <div className="delta-ai-provenance-chip">{getSourceBadgeLabel(message.debug_meta)}</div>
-                        <div className="delta-ai-assistant-text">
-                          {message.content || (streamingMessageId === message.id ? '…' : '')}
+                        <div className="delta-ai-assistant-line">
+                          <img className="delta-ai-response-logo" src="/Delta-AI-Button.png" alt="" aria-hidden="true" />
+                          <div className="delta-ai-assistant-text">
+                            {message.content || (streamingMessageId === message.id ? '…' : '')}
+                          </div>
                         </div>
                         {Array.isArray(message.debug_meta?.warnings) && message.debug_meta.warnings.length > 0 && (
                           <div className="delta-ai-warning-footer">

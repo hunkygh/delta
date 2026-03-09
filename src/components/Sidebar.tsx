@@ -1,4 +1,4 @@
-import { Calendar, Settings, FileText, Plus, CornerDownLeft, LogOut, SlidersHorizontal } from 'lucide-react';
+import { Calendar, Settings, FileText, Plus, LogOut, SlidersHorizontal } from 'lucide-react';
 import { Mountains } from '@phosphor-icons/react';
 import type { User as SupabaseUser } from '@supabase/supabase-js';
 import { useNavigate, useLocation } from 'react-router-dom';
@@ -36,9 +36,12 @@ export default function Sidebar({
   const [loadingLists, setLoadingLists] = useState(false);
   const [listsLoadError, setListsLoadError] = useState('');
   const [expandedFocalIds, setExpandedFocalIds] = useState<Record<string, boolean>>({});
+  const [draggingFocalId, setDraggingFocalId] = useState<string | null>(null);
   const resizeStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const hoverOpenTimerRef = useRef<number | null>(null);
   const hoverCloseTimerRef = useRef<number | null>(null);
+  const settingsMenuRef = useRef<HTMLDivElement | null>(null);
+  const focalsContainerRef = useRef<HTMLDivElement | null>(null);
   const pathParts = location.pathname.split('/').filter(Boolean);
   const currentFocalIdFromPath = (pathParts[0] === 'focals' || pathParts[0] === 'spaces') && pathParts[1] && pathParts[1] !== 'list'
     ? pathParts[1]
@@ -70,14 +73,10 @@ export default function Sidebar({
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as Element;
-      const settingsDropdown = document.querySelector('.settings-dropdown');
-      const settingsButton = document.querySelector('.settings-button');
-      const focalsContainer = document.querySelector('.focals-dropdown-container');
-      
-      if (settingsDropdown && settingsButton && !settingsDropdown.contains(target) && !settingsButton.contains(target)) {
+      if (settingsMenuRef.current && !settingsMenuRef.current.contains(target)) {
         setShowSettingsMenu(false);
       }
-      if (focalsContainer && !focalsContainer.contains(target)) {
+      if (focalsContainerRef.current && !focalsContainerRef.current.contains(target)) {
         clearHoverCloseTimer();
         setFocalsDropdownOpen(false);
         setFocalsDropdownPinned(false);
@@ -223,6 +222,29 @@ export default function Sidebar({
     navigate(`/spaces/list/${list.id}`, { state: { selectedFocal: focal.name, selectedFocalId: focal.id } });
   };
 
+  const reorderFocalToTarget = async (sourceFocalId: string, targetFocalId: string): Promise<void> => {
+    const sourceIndex = focals.findIndex((entry) => entry.id === sourceFocalId);
+    const targetIndex = focals.findIndex((entry) => entry.id === targetFocalId);
+    if (sourceIndex === -1 || targetIndex === -1 || sourceIndex === targetIndex) return;
+
+    const snapshot = [...focals];
+    const reordered = [...focals];
+    const [moved] = reordered.splice(sourceIndex, 1);
+    reordered.splice(targetIndex, 0, moved);
+    const normalized = reordered.map((entry, index) => ({ ...entry, order_num: index }));
+    setFocals(normalized);
+    try {
+      await Promise.all(
+        normalized.map((entry) =>
+          focalBoardService.updateFocal(entry.id, { order_num: entry.order_num ?? 0 })
+        )
+      );
+    } catch (error) {
+      console.error('Failed to drag-reorder spaces:', error);
+      setFocals(snapshot);
+    }
+  };
+
   const handleLogout = async () => {
     try {
       await authService.signOut();
@@ -301,6 +323,7 @@ export default function Sidebar({
         <div className="sidebar-nav-items">
           <div
             className="focals-dropdown-container"
+            ref={focalsContainerRef}
             onMouseEnter={() => {
               clearHoverCloseTimer();
               if (focalsDropdownPinned) {
@@ -352,19 +375,6 @@ export default function Sidebar({
                   <RoundedTriangle expanded={Boolean(isFocalsDropdownVisible)} />
                 </span>
               </button>
-              <button
-                className="add-focal-btn focals-add-btn"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setShowNewFocalInput(!showNewFocalInput);
-                  if (showNewFocalInput) {
-                    setNewFocalName('');
-                    setCreateError('');
-                  }
-                }}
-              >
-                <Plus size={14} />
-              </button>
             </div>
             
             {/* Focals popout */}
@@ -377,7 +387,28 @@ export default function Sidebar({
                 {/* Only show focals list when there are focals */}
                 {focals.length > 0 && (
                   focals.map((focal) => (
-                    <div key={focal.id} className="focal-nav-group">
+                    <div
+                      key={focal.id}
+                      className={`focal-nav-group ${draggingFocalId === focal.id ? 'dragging' : ''}`.trim()}
+                      draggable
+                      onDragStart={(event) => {
+                        event.dataTransfer.effectAllowed = 'move';
+                        event.dataTransfer.setData('text/plain', focal.id);
+                        setDraggingFocalId(focal.id);
+                      }}
+                      onDragEnd={() => setDraggingFocalId(null)}
+                      onDragOver={(event) => {
+                        event.preventDefault();
+                        event.dataTransfer.dropEffect = 'move';
+                      }}
+                      onDrop={(event) => {
+                        event.preventDefault();
+                        const sourceId = event.dataTransfer.getData('text/plain');
+                        if (!sourceId) return;
+                        void reorderFocalToTarget(sourceId, focal.id);
+                        setDraggingFocalId(null);
+                      }}
+                    >
                       <div className="focal-item-row">
                         <button
                           className={`focal-item ${focal.id === currentFocalId || focal.name === selectedFocalFromNav ? 'selected' : ''}`}
@@ -424,38 +455,49 @@ export default function Sidebar({
                     </div>
                   ))
                 )}
-              </div>
-            )}
-            
-            {/* New focal input - shows when + is clicked, regardless of dropdown state */}
-            {showNewFocalInput && (
-              <div className="new-focal-input show">
-                <input
-                  type="text"
-                  value={newFocalName}
-                  onChange={(e) => setNewFocalName(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !isCreating) {
-                      e.preventDefault();
-                      handleAddFocal();
-                    } else if (e.key === 'Escape') {
-                      setShowNewFocalInput(false);
-                      setNewFocalName('');
-                      setCreateError('');
-                    }
-                  }}
-                  disabled={isCreating}
-                  placeholder={isCreating ? 'Creating...' : 'Space name...'}
-                  autoFocus
-                  className={isCreating ? 'creating' : ''}
-                />
-                {newFocalName && !isCreating && (
-                  <CornerDownLeft className="enter-icon" />
+                <div className="focals-popout-add-space-row">
+                  <button
+                    type="button"
+                    className="focals-popout-add-space"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setShowNewFocalInput((prev) => !prev);
+                      if (showNewFocalInput) {
+                        setNewFocalName('');
+                        setCreateError('');
+                      }
+                    }}
+                  >
+                    <Plus size={12} />
+                    <span>Add Space</span>
+                  </button>
+                </div>
+                {showNewFocalInput && (
+                  <div className="focals-popout-new-space-row">
+                    <input
+                      type="text"
+                      value={newFocalName}
+                      onChange={(event) => setNewFocalName(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' && !isCreating) {
+                          event.preventDefault();
+                          void handleAddFocal();
+                        }
+                        if (event.key === 'Escape') {
+                          setShowNewFocalInput(false);
+                          setNewFocalName('');
+                          setCreateError('');
+                        }
+                      }}
+                      disabled={isCreating}
+                      placeholder={isCreating ? 'Creating…' : 'Space name'}
+                      className="focals-popout-new-space-input"
+                      autoFocus
+                    />
+                  </div>
                 )}
                 {createError && (
-                  <div className="focal-create-error">
-                    {createError}
-                  </div>
+                  <div className="focal-create-error">{createError}</div>
                 )}
               </div>
             )}
@@ -472,7 +514,7 @@ export default function Sidebar({
         </div>
         
         {/* Footer with settings */}
-        <div className="sidebar-footer">
+        <div className="sidebar-footer" ref={settingsMenuRef}>
           <button 
             className="sidebar-nav-item settings-button"
             onClick={(e) => {
@@ -484,29 +526,29 @@ export default function Sidebar({
             <span className="sidebar-nav-text">Settings</span>
           </button>
           
-          {showSettingsMenu && (
-            <div className="settings-dropdown">
-              <button
-                className="settings-option"
-                onClick={() => {
-                  setShowSettingsMenu(false);
-                  navigate('/settings');
-                }}
-                aria-label="Preferences"
-                title="Preferences"
-              >
-                <SlidersHorizontal size={16} />
-              </button>
-              <button
-                className="settings-option logout"
-                onClick={handleLogout}
-                aria-label="Sign out"
-                title="Sign out"
-              >
-                <LogOut size={16} />
-              </button>
-            </div>
-          )}
+          <div className={`sidebar-settings-dropdown ${showSettingsMenu ? 'open' : ''}`.trim()}>
+            <button
+              className="sidebar-settings-option"
+              onClick={() => {
+                setShowSettingsMenu(false);
+                navigate('/settings');
+              }}
+              aria-label="Preferences"
+              title="Preferences"
+              tabIndex={showSettingsMenu ? 0 : -1}
+            >
+              <SlidersHorizontal size={16} />
+            </button>
+            <button
+              className="sidebar-settings-option logout"
+              onClick={handleLogout}
+              aria-label="Sign out"
+              title="Sign out"
+              tabIndex={showSettingsMenu ? 0 : -1}
+            >
+              <LogOut size={16} />
+            </button>
+          </div>
         </div>
       </div>
       {isExpanded && (

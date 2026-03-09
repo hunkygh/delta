@@ -34,7 +34,8 @@
 
 .status-select-circle.pending {
   border-style: dashed;
-  border-color: #94a3b8;
+  border-color: var(--status-color, #94a3b8);
+  background: transparent;
 }
 
 .status-select-circle.active {

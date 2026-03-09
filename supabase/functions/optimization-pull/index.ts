@@ -62,6 +62,74 @@ const safeJson = async (response: Response): Promise<any> => {
   }
 };
 
+const GROQ_MODELS_PREFERRED = [
+  'llama-3.3-70b-versatile',
+  'llama-3.1-70b-versatile',
+  'llama-3.1-8b-instant',
+  'mixtral-8x7b-32768',
+  'gemma2-9b-it'
+];
+const GROQ_MODEL_CACHE_TTL_MS = 10 * 60 * 1000;
+let groqModelCache: { expiresAt: number; ids: string[] } | null = null;
+
+const extractGroqErrorMessage = (payload: any): string => {
+  if (!payload) return '';
+  if (typeof payload === 'string') return payload;
+  const nested = payload?.error?.message ?? payload?.message;
+  return typeof nested === 'string' ? nested : '';
+};
+
+const isGroqModelUnavailableError = (status: number, payload: any): boolean => {
+  if (status !== 400 && status !== 404) return false;
+  const message = extractGroqErrorMessage(payload).toLowerCase();
+  if (!message) return false;
+  return (
+    message.includes('model') &&
+    (
+      message.includes('decommission') ||
+      message.includes('not found') ||
+      message.includes('does not exist') ||
+      message.includes('unavailable') ||
+      message.includes('invalid')
+    )
+  );
+};
+
+const fetchGroqModelIds = async (apiKey: string, forceRefresh = false): Promise<string[] | null> => {
+  if (!forceRefresh && groqModelCache && groqModelCache.expiresAt > Date.now()) {
+    return groqModelCache.ids;
+  }
+  try {
+    const response = await fetch('https://api.groq.com/openai/v1/models', {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      }
+    });
+    if (!response.ok) return null;
+    const parsed = await safeJson(response);
+    const ids = Array.isArray(parsed?.data)
+      ? parsed.data.map((entry: any) => String(entry?.id || '')).filter(Boolean)
+      : [];
+    groqModelCache = {
+      expiresAt: Date.now() + GROQ_MODEL_CACHE_TTL_MS,
+      ids
+    };
+    return ids;
+  } catch {
+    return null;
+  }
+};
+
+const getGroqCandidateModels = async (apiKey: string, forceRefresh = false): Promise<string[]> => {
+  const activeIds = await fetchGroqModelIds(apiKey, forceRefresh);
+  if (!activeIds || activeIds.length === 0) return [...GROQ_MODELS_PREFERRED];
+  const activeSet = new Set(activeIds);
+  const selected = GROQ_MODELS_PREFERRED.filter((model) => activeSet.has(model));
+  return selected.length ? selected : [...GROQ_MODELS_PREFERRED];
+};
+
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
@@ -385,49 +453,71 @@ Deno.serve(async (req) => {
     let proposal: ProposalContract | null = null;
 
     if (GROQ_API_KEY) {
-      const groqBody = {
-        model: 'llama-3.3-70b-versatile',
-        temperature: 0,
-        response_format: { type: 'json_object' },
-        messages: [
-          {
-            role: 'system',
-            content:
-              'Return JSON only. Output EXACTLY this object shape: ' +
-              '{"source":"ai|heuristic","confidence":0..1,"reasoning":"short",' +
-              '"field_updates":[{"entity":"item|action|list|time_block","id":"uuid","changes":{"k":"v"}}],' +
-              '"new_actions":[{"item_id":"uuid","title":"text","due_at_utc":null,"notes":null}],' +
-              '"calendar_proposals":[{"item_id":"uuid","action_id":"uuid","time_block_id":"uuid","scheduled_start_utc":"ISO","scheduled_end_utc":null,"title":"text","notes":null}]}. ' +
-              'Never mutate state. Operate only on provided context.'
-          },
-          { role: 'user', content: JSON.stringify(contextPayload) }
-        ]
-      };
+      let models = await getGroqCandidateModels(GROQ_API_KEY);
+      const attempted = new Set<string>();
+      let refreshedAfterModelError = false;
 
-      const groqResp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${GROQ_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(groqBody)
-      });
+      while (!proposal && models.length > 0) {
+        const model = models.shift() as string;
+        if (attempted.has(model)) continue;
+        attempted.add(model);
 
-      if (groqResp.ok) {
-        const groqJson = await safeJson(groqResp);
-        const content = groqJson?.choices?.[0]?.message?.content;
-        if (typeof content === 'string' && content.trim().startsWith('{')) {
-          try {
-            const parsed = JSON.parse(content);
-            const maybeContract = isPlainObject(parsed?.proposal) ? parsed.proposal : parsed;
-            const validated = validateAndNormalizeProposal(maybeContract, {
-              allowCalendarProposals,
-              defaultSource: 'ai'
-            });
-            proposal = validated;
-          } catch {
-            proposal = null;
+        const groqBody = {
+          model,
+          temperature: 0,
+          response_format: { type: 'json_object' },
+          messages: [
+            {
+              role: 'system',
+              content:
+                'Return JSON only. Output EXACTLY this object shape: ' +
+                '{"source":"ai|heuristic","confidence":0..1,"reasoning":"short",' +
+                '"field_updates":[{"entity":"item|action|list|time_block","id":"uuid","changes":{"k":"v"}}],' +
+                '"new_actions":[{"item_id":"uuid","title":"text","due_at_utc":null,"notes":null}],' +
+                '"calendar_proposals":[{"item_id":"uuid","action_id":"uuid","time_block_id":"uuid","scheduled_start_utc":"ISO","scheduled_end_utc":null,"title":"text","notes":null}]}. ' +
+                'Never mutate state. Operate only on provided context.'
+            },
+            { role: 'user', content: JSON.stringify(contextPayload) }
+          ]
+        };
+
+        try {
+          const groqResp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${GROQ_API_KEY}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(groqBody)
+          });
+
+          if (!groqResp.ok) {
+            const errPayload = await safeJson(groqResp);
+            if (!refreshedAfterModelError && isGroqModelUnavailableError(groqResp.status, errPayload)) {
+              refreshedAfterModelError = true;
+              const refreshed = await getGroqCandidateModels(GROQ_API_KEY, true);
+              models = [...refreshed.filter((entry) => !attempted.has(entry)), ...models];
+            }
+            continue;
           }
+
+          const groqJson = await safeJson(groqResp);
+          const content = groqJson?.choices?.[0]?.message?.content;
+          if (typeof content === 'string' && content.trim().startsWith('{')) {
+            try {
+              const parsed = JSON.parse(content);
+              const maybeContract = isPlainObject(parsed?.proposal) ? parsed.proposal : parsed;
+              const validated = validateAndNormalizeProposal(maybeContract, {
+                allowCalendarProposals,
+                defaultSource: 'ai'
+              });
+              proposal = validated;
+            } catch {
+              proposal = null;
+            }
+          }
+        } catch {
+          // noop, fall through to next model
         }
       }
     }

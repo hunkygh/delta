@@ -30,7 +30,10 @@ interface LaneStatus {
 interface ActionItem {
   id: string;
   title: string;
+  description?: string | null;
   status?: string;
+  subtask_status_id?: string | null;
+  scheduled_at?: string | null;
   recurring?: RecurringItemMeta;
 }
 
@@ -156,6 +159,11 @@ const isMissingCustomFieldsSchemaError = (err: any): boolean => {
 const CUSTOM_FIELDS_MIGRATION_HINT =
   'Custom fields schema is missing. Run src/database/migrations/20260305_custom_fields_mvp.sql on your database.';
 
+const LANE_STATUSES_MIGRATION_HINT =
+  'Custom statuses schema is missing. Run src/database/migrations/20260309_lane_statuses_baseline.sql on your database.';
+const SUBTASK_STATUSES_MIGRATION_HINT =
+  'Subtask statuses schema is missing. Run src/database/migrations/20260309_subtask_statuses_phase1.sql on your database.';
+
 
 const normalizeStatusKey = (label: string): string =>
   label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
@@ -164,6 +172,11 @@ const DEFAULT_STATUSES: LaneStatus[] = [
   { id: null, key: 'pending', name: 'To do', color: '#94a3b8', order_num: 0 },
   { id: null, key: 'in_progress', name: 'In progress', color: '#f59e0b', order_num: 1 },
   { id: null, key: 'completed', name: 'Done', color: '#22c55e', order_num: 2 }
+];
+
+const DEFAULT_SUBTASK_STATUSES: LaneStatus[] = [
+  { id: null, key: 'not_started', name: 'Not started', color: '#94a3b8', order_num: 0 },
+  { id: null, key: 'done', name: 'Done', color: '#22c55e', order_num: 1 }
 ];
 
 const formatCommentTime = (value: string): string => {
@@ -188,6 +201,48 @@ const formatOccurrenceTime = (value?: string | null): string => {
     day: 'numeric',
     hour: 'numeric',
     minute: '2-digit'
+  });
+};
+
+const toDateTimeLocalValue = (value?: string | null): string => {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const offset = date.getTimezoneOffset();
+  const local = new Date(date.getTime() - offset * 60000);
+  return local.toISOString().slice(0, 16);
+};
+
+const fromDateTimeLocalValue = (value: string): string | null => {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString();
+};
+
+const normalizeItemsForStatuses = (rows: ListItem[], laneStatuses: LaneStatus[]): ListItem[] => {
+  if (!Array.isArray(rows) || rows.length === 0) return [];
+  if (!Array.isArray(laneStatuses) || laneStatuses.length === 0) return rows;
+
+  const byId = new Map(laneStatuses.filter((entry) => Boolean(entry.id)).map((entry) => [entry.id as string, entry]));
+  const byKey = new Map(laneStatuses.map((entry) => [entry.key, entry]));
+  const fallback = laneStatuses[0];
+
+  return rows.map((item) => {
+    if (item.status_id && byId.has(item.status_id)) return item;
+    if (item.status && byKey.has(item.status)) {
+      const matched = byKey.get(item.status);
+      return {
+        ...item,
+        status_id: matched?.id ?? null,
+        status: matched?.key || item.status
+      };
+    }
+    return {
+      ...item,
+      status_id: fallback?.id ?? null,
+      status: fallback?.key || item.status || 'pending'
+    };
   });
 };
 
@@ -217,6 +272,7 @@ export default function ListView(): JSX.Element {
   const [recurringComposerMode, setRecurringComposerMode] = useState<'item' | 'subtask'>('item');
   const [lastCreatedRecurringItemId, setLastCreatedRecurringItemId] = useState<string | null>(null);
   const [statuses, setStatuses] = useState<LaneStatus[]>([]);
+  const [subtaskStatuses, setSubtaskStatuses] = useState<LaneStatus[]>([]);
   const [draftByStatus, setDraftByStatus] = useState<Record<string, string>>({});
   const [composerOpenByStatus, setComposerOpenByStatus] = useState<Record<string, boolean>>({});
   const [composerModeByStatus, setComposerModeByStatus] = useState<Record<string, 'item' | 'subtask'>>({});
@@ -225,6 +281,9 @@ export default function ListView(): JSX.Element {
   const [actionComposerByItem, setActionComposerByItem] = useState<Record<string, boolean>>({});
   const [actionDraftByItem, setActionDraftByItem] = useState<Record<string, string>>({});
   const [statusManagerOpen, setStatusManagerOpen] = useState(false);
+  const [statusManagerScope, setStatusManagerScope] = useState<'item' | 'subtask'>('item');
+  const [statusInlineCreateOpen, setStatusInlineCreateOpen] = useState(false);
+  const [draggingManagerStatusId, setDraggingManagerStatusId] = useState<string | null>(null);
   const [fieldManagerOpen, setFieldManagerOpen] = useState(false);
   const [statusNameDraft, setStatusNameDraft] = useState('');
   const [statusColorDraft, setStatusColorDraft] = useState(STATUS_COLORS[0]);
@@ -254,17 +313,20 @@ export default function ListView(): JSX.Element {
 
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [modalTitleDraft, setModalTitleDraft] = useState('');
+  const [isModalTitleEditing, setIsModalTitleEditing] = useState(false);
   const [modalDescriptionDraft, setModalDescriptionDraft] = useState('');
   const [modalStatusValue, setModalStatusValue] = useState<string | null>('pending');
-  const [savingItem, setSavingItem] = useState(false);
+  const [itemModalSaveState, setItemModalSaveState] = useState<'saved' | 'saving' | 'retrying'>('saved');
   const [itemModalSettingsOpen, setItemModalSettingsOpen] = useState(false);
   const [itemMoveMenuOpen, setItemMoveMenuOpen] = useState(false);
   const [moveTargetListId, setMoveTargetListId] = useState('');
   const [peerLists, setPeerLists] = useState<Array<{ id: string; name: string }>>([]);
   const [movingItem, setMovingItem] = useState(false);
   const [deletingItem, setDeletingItem] = useState(false);
-  const descriptionAutosaveTimerRef = useRef<number | null>(null);
-  const [descriptionAutosaveBusy, setDescriptionAutosaveBusy] = useState(false);
+  const itemAutosaveTimerRef = useRef<number | null>(null);
+  const actionAutosaveTimersRef = useRef<Record<string, number>>({});
+  const [itemModalExpandedActions, setItemModalExpandedActions] = useState<Record<string, boolean>>({});
+  const [itemModalActionSaveState, setItemModalActionSaveState] = useState<Record<string, 'saved' | 'saving' | 'retrying'>>({});
 
   const [activeCommentScope, setActiveCommentScope] = useState<CommentScope | null>(null);
   const [selectedActionForThreadId, setSelectedActionForThreadId] = useState<string | null>(null);
@@ -277,10 +339,6 @@ export default function ListView(): JSX.Element {
   const [pushingCommentId, setPushingCommentId] = useState<string | null>(null);
   const [applyingCommentProposalId, setApplyingCommentProposalId] = useState<string | null>(null);
   const [commentProposalNotes, setCommentProposalNotes] = useState<Record<string, string>>({});
-  const [statusImportListId, setStatusImportListId] = useState('');
-  const [statusImportCandidates, setStatusImportCandidates] = useState<Array<{ id: string; name: string }>>([]);
-  const [importingStatuses, setImportingStatuses] = useState(false);
-
   const [analyzing, setAnalyzing] = useState(false);
   const [proposalError, setProposalError] = useState<string | null>(null);
   const [proposals, setProposals] = useState<ProposalRow[]>([]);
@@ -307,6 +365,11 @@ export default function ListView(): JSX.Element {
           ? [...data.lane_statuses].sort((a: any, b: any) => (a.order_num ?? 0) - (b.order_num ?? 0))
           : DEFAULT_STATUSES;
         setStatuses(nextStatuses);
+        const normalizedItems = normalizeItemsForStatuses(
+          (data.items || []).map((item: any) => ({ ...item, actions: item.actions || [] })),
+          nextStatuses
+        );
+        setItems(normalizedItems);
       } catch (err: any) {
         setError(err?.message || 'Failed to load list');
       } finally {
@@ -315,6 +378,26 @@ export default function ListView(): JSX.Element {
     };
     void load();
   }, [listId, user]);
+
+  useEffect(() => {
+    const loadSubtaskStatuses = async (): Promise<void> => {
+      if (!listId || !user?.id) {
+        setSubtaskStatuses([]);
+        return;
+      }
+      try {
+        const rows = await focalBoardService.getLaneSubtaskStatuses(listId);
+        const next = (rows || []).length
+          ? [...rows].sort((a: any, b: any) => (a.order_num ?? 0) - (b.order_num ?? 0))
+          : DEFAULT_SUBTASK_STATUSES;
+        setSubtaskStatuses(next);
+      } catch (err: any) {
+        setError(err?.message || 'Failed to load subtask statuses');
+        setSubtaskStatuses(DEFAULT_SUBTASK_STATUSES);
+      }
+    };
+    void loadSubtaskStatuses();
+  }, [listId, user?.id]);
 
   useEffect(() => {
     const openItemId = (location.state as { openItemId?: string } | null)?.openItemId;
@@ -379,10 +462,20 @@ export default function ListView(): JSX.Element {
     setModalTitleDraft(selectedItem.title || '');
     setModalDescriptionDraft(selectedItem.description || '');
     setModalStatusValue(selectedItem.status_id ?? selectedItem.status ?? 'pending');
+    setItemModalSaveState('saved');
+    setIsModalTitleEditing(false);
     setItemModalSettingsOpen(false);
     setItemMoveMenuOpen(false);
     setMoveTargetListId('');
+    setItemModalExpandedActions({});
+    setItemModalActionSaveState({});
   }, [selectedItem]);
+
+  useEffect(() => {
+    return () => {
+      Object.values(actionAutosaveTimersRef.current).forEach((timerId) => window.clearTimeout(timerId));
+    };
+  }, []);
 
   useEffect(() => {
     if (!selectedItem || !list?.focal_id) {
@@ -402,28 +495,6 @@ export default function ListView(): JSX.Element {
     };
     void loadPeerLists();
   }, [selectedItem, list?.focal_id, list?.id]);
-
-  useEffect(() => {
-    if (!statusManagerOpen || !list?.focal_id || !list?.id) {
-      setStatusImportCandidates([]);
-      setStatusImportListId('');
-      return;
-    }
-    const loadStatusImportCandidates = async (): Promise<void> => {
-      try {
-        const rows = await focalBoardService.getListsForFocal(list.focal_id);
-        const candidates: Array<{ id: string; name: string }> = (rows || [])
-          .filter((entry: any) => entry.id !== list.id)
-          .map((entry: any) => ({ id: entry.id, name: entry.name }));
-        setStatusImportCandidates(candidates);
-        setStatusImportListId((prev) => (prev && candidates.some((entry) => entry.id === prev) ? prev : candidates[0]?.id || ''));
-      } catch {
-        setStatusImportCandidates([]);
-        setStatusImportListId('');
-      }
-    };
-    void loadStatusImportCandidates();
-  }, [statusManagerOpen, list?.focal_id, list?.id]);
 
   useEffect(() => {
     if (!listId) return;
@@ -560,6 +631,36 @@ export default function ListView(): JSX.Element {
         )
       })),
     [items, statuses]
+  );
+
+  const doneSubtaskStatusKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const status of subtaskStatuses) {
+      const group = (status as any).group_key || '';
+      if (group === 'done' || status.key === 'done' || status.key === 'completed') {
+        keys.add(status.key);
+      }
+    }
+    if (keys.size === 0) {
+      keys.add('done');
+      keys.add('completed');
+    }
+    return keys;
+  }, [subtaskStatuses]);
+
+  const isSubtaskDone = useCallback(
+    (action: ActionItem): boolean => {
+      if (!action) return false;
+      if (action.subtask_status_id) {
+        const status = subtaskStatuses.find((entry) => entry.id === action.subtask_status_id);
+        if (status) {
+          const group = (status as any).group_key || '';
+          return group === 'done' || status.key === 'done' || status.key === 'completed';
+        }
+      }
+      return doneSubtaskStatusKeys.has(action.status || '');
+    },
+    [doneSubtaskStatusKeys, subtaskStatuses]
   );
 
   const pinnedFields = useMemo(
@@ -777,14 +878,14 @@ export default function ListView(): JSX.Element {
   };
 
   const handleActionStatusChange = async (itemId: string, actionId: string, status: LaneStatus): Promise<void> => {
-    const nextStatus = status.key || 'pending';
+    const nextStatus = status.key || 'not_started';
     setItems((prev) =>
       prev.map((item) =>
         item.id === itemId
           ? {
               ...item,
               actions: (item.actions || []).map((action) =>
-                action.id === actionId ? { ...action, status: nextStatus } : action
+                action.id === actionId ? { ...action, status: nextStatus, subtask_status_id: status.id ?? null } : action
               )
             }
           : item
@@ -792,14 +893,14 @@ export default function ListView(): JSX.Element {
     );
 
     try {
-      await focalBoardService.updateAction(actionId, { status: nextStatus });
+      await focalBoardService.updateAction(actionId, { status: nextStatus, subtask_status_id: status.id ?? null });
       setRecurringItems((prev) =>
         prev.map((item) =>
           item.id === itemId
             ? {
                 ...item,
                 actions: (item.actions || []).map((action) =>
-                  action.id === actionId ? { ...action, status: nextStatus } : action
+                  action.id === actionId ? { ...action, status: nextStatus, subtask_status_id: status.id ?? null } : action
                 )
               }
             : item
@@ -826,7 +927,12 @@ export default function ListView(): JSX.Element {
     const parentItemId = lastCreatedItemByStatus[status.key];
     try {
       if (mode === 'subtask' && parentItemId) {
-        const createdAction = await focalBoardService.createAction(parentItemId, user.id, draft, null, null);
+        const fallbackSubtaskStatus =
+          subtaskStatuses.find((entry) => Boolean((entry as any).is_default)) || subtaskStatuses[0] || DEFAULT_SUBTASK_STATUSES[0];
+        const createdAction = await focalBoardService.createAction(parentItemId, user.id, draft, null, null, {
+          id: fallbackSubtaskStatus?.id ?? null,
+          key: fallbackSubtaskStatus?.key || 'not_started'
+        });
         setItems((prev) =>
           prev.map((entry) =>
             entry.id === parentItemId ? { ...entry, actions: [...(entry.actions || []), createdAction] } : entry
@@ -858,7 +964,12 @@ export default function ListView(): JSX.Element {
     }
 
     try {
-      const created = await focalBoardService.createAction(itemId, user.id, draft, null, null);
+      const fallbackSubtaskStatus =
+        subtaskStatuses.find((entry) => Boolean((entry as any).is_default)) || subtaskStatuses[0] || DEFAULT_SUBTASK_STATUSES[0];
+      const created = await focalBoardService.createAction(itemId, user.id, draft, null, null, {
+        id: fallbackSubtaskStatus?.id ?? null,
+        key: fallbackSubtaskStatus?.key || 'not_started'
+      });
       setItems((prev) =>
         prev.map((entry) =>
           entry.id === itemId ? { ...entry, actions: [...(entry.actions || []), created] } : entry
@@ -887,7 +998,12 @@ export default function ListView(): JSX.Element {
     }
     if (recurringComposerMode === 'subtask' && lastCreatedRecurringItemId) {
       try {
-        const createdAction = await focalBoardService.createAction(lastCreatedRecurringItemId, user.id, draft, null, null);
+        const fallbackSubtaskStatus =
+          subtaskStatuses.find((entry) => Boolean((entry as any).is_default)) || subtaskStatuses[0] || DEFAULT_SUBTASK_STATUSES[0];
+        const createdAction = await focalBoardService.createAction(lastCreatedRecurringItemId, user.id, draft, null, null, {
+          id: fallbackSubtaskStatus?.id ?? null,
+          key: fallbackSubtaskStatus?.key || 'not_started'
+        });
         setItems((prev) =>
           prev.map((entry) =>
             entry.id === lastCreatedRecurringItemId ? { ...entry, actions: [...(entry.actions || []), createdAction] } : entry
@@ -923,80 +1039,86 @@ export default function ListView(): JSX.Element {
     setCommentError(null);
     setSelectedActionForThreadId(null);
     setActiveCommentScope(null);
+    setIsModalTitleEditing(false);
     setItemModalSettingsOpen(false);
     setItemMoveMenuOpen(false);
     setMoveTargetListId('');
-  };
-
-  const handleSaveItemFromModal = async (): Promise<void> => {
-    if (!selectedItem) {
-      return;
-    }
-    const selectedStatus = statuses.find((status) => status.id === modalStatusValue || status.key === modalStatusValue);
-    const updates: Record<string, any> = {
-      title: modalTitleDraft.trim() || selectedItem.title,
-      description: modalDescriptionDraft.trim() || null,
-      status: selectedStatus?.key || 'pending'
-    };
-    if (selectedStatus?.id) {
-      updates.status_id = selectedStatus.id;
-    } else {
-      updates.status_id = null;
-    }
-
-    setSavingItem(true);
-    try {
-      const updated = await focalBoardService.updateItem(selectedItem.id, updates);
-      updateItemLocally(selectedItem.id, {
-        title: updated.title,
-        description: updated.description,
-        status: updated.status,
-        status_id: updated.status_id ?? null
-      });
-    } catch (err: any) {
-      setError(err?.message || 'Failed to update item');
-    } finally {
-      setSavingItem(false);
-    }
+    setItemModalExpandedActions({});
+    setItemModalActionSaveState({});
+    Object.values(actionAutosaveTimersRef.current).forEach((timerId) => window.clearTimeout(timerId));
+    actionAutosaveTimersRef.current = {};
   };
 
   useEffect(() => {
     if (!selectedItem) return;
-    if (descriptionAutosaveTimerRef.current != null) {
-      window.clearTimeout(descriptionAutosaveTimerRef.current);
+    if (itemAutosaveTimerRef.current != null) {
+      window.clearTimeout(itemAutosaveTimerRef.current);
     }
-    const initialDescription = selectedItem.description || '';
-    if (modalDescriptionDraft === initialDescription) {
+
+    const selectedStatus = statuses.find((status) => status.id === modalStatusValue || status.key === modalStatusValue);
+    const nextTitle = modalTitleDraft.trim() || selectedItem.title;
+    const nextDescription = modalDescriptionDraft.trim();
+    const selectedDescription = (selectedItem.description || '').trim();
+    const nextStatusId = selectedStatus?.id || null;
+    const nextStatusKey = selectedStatus?.key || 'pending';
+    const selectedStatusId = selectedItem.status_id ?? null;
+    const selectedStatusKey = selectedItem.status || 'pending';
+
+    const isUnchanged =
+      nextTitle === selectedItem.title &&
+      nextDescription === selectedDescription &&
+      nextStatusId === selectedStatusId &&
+      nextStatusKey === selectedStatusKey;
+
+    if (isUnchanged) {
+      setItemModalSaveState('saved');
       return;
     }
-    descriptionAutosaveTimerRef.current = window.setTimeout(async () => {
+
+    itemAutosaveTimerRef.current = window.setTimeout(async () => {
+      setItemModalSaveState('saving');
       try {
-        setDescriptionAutosaveBusy(true);
         const updated = await focalBoardService.updateItem(selectedItem.id, {
-          description: modalDescriptionDraft.trim() || null
+          title: nextTitle,
+          description: nextDescription || null,
+          status: nextStatusKey,
+          status_id: nextStatusId
         });
         updateItemLocally(selectedItem.id, {
-          description: updated.description
+          title: updated.title,
+          description: updated.description,
+          status: updated.status,
+          status_id: updated.status_id ?? null
         });
+        setItemModalSaveState('saved');
       } catch (err: any) {
-        setError(err?.message || 'Failed to autosave description');
-      } finally {
-        setDescriptionAutosaveBusy(false);
+        setItemModalSaveState('retrying');
+        setError(err?.message || 'Failed to autosave item');
       }
-    }, 620);
+    }, 280);
     return () => {
-      if (descriptionAutosaveTimerRef.current != null) {
-        window.clearTimeout(descriptionAutosaveTimerRef.current);
+      if (itemAutosaveTimerRef.current != null) {
+        window.clearTimeout(itemAutosaveTimerRef.current);
       }
     };
-  }, [modalDescriptionDraft, selectedItem]);
+  }, [modalDescriptionDraft, modalStatusValue, modalTitleDraft, selectedItem, statuses]);
 
   const handleMoveItemToList = async (targetListIdArg?: string): Promise<void> => {
     const targetListId = targetListIdArg || moveTargetListId;
     if (!selectedItem || !targetListId) return;
     setMovingItem(true);
     try {
-      await focalBoardService.updateItem(selectedItem.id, { lane_id: targetListId });
+      const targetStatuses = await focalBoardService.getLaneStatuses(targetListId);
+      const fallbackStatus = (targetStatuses || []).find((entry: any) => Boolean(entry.is_default)) || (targetStatuses || [])[0] || null;
+      const movePayload: Record<string, any> = { lane_id: targetListId };
+      if (fallbackStatus) {
+        movePayload.status_id = fallbackStatus.id ?? null;
+        movePayload.status = fallbackStatus.key || 'pending';
+      } else {
+        movePayload.status_id = null;
+        movePayload.status = 'pending';
+      }
+      await focalBoardService.updateItem(selectedItem.id, movePayload);
       setItems((prev) => prev.filter((entry) => entry.id !== selectedItem.id));
       closeItemModal();
     } catch (err: any) {
@@ -1005,6 +1127,79 @@ export default function ListView(): JSX.Element {
       setMovingItem(false);
     }
   };
+
+  const updateActionLocally = useCallback(
+    (itemId: string, actionId: string, updates: Partial<ActionItem>): void => {
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === itemId
+            ? {
+                ...item,
+                actions: (item.actions || []).map((action) => (action.id === actionId ? { ...action, ...updates } : action))
+              }
+            : item
+        )
+      );
+      setRecurringItems((prev) =>
+        prev.map((item) =>
+          item.id === itemId
+            ? {
+                ...item,
+                actions: (item.actions || []).map((action) => (action.id === actionId ? { ...action, ...updates } : action))
+              }
+            : item
+        )
+      );
+    },
+    []
+  );
+
+  const scheduleActionAutosave = useCallback(
+    (itemId: string, actionId: string, updates: Partial<ActionItem>): void => {
+      const timerKey = `${itemId}:${actionId}`;
+      const existingTimer = actionAutosaveTimersRef.current[timerKey];
+      if (existingTimer != null) {
+        window.clearTimeout(existingTimer);
+      }
+
+      actionAutosaveTimersRef.current[timerKey] = window.setTimeout(async () => {
+        setItemModalActionSaveState((prev) => ({ ...prev, [actionId]: 'saving' }));
+        try {
+          const persisted = await focalBoardService.updateAction(actionId, updates);
+          updateActionLocally(itemId, actionId, {
+            title: persisted.title,
+            description: persisted.description,
+            status: persisted.status,
+            subtask_status_id: persisted.subtask_status_id ?? null,
+            scheduled_at: persisted.scheduled_at
+          });
+          setItemModalActionSaveState((prev) => ({ ...prev, [actionId]: 'saved' }));
+        } catch (err: any) {
+          setItemModalActionSaveState((prev) => ({ ...prev, [actionId]: 'retrying' }));
+          setError(err?.message || 'Failed to autosave task');
+        }
+      }, 280);
+    },
+    [updateActionLocally]
+  );
+
+  const handleActionDraftChange = useCallback(
+    (itemId: string, action: ActionItem, updates: Partial<ActionItem>): void => {
+      const nextAction = {
+        ...action,
+        ...updates
+      };
+      updateActionLocally(itemId, action.id, updates);
+      scheduleActionAutosave(itemId, action.id, {
+        title: nextAction.title,
+        description: nextAction.description?.trim() ? nextAction.description : null,
+        status: nextAction.status || 'not_started',
+        subtask_status_id: nextAction.subtask_status_id ?? null,
+        scheduled_at: nextAction.scheduled_at || null
+      });
+    },
+    [scheduleActionAutosave, updateActionLocally]
+  );
 
   const handleDeleteItemFromModal = async (): Promise<void> => {
     if (!selectedItem) return;
@@ -1139,55 +1334,12 @@ export default function ListView(): JSX.Element {
     try {
       const proposal = proposalEntry.proposal;
       const noteOverride = (commentProposalNotes[proposal.id] || '').trim() || null;
-      if (proposal.type === 'create_follow_up_action') {
-        await focalBoardService.createAction(
-          proposal.item_id,
-          user.id,
-          proposal.title,
-          noteOverride ?? proposal.notes ?? null
-        );
-      } else if (proposal.type === 'create_focal') {
-        await focalBoardService.createFocal(user.id, proposal.title);
-      } else if (proposal.type === 'create_list') {
-        await focalBoardService.createLane(proposal.focal_id, user.id, proposal.title, 'Items', 'Tasks');
-      } else if (proposal.type === 'create_item') {
-        await focalBoardService.createItem(proposal.list_id, user.id, proposal.title);
-      } else if (proposal.type === 'create_action') {
-        const createdAction = await focalBoardService.createAction(
-          proposal.item_id,
-          user.id,
-          proposal.title,
-          noteOverride ?? proposal.notes ?? null,
-          proposal.scheduled_at ?? null
-        );
-        if (proposal.time_block_id) {
-          await focalBoardService.linkActionToTimeBlock({
-            actionId: createdAction.id,
-            timeBlockId: proposal.time_block_id,
-            userId: user.id,
-            laneId: proposal.lane_id || null
-          });
-        }
-      } else if (proposal.type === 'create_time_block') {
-        await calendarService.createTimeBlockFromProposal(user.id, {
-          ...proposal,
-          notes: noteOverride ?? proposal.notes ?? null
-        });
-      } else if (proposal.type === 'resolve_time_conflict') {
-        await calendarService.patchTimeBlock(proposal.conflict_time_block_id, {
-          start_time: proposal.conflict_new_start_utc,
-          end_time: proposal.conflict_new_end_utc
-        });
-        await calendarService.createTimeBlockFromProposal(user.id, {
-          id: `${proposal.id}-event`,
-          type: 'create_time_block',
-          title: proposal.event_title,
-          scheduled_start_utc: proposal.event_start_utc,
-          scheduled_end_utc: proposal.event_end_utc,
-          lane_id: proposal.lane_id || null,
-          notes: noteOverride ?? proposal.notes ?? null
-        });
-      }
+      await focalBoardService.applyChatProposalAtomic({
+        userId: user.id,
+        proposal,
+        noteOverride,
+        idempotencyKey: proposal.id
+      });
 
       setCommentProposalState((prev) => ({
         ...prev,
@@ -1201,7 +1353,7 @@ export default function ListView(): JSX.Element {
         return next;
       });
     } catch (err: any) {
-      setCommentError(err?.message || 'Failed to apply AI proposal');
+      setCommentError('Could not apply that update safely. Nothing was partially applied.');
     } finally {
       setApplyingCommentProposalId(null);
     }
@@ -1742,10 +1894,12 @@ export default function ListView(): JSX.Element {
   };
 
   const canManagePersistedStatuses = statuses.length > 0 && statuses.every((status) => Boolean(status.id));
+  const canManagePersistedSubtaskStatuses =
+    subtaskStatuses.length > 0 && subtaskStatuses.every((status) => Boolean(status.id));
 
   const handleCreateStatus = async (): Promise<void> => {
     if (!user || !list?.id || !canManagePersistedStatuses) {
-      setError('Run the latest migration before managing custom statuses.');
+      setError(LANE_STATUSES_MIGRATION_HINT);
       return;
     }
     const name = statusNameDraft.trim();
@@ -1777,49 +1931,6 @@ export default function ListView(): JSX.Element {
     }
   };
 
-  const handleImportStatusesFromList = async (): Promise<void> => {
-    if (!user || !list?.id || !statusImportListId || !canManagePersistedStatuses) {
-      return;
-    }
-    setImportingStatuses(true);
-    try {
-      const sourceStatuses = await focalBoardService.getLaneStatuses(statusImportListId);
-      if (!sourceStatuses?.length) {
-        return;
-      }
-      const existingKeys = new Set(statuses.map((status) => status.key));
-      let nextOrder = statuses.length;
-      const createdRows: LaneStatus[] = [];
-      for (const source of sourceStatuses) {
-        const baseKey = normalizeStatusKey(source.name || source.key || 'status') || 'status';
-        let key = baseKey;
-        let suffix = 2;
-        while (existingKeys.has(key)) {
-          key = `${baseKey}_${suffix}`;
-          suffix += 1;
-        }
-        existingKeys.add(key);
-        const created = await focalBoardService.createLaneStatus(list.id, user.id, {
-          key,
-          name: source.name,
-          color: source.color || STATUS_COLORS[0],
-          group_key: source.group_key || key,
-          order_num: nextOrder,
-          is_default: false
-        });
-        nextOrder += 1;
-        createdRows.push(created);
-      }
-      if (createdRows.length > 0) {
-        setStatuses((prev) => [...prev, ...createdRows]);
-      }
-    } catch (err: any) {
-      setError(err?.message || 'Failed to import statuses');
-    } finally {
-      setImportingStatuses(false);
-    }
-  };
-
   const handlePatchStatus = async (statusId: string, updates: Partial<LaneStatus>): Promise<void> => {
     const snapshot = [...statuses];
     setStatuses((prev) => prev.map((entry) => (entry.id === statusId ? { ...entry, ...updates } : entry)));
@@ -1831,22 +1942,11 @@ export default function ListView(): JSX.Element {
     }
   };
 
-  const handleMoveStatus = async (statusId: string, direction: 'up' | 'down'): Promise<void> => {
-    const currentIndex = statuses.findIndex((status) => status.id === statusId);
-    if (currentIndex === -1) return;
-    const targetIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1;
-    if (targetIndex < 0 || targetIndex >= statuses.length) return;
-
-    const snapshot = [...statuses];
-    const reordered = [...statuses];
-    const [moved] = reordered.splice(currentIndex, 1);
-    reordered.splice(targetIndex, 0, moved);
-    const normalized = reordered.map((status, index) => ({ ...status, order_num: index }));
-    setStatuses(normalized);
-
+  const persistItemStatusOrder = async (next: LaneStatus[], snapshot: LaneStatus[]): Promise<void> => {
+    setStatuses(next);
     try {
       await Promise.all(
-        normalized
+        next
           .filter((status) => Boolean(status.id))
           .map((status) => focalBoardService.updateLaneStatus(status.id as string, { order_num: status.order_num }))
       );
@@ -1854,6 +1954,20 @@ export default function ListView(): JSX.Element {
       setStatuses(snapshot);
       setError(err?.message || 'Failed to reorder statuses');
     }
+  };
+
+  const handleReorderStatusById = async (sourceId: string, targetId: string): Promise<void> => {
+    if (!sourceId || !targetId || sourceId === targetId) return;
+    const sourceIndex = statuses.findIndex((status) => status.id === sourceId);
+    const targetIndex = statuses.findIndex((status) => status.id === targetId);
+    if (sourceIndex === -1 || targetIndex === -1) return;
+
+    const snapshot = [...statuses];
+    const reordered = [...statuses];
+    const [moved] = reordered.splice(sourceIndex, 1);
+    reordered.splice(targetIndex, 0, moved);
+    const normalized = reordered.map((status, index) => ({ ...status, order_num: index }));
+    await persistItemStatusOrder(normalized, snapshot);
   };
 
   const handleDeleteStatus = async (status: LaneStatus): Promise<void> => {
@@ -1896,6 +2010,157 @@ export default function ListView(): JSX.Element {
       setStatuses(statusSnapshot);
       setError(err?.message || 'Failed to delete status');
     }
+  };
+
+  const handleCreateSubtaskStatus = async (): Promise<void> => {
+    if (!user || !list?.id || !canManagePersistedSubtaskStatuses) {
+      setError(SUBTASK_STATUSES_MIGRATION_HINT);
+      return;
+    }
+    const name = statusNameDraft.trim();
+    if (!name) return;
+    const existingKeys = new Set(subtaskStatuses.map((status) => status.key));
+    const baseKey = normalizeStatusKey(name) || 'status';
+    let key = baseKey;
+    let suffix = 2;
+    while (existingKeys.has(key)) {
+      key = `${baseKey}_${suffix}`;
+      suffix += 1;
+    }
+    try {
+      const created = await focalBoardService.createLaneSubtaskStatus(list.id, user.id, {
+        key,
+        name,
+        color: statusColorDraft,
+        group_key: key === 'done' || key === 'completed' ? 'done' : 'todo',
+        order_num: subtaskStatuses.length,
+        is_default: false
+      });
+      setSubtaskStatuses((prev) => [...prev, created]);
+      setStatusNameDraft('');
+      setStatusColorDraft('#94a3b8');
+    } catch (err: any) {
+      setError(err?.message || 'Failed to create subtask status');
+    }
+  };
+
+  const handlePatchSubtaskStatus = async (statusId: string, updates: Partial<LaneStatus>): Promise<void> => {
+    const snapshot = [...subtaskStatuses];
+    setSubtaskStatuses((prev) => prev.map((entry) => (entry.id === statusId ? { ...entry, ...updates } : entry)));
+    try {
+      await focalBoardService.updateLaneSubtaskStatus(statusId, updates);
+    } catch (err: any) {
+      setSubtaskStatuses(snapshot);
+      setError(err?.message || 'Failed to update subtask status');
+    }
+  };
+
+  const persistSubtaskStatusOrder = async (next: LaneStatus[], snapshot: LaneStatus[]): Promise<void> => {
+    setSubtaskStatuses(next);
+    try {
+      await Promise.all(
+        next
+          .filter((status) => Boolean(status.id))
+          .map((status) =>
+            focalBoardService.updateLaneSubtaskStatus(status.id as string, { order_num: status.order_num })
+          )
+      );
+    } catch (err: any) {
+      setSubtaskStatuses(snapshot);
+      setError(err?.message || 'Failed to reorder subtask statuses');
+    }
+  };
+
+  const handleReorderSubtaskStatusById = async (sourceId: string, targetId: string): Promise<void> => {
+    if (!sourceId || !targetId || sourceId === targetId) return;
+    const sourceIndex = subtaskStatuses.findIndex((status) => status.id === sourceId);
+    const targetIndex = subtaskStatuses.findIndex((status) => status.id === targetId);
+    if (sourceIndex === -1 || targetIndex === -1) return;
+
+    const snapshot = [...subtaskStatuses];
+    const reordered = [...subtaskStatuses];
+    const [moved] = reordered.splice(sourceIndex, 1);
+    reordered.splice(targetIndex, 0, moved);
+    const normalized = reordered.map((status, index) => ({ ...status, order_num: index }));
+    await persistSubtaskStatusOrder(normalized, snapshot);
+  };
+
+  const handleDeleteSubtaskStatus = async (status: LaneStatus): Promise<void> => {
+    if (!status.id || subtaskStatuses.length <= 1) return;
+    const fallback = subtaskStatuses.find((entry) => entry.id !== status.id);
+    if (!fallback) return;
+
+    const affected = items.flatMap((item) =>
+      (item.actions || [])
+        .filter((action) => action.subtask_status_id === status.id)
+        .map((action) => ({ itemId: item.id, actionId: action.id }))
+    );
+    const itemSnapshot = [...items];
+    const recurringSnapshot = [...recurringItems];
+    const statusSnapshot = [...subtaskStatuses];
+
+    setItems((prev) =>
+      prev.map((item) => ({
+        ...item,
+        actions: (item.actions || []).map((action) =>
+          action.subtask_status_id === status.id
+            ? { ...action, subtask_status_id: fallback.id ?? null, status: fallback.key }
+            : action
+        )
+      }))
+    );
+    setRecurringItems((prev) =>
+      prev.map((item) => ({
+        ...item,
+        actions: (item.actions || []).map((action) =>
+          action.subtask_status_id === status.id
+            ? { ...action, subtask_status_id: fallback.id ?? null, status: fallback.key }
+            : action
+        )
+      }))
+    );
+    const nextStatuses = subtaskStatuses
+      .filter((entry) => entry.id !== status.id)
+      .map((entry, index) => ({ ...entry, order_num: index }));
+    setSubtaskStatuses(nextStatuses);
+
+    try {
+      await Promise.all(
+        affected.map(({ actionId }) =>
+          focalBoardService.updateAction(actionId, {
+            subtask_status_id: fallback.id ?? null,
+            status: fallback.key
+          })
+        )
+      );
+      await focalBoardService.deleteLaneSubtaskStatus(status.id);
+      await Promise.all(
+        nextStatuses
+          .filter((entry) => Boolean(entry.id))
+          .map((entry) => focalBoardService.updateLaneSubtaskStatus(entry.id as string, { order_num: entry.order_num }))
+      );
+    } catch (err: any) {
+      setItems(itemSnapshot);
+      setRecurringItems(recurringSnapshot);
+      setSubtaskStatuses(statusSnapshot);
+      setError(err?.message || 'Failed to delete subtask status');
+    }
+  };
+
+  const managerIsSubtask = statusManagerScope === 'subtask';
+  const managerStatuses = managerIsSubtask ? subtaskStatuses : statuses;
+  const managerCanPersist = managerIsSubtask ? canManagePersistedSubtaskStatuses : canManagePersistedStatuses;
+  const managerMigrationHint = managerIsSubtask ? SUBTASK_STATUSES_MIGRATION_HINT : LANE_STATUSES_MIGRATION_HINT;
+
+  const handleManagerStatusDrop = async (targetStatusId: string): Promise<void> => {
+    if (!draggingManagerStatusId || !targetStatusId || draggingManagerStatusId === targetStatusId) {
+      return;
+    }
+    if (managerIsSubtask) {
+      await handleReorderSubtaskStatusById(draggingManagerStatusId, targetStatusId);
+      return;
+    }
+    await handleReorderStatusById(draggingManagerStatusId, targetStatusId);
   };
 
   const renderPinnedFieldCell = (item: ListItem, field: ListField): JSX.Element => {
@@ -2320,7 +2585,7 @@ export default function ListView(): JSX.Element {
                 {groupedItems.map((item) => {
                   const actions = showCompletedSubtasks
                     ? (item.actions || [])
-                    : (item.actions || []).filter((action) => action.status !== 'completed');
+                    : (item.actions || []).filter((action) => !isSubtaskDone(action));
                   const isExpanded = Boolean(expandedByItem[item.id]);
 
                   return (
@@ -2364,7 +2629,10 @@ export default function ListView(): JSX.Element {
                           value={item.status_id ?? item.status}
                           onChange={(next: LaneStatus) => void handleStatusChange(item, next)}
                           appearance="circle"
-                          onManageStatuses={() => setStatusManagerOpen(true)}
+                          onManageStatuses={() => {
+                            setStatusManagerScope('item');
+                            setStatusManagerOpen(true);
+                          }}
                         />
 
                         <span className="list-item-title">{item.title}</span>
@@ -2381,11 +2649,14 @@ export default function ListView(): JSX.Element {
                           {actions.map((action) => (
                             <div className="list-action-row" key={action.id}>
                               <StatusSelect
-                                statuses={statuses}
-                                value={action.status}
+                                statuses={subtaskStatuses}
+                                value={action.subtask_status_id ?? action.status}
                                 onChange={(next: LaneStatus) => void handleActionStatusChange(item.id, action.id, next)}
                                 appearance="circle"
-                                onManageStatuses={() => setStatusManagerOpen(true)}
+                                onManageStatuses={() => {
+                                  setStatusManagerScope('subtask');
+                                  setStatusManagerOpen(true);
+                                }}
                               />
                               <span className="list-action-title">{action.title}</span>
                             </div>
@@ -2404,7 +2675,7 @@ export default function ListView(): JSX.Element {
                                 onChange={(event) =>
                                   setActionDraftByItem((prev) => ({ ...prev, [item.id]: event.target.value }))
                                 }
-                                placeholder={`New ${actionTerm}`}
+                                placeholder="New"
                                 autoFocus
                               />
                               <button type="submit">Save</button>
@@ -2415,7 +2686,7 @@ export default function ListView(): JSX.Element {
                               className="list-action-add"
                               onClick={() => setActionComposerByItem((prev) => ({ ...prev, [item.id]: true }))}
                             >
-                              <span className="list-inline-add-label">+ New {actionTerm}</span>
+                              <span className="list-inline-add-label">+ New</span>
                             </button>
                           )}
                         </div>
@@ -2468,7 +2739,7 @@ export default function ListView(): JSX.Element {
                       setComposerModeByStatus((prev) => ({ ...prev, [status.key]: 'item' }));
                     }}
                     >
-                    <span className="list-inline-add-label">+ New {itemTerm}</span>
+                    <span className="list-inline-add-label">+ New</span>
                   </button>
                 )}
               </div>
@@ -2500,7 +2771,7 @@ export default function ListView(): JSX.Element {
                 );
                 const actions = showCompletedSubtasks
                   ? (item.actions || [])
-                  : (item.actions || []).filter((action) => action.status !== 'completed');
+                  : (item.actions || []).filter((action) => !isSubtaskDone(action));
                 const isExpanded = Boolean(expandedByItem[item.id]);
                 const activeTaskTotal = item.recurring?.active_task_total_count ?? 0;
                 const activeTaskCompleted = item.recurring?.active_task_completed_count ?? 0;
@@ -2573,11 +2844,14 @@ export default function ListView(): JSX.Element {
                               {action.recurring?.active_completion_state === 'completed' ? 'Done' : 'Do'}
                             </button>
                             <StatusSelect
-                              statuses={statuses}
-                              value={action.status}
+                              statuses={subtaskStatuses}
+                              value={action.subtask_status_id ?? action.status}
                               onChange={(next: LaneStatus) => void handleActionStatusChange(item.id, action.id, next)}
                               appearance="circle"
-                              onManageStatuses={() => setStatusManagerOpen(true)}
+                              onManageStatuses={() => {
+                                setStatusManagerScope('subtask');
+                                setStatusManagerOpen(true);
+                              }}
                             />
                             <span className="list-action-title">{action.title}</span>
                           </div>
@@ -2596,7 +2870,7 @@ export default function ListView(): JSX.Element {
                               onChange={(event) =>
                                 setActionDraftByItem((prev) => ({ ...prev, [item.id]: event.target.value }))
                               }
-                              placeholder={`New ${actionTerm}`}
+                              placeholder="New"
                               autoFocus
                             />
                             <button type="submit">Save</button>
@@ -2607,7 +2881,7 @@ export default function ListView(): JSX.Element {
                             className="list-action-add"
                             onClick={() => setActionComposerByItem((prev) => ({ ...prev, [item.id]: true }))}
                           >
-                            <span className="list-inline-add-label">+ New {actionTerm}</span>
+                            <span className="list-inline-add-label">+ New</span>
                           </button>
                         )}
                       </div>
@@ -2660,7 +2934,7 @@ export default function ListView(): JSX.Element {
                   setRecurringComposerMode('item');
                 }}
               >
-                <span className="list-inline-add-label">+ New {itemTerm}</span>
+                <span className="list-inline-add-label">+ New</span>
               </button>
             )
           )}
@@ -2674,43 +2948,121 @@ export default function ListView(): JSX.Element {
         <div className="list-item-modal-overlay" onClick={closeItemModal}>
           <section className="list-item-modal" onClick={(event) => event.stopPropagation()}>
             <header className="list-item-modal-head">
-              <h2>{selectedItem.title}</h2>
-              <button type="button" className="list-item-modal-close" onClick={closeItemModal} aria-label="Close item panel">
-                <CloseIcon size={16} />
-              </button>
+              <div className="list-item-modal-head-title">
+                <div className="list-item-modal-head-title-row">
+                  {isModalTitleEditing ? (
+                    <input
+                      className="list-item-modal-title-inline-input"
+                      value={modalTitleDraft}
+                      onChange={(event) => setModalTitleDraft(event.target.value)}
+                      onBlur={() => setIsModalTitleEditing(false)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault();
+                          setIsModalTitleEditing(false);
+                        }
+                        if (event.key === 'Escape') {
+                          event.preventDefault();
+                          setModalTitleDraft(selectedItem.title || '');
+                          setIsModalTitleEditing(false);
+                        }
+                      }}
+                      autoFocus
+                    />
+                  ) : (
+                    <h2
+                      onDoubleClick={() => setIsModalTitleEditing(true)}
+                      title="Double click to rename"
+                    >
+                      {modalTitleDraft || selectedItem.title}
+                    </h2>
+                  )}
+                  <div className="list-item-modal-head-status">
+                    <StatusSelect
+                      statuses={statuses}
+                      value={modalStatusValue}
+                      onChange={(next: LaneStatus) => setModalStatusValue(next.id ?? next.key)}
+                      onManageStatuses={() => {
+                        setStatusManagerScope('item');
+                        setStatusManagerOpen(true);
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+              <div className="list-item-modal-head-actions">
+                <div className="list-item-modal-settings-wrap">
+                  <button
+                    type="button"
+                    className="list-item-settings-btn"
+                    onClick={() => {
+                      setItemModalSettingsOpen((prev) => !prev);
+                      setItemMoveMenuOpen(false);
+                    }}
+                    aria-label="Item settings"
+                  >
+                    <GearSix size={16} weight="regular" />
+                  </button>
+                  <div className={`list-item-settings-slideout ${itemModalSettingsOpen ? 'open' : ''}`.trim()}>
+                    <button
+                      type="button"
+                      className="list-item-settings-icon-btn"
+                      onClick={() => setItemMoveMenuOpen((prev) => !prev)}
+                      aria-label="Move item"
+                      title="Move item"
+                    >
+                      <ArrowRightLeft size={16} />
+                    </button>
+                    <button
+                      type="button"
+                      className="list-item-settings-icon-btn danger"
+                      onClick={() => void handleDeleteItemFromModal()}
+                      disabled={deletingItem}
+                      aria-label={deletingItem ? 'Deleting item' : 'Delete item'}
+                      title={deletingItem ? 'Deleting item' : 'Delete item'}
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                    <button type="button" className="list-item-settings-icon-btn" disabled aria-label="Merge item (soon)" title="Merge item (soon)">
+                      <GitMerge size={16} />
+                    </button>
+                  </div>
+                  <div className={`list-item-move-menu ${itemMoveMenuOpen ? 'open' : ''}`.trim()}>
+                    {peerLists.length === 0 && <p>No lists available</p>}
+                    {peerLists.map((entry) => (
+                      <button
+                        key={entry.id}
+                        type="button"
+                        onClick={() => {
+                          setMoveTargetListId(entry.id);
+                          setItemMoveMenuOpen(false);
+                          void handleMoveItemToList(entry.id);
+                        }}
+                        disabled={movingItem}
+                      >
+                        {entry.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <button type="button" className="list-item-modal-close" onClick={closeItemModal} aria-label="Close item panel">
+                  <CloseIcon size={16} />
+                </button>
+              </div>
             </header>
 
             <div className="list-item-modal-body">
               <div className="list-item-modal-main">
                 <label className="list-item-field">
-                  <span>Name</span>
-                  <input
-                    value={modalTitleDraft}
-                    onChange={(event) => setModalTitleDraft(event.target.value)}
-                    placeholder="Item name"
-                  />
-                </label>
-
-                <label className="list-item-field">
                   <span>Description</span>
                   <textarea
+                    className="list-item-description-editor"
                     value={modalDescriptionDraft}
                     onChange={(event) => setModalDescriptionDraft(event.target.value)}
                     placeholder="Details, notes, and context"
                     rows={5}
                   />
                 </label>
-                {descriptionAutosaveBusy && <p className="list-item-autosave-note">Saving description…</p>}
-
-                <div className="list-item-field">
-                  <span>Status</span>
-                  <StatusSelect
-                    statuses={statuses}
-                    value={modalStatusValue}
-                    onChange={(next: LaneStatus) => setModalStatusValue(next.id ?? next.key)}
-                    onManageStatuses={() => setStatusManagerOpen(true)}
-                  />
-                </div>
 
                 <div className="list-item-field list-item-column-values">
                   <span>Column values</span>
@@ -2719,11 +3071,10 @@ export default function ListView(): JSX.Element {
                   ) : (
                     <div className="list-item-column-grid">
                       {listFields.map((field) => {
-                        const fieldValue = getFieldValueForItem(selectedItem.id, field.id);
                         return (
                           <div key={field.id} className="list-item-column-row">
                             <strong>{field.name}</strong>
-                            <span>{getDisplayValue(field, fieldValue)}</span>
+                            {renderPinnedFieldCell(selectedItem, field)}
                           </div>
                         );
                       })}
@@ -2736,13 +3087,17 @@ export default function ListView(): JSX.Element {
                   <div className="list-item-modal-action-list">
                     {(selectedItem.actions || []).map((action) => (
                       <div
-                        className={`list-action-row thread-target ${selectedActionForThreadId === action.id ? 'active' : ''}`.trim()}
+                        className={`list-item-modal-action-card thread-target ${selectedActionForThreadId === action.id ? 'active' : ''} ${itemModalExpandedActions[action.id] ? 'expanded' : ''}`.trim()}
                         key={`modal-${action.id}`}
                         onClick={() => {
                           setSelectedActionForThreadId(action.id);
                           setActiveCommentScope({ type: 'action', scopeId: action.id });
                         }}
                         onKeyDown={(event) => {
+                          const target = event.target as HTMLElement;
+                          if (target.closest('input, textarea, button, [role="combobox"]')) {
+                            return;
+                          }
                           if (event.key === 'Enter' || event.key === ' ') {
                             event.preventDefault();
                             setSelectedActionForThreadId(action.id);
@@ -2752,77 +3107,89 @@ export default function ListView(): JSX.Element {
                         role="button"
                         tabIndex={0}
                       >
-                        <StatusSelect
-                          statuses={statuses}
-                          value={action.status}
-                          onChange={(next: LaneStatus) => void handleActionStatusChange(selectedItem.id, action.id, next)}
-                          appearance="circle"
-                          onManageStatuses={() => setStatusManagerOpen(true)}
-                        />
-                        <span className="list-action-title">{action.title}</span>
+                        <div className="list-item-modal-action-head">
+                          <StatusSelect
+                            statuses={subtaskStatuses}
+                            value={action.subtask_status_id ?? action.status}
+                            onChange={(next: LaneStatus) => {
+                              handleActionDraftChange(selectedItem.id, action, {
+                                status: next.key || 'not_started',
+                                subtask_status_id: next.id ?? null
+                              });
+                            }}
+                            appearance="circle"
+                            onManageStatuses={() => {
+                              setStatusManagerScope('subtask');
+                              setStatusManagerOpen(true);
+                            }}
+                          />
+                          <span className="list-action-title">{action.title}</span>
+                          <span className={`list-item-modal-task-save-state ${itemModalActionSaveState[action.id] || 'saved'}`.trim()}>
+                            {itemModalActionSaveState[action.id] === 'saving'
+                              ? 'Saving…'
+                              : itemModalActionSaveState[action.id] === 'retrying'
+                                ? 'Retrying…'
+                                : 'Saved'}
+                          </span>
+                          <button
+                            type="button"
+                            className={`list-item-modal-action-expand ${itemModalExpandedActions[action.id] ? 'expanded' : ''}`.trim()}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setItemModalExpandedActions((prev) => ({ ...prev, [action.id]: !prev[action.id] }));
+                            }}
+                            aria-label={itemModalExpandedActions[action.id] ? 'Collapse task details' : 'Expand task details'}
+                          >
+                            <ChevronRight size={14} />
+                          </button>
+                        </div>
+                        {itemModalExpandedActions[action.id] && (
+                          <div className="list-item-modal-action-editor" onClick={(event) => event.stopPropagation()}>
+                            <label className="list-item-field">
+                              <span>Task name</span>
+                              <input
+                                value={action.title || ''}
+                                onChange={(event) =>
+                                  handleActionDraftChange(selectedItem.id, action, { title: event.target.value })
+                                }
+                                placeholder="Task name"
+                              />
+                            </label>
+                            <label className="list-item-field">
+                              <span>Description</span>
+                              <textarea
+                                value={action.description || ''}
+                                onChange={(event) =>
+                                  handleActionDraftChange(selectedItem.id, action, { description: event.target.value })
+                                }
+                                placeholder="Details and execution notes"
+                                rows={3}
+                              />
+                            </label>
+                            <label className="list-item-field">
+                              <span>Scheduled</span>
+                              <input
+                                type="datetime-local"
+                                value={toDateTimeLocalValue(action.scheduled_at)}
+                                onChange={(event) =>
+                                  handleActionDraftChange(selectedItem.id, action, {
+                                    scheduled_at: fromDateTimeLocalValue(event.target.value)
+                                  })
+                                }
+                              />
+                            </label>
+                            <p className="list-item-modal-action-editor-hint">Task fields are editable here. Comments stay in the right-side thread.</p>
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
                 </div>
 
                 <div className="list-item-modal-save-row">
-                  <div className="list-item-modal-settings-wrap">
-                    <button
-                      type="button"
-                      className="list-item-settings-btn"
-                      onClick={() => {
-                        setItemModalSettingsOpen((prev) => !prev);
-                        setItemMoveMenuOpen(false);
-                      }}
-                      aria-label="Item settings"
-                    >
-                      <GearSix size={16} weight="regular" />
-                    </button>
-                    <div className={`list-item-settings-slideout ${itemModalSettingsOpen ? 'open' : ''}`.trim()}>
-                      <button
-                        type="button"
-                        className="list-item-settings-icon-btn"
-                        onClick={() => setItemMoveMenuOpen((prev) => !prev)}
-                        aria-label="Move item"
-                        title="Move item"
-                      >
-                        <ArrowRightLeft size={16} />
-                      </button>
-                      <button
-                        type="button"
-                        className="list-item-settings-icon-btn danger"
-                        onClick={() => void handleDeleteItemFromModal()}
-                        disabled={deletingItem}
-                        aria-label={deletingItem ? 'Deleting item' : 'Delete item'}
-                        title={deletingItem ? 'Deleting item' : 'Delete item'}
-                      >
-                        <Trash2 size={16} />
-                      </button>
-                      <button type="button" className="list-item-settings-icon-btn" disabled aria-label="Merge item (soon)" title="Merge item (soon)">
-                        <GitMerge size={16} />
-                      </button>
-                    </div>
-                    <div className={`list-item-move-menu ${itemMoveMenuOpen ? 'open' : ''}`.trim()}>
-                      {peerLists.length === 0 && <p>No lists available</p>}
-                      {peerLists.map((entry) => (
-                        <button
-                          key={entry.id}
-                          type="button"
-                          onClick={() => {
-                            setMoveTargetListId(entry.id);
-                            setItemMoveMenuOpen(false);
-                            void handleMoveItemToList(entry.id);
-                          }}
-                          disabled={movingItem}
-                        >
-                          {entry.name}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  <button type="button" onClick={() => void handleSaveItemFromModal()} disabled={savingItem}>
-                    {savingItem ? 'Saving...' : 'Save changes'}
-                  </button>
+                  <span className={`list-item-save-state ${itemModalSaveState}`.trim()}>
+                    {itemModalSaveState === 'saving' ? 'Saving…' : itemModalSaveState === 'retrying' ? 'Retrying…' : 'Saved'}
+                  </span>
                 </div>
               </div>
 
@@ -2890,8 +3257,10 @@ export default function ListView(): JSX.Element {
                             ))}
                         </article>
                       ) : (
-                        <article className="list-item-comment-user-bubble">
-                          <p>{comment.content}</p>
+                        <div className="list-item-comment-user-block">
+                          <article className="list-item-comment-user-bubble">
+                            <p>{comment.content}</p>
+                          </article>
                           <div className="list-item-comment-user-meta">
                             <time>{formatCommentTime(comment.created_at)}</time>
                             <button
@@ -2900,10 +3269,22 @@ export default function ListView(): JSX.Element {
                               onClick={() => void handlePushCommentToAi(comment)}
                               disabled={commentSubmitting || commentsLoading || pushingCommentId === comment.id}
                             >
-                              {pushingCommentId === comment.id ? 'Sending…' : 'Push to Delta AI'}
+                              {pushingCommentId === comment.id ? (
+                                'Sending…'
+                              ) : (
+                                <>
+                                  <img
+                                    src="/Delta-AI-Button.png"
+                                    alt=""
+                                    aria-hidden="true"
+                                    className="list-item-comment-push-ai-logo"
+                                  />
+                                  <span>Push to Delta AI</span>
+                                </>
+                              )}
                             </button>
                           </div>
-                        </article>
+                        </div>
                       )}
                     </div>
                   ))}
@@ -3037,104 +3418,138 @@ export default function ListView(): JSX.Element {
         <div className="list-status-manager-overlay" onClick={() => setStatusManagerOpen(false)}>
           <section className="list-status-manager" onClick={(event) => event.stopPropagation()}>
             <header className="list-status-manager-head">
-              <h2>Manage Statuses</h2>
+              <h2>{managerIsSubtask ? 'Manage Task Statuses' : 'Manage Item Statuses'}</h2>
+              <div className="list-status-manager-scope-toggle">
+                <button
+                  type="button"
+                  className={!managerIsSubtask ? 'active' : ''}
+                  onClick={() => {
+                    setStatusManagerScope('item');
+                    setStatusInlineCreateOpen(false);
+                  }}
+                >
+                  Items
+                </button>
+                <button
+                  type="button"
+                  className={managerIsSubtask ? 'active' : ''}
+                  onClick={() => {
+                    setStatusManagerScope('subtask');
+                    setStatusInlineCreateOpen(false);
+                  }}
+                >
+                  Tasks
+                </button>
+              </div>
               <button type="button" onClick={() => setStatusManagerOpen(false)}>Close</button>
             </header>
 
-            {!canManagePersistedStatuses && (
+            {!managerCanPersist && (
               <p className="list-status-manager-note">
-                Run the latest migration first to enable custom status management.
+                {managerMigrationHint}
               </p>
             )}
 
-            {canManagePersistedStatuses && statusImportCandidates.length > 0 && (
-              <div className="list-status-import-row">
-                <span>Inherit statuses from another list</span>
-                <select value={statusImportListId} onChange={(event) => setStatusImportListId(event.target.value)}>
-                  {statusImportCandidates.map((entry) => (
-                    <option key={entry.id} value={entry.id}>
-                      {entry.name}
-                    </option>
-                  ))}
-                </select>
-                <button type="button" onClick={() => void handleImportStatusesFromList()} disabled={!statusImportListId || importingStatuses}>
-                  {importingStatuses ? 'Importing…' : 'Import'}
-                </button>
-              </div>
-            )}
-
             <div className="list-status-manager-list">
-              {statuses.map((status, index) => (
-                <div key={status.id || status.key} className="list-status-manager-row">
-                  <span
-                    className="list-status-manager-dot"
-                    style={{ backgroundColor: status.color }}
-                    aria-hidden="true"
-                  />
+              {managerStatuses.map((status) => (
+                <div
+                  key={status.id || status.key}
+                  className="list-status-manager-row"
+                  draggable={Boolean(status.id)}
+                  onDragStart={() => setDraggingManagerStatusId(status.id || null)}
+                  onDragEnd={() => setDraggingManagerStatusId(null)}
+                  onDragOver={(event) => {
+                    if (!draggingManagerStatusId || !status.id) return;
+                    event.preventDefault();
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    void handleManagerStatusDrop(status.id || '');
+                    setDraggingManagerStatusId(null);
+                  }}
+                >
+                  <label
+                    className="list-status-color-trigger"
+                    style={{ '--status-color': status.color || '#94a3b8' } as CSSProperties}
+                  >
+                    <input
+                      type="color"
+                      value={status.color || '#94a3b8'}
+                      onChange={(event) =>
+                        void (managerIsSubtask ? handlePatchSubtaskStatus : handlePatchStatus)(status.id || '', {
+                          color: event.target.value
+                        })
+                      }
+                      disabled={!status.id}
+                      aria-label="Pick status color"
+                    />
+                  </label>
                   <input
                     value={status.name}
                     onChange={(event) =>
-                      void handlePatchStatus(status.id || '', {
+                      void (managerIsSubtask ? handlePatchSubtaskStatus : handlePatchStatus)(status.id || '', {
                         name: event.target.value,
                         key: normalizeStatusKey(event.target.value) || status.key
                       })
                     }
                     disabled={!status.id}
                   />
-                  <div className="list-status-color-swatches">
-                    {STATUS_COLORS.map((color) => (
-                      <button
-                        key={`${status.id || status.key}-${color}`}
-                        type="button"
-                        className={`status-swatch ${status.color === color ? 'active' : ''}`.trim()}
-                        style={{ backgroundColor: color }}
-                        onClick={() => void handlePatchStatus(status.id || '', { color })}
-                        disabled={!status.id}
-                      />
-                    ))}
-                  </div>
-                  <div className="list-status-manager-controls">
-                    <button type="button" onClick={() => void handleMoveStatus(status.id || '', 'up')} disabled={!status.id || index === 0}>
-                      ↑
-                    </button>
-                    <button type="button" onClick={() => void handleMoveStatus(status.id || '', 'down')} disabled={!status.id || index === statuses.length - 1}>
-                      ↓
-                    </button>
-                    <button type="button" onClick={() => void handleDeleteStatus(status)} disabled={!status.id || statuses.length <= 1}>
-                      Delete
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    className="list-status-delete-btn"
+                    onClick={() => void (managerIsSubtask ? handleDeleteSubtaskStatus : handleDeleteStatus)(status)}
+                    disabled={!status.id || managerStatuses.length <= 1}
+                    aria-label={`Delete ${status.name}`}
+                    title="Delete status"
+                  >
+                    <Trash2 size={15} />
+                  </button>
                 </div>
               ))}
             </div>
 
-            <form
-              className="list-status-manager-create"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void handleCreateStatus();
-              }}
-            >
-              <input
-                value={statusNameDraft}
-                onChange={(event) => setStatusNameDraft(event.target.value)}
-                placeholder="New status name"
-                disabled={!canManagePersistedStatuses}
-              />
-              <div className="list-status-color-swatches">
-                {STATUS_COLORS.map((color) => (
-                  <button
-                    key={`draft-${color}`}
-                    type="button"
-                    className={`status-swatch ${statusColorDraft === color ? 'active' : ''}`.trim()}
-                    style={{ backgroundColor: color }}
-                    onClick={() => setStatusColorDraft(color)}
-                    disabled={!canManagePersistedStatuses}
+            {!statusInlineCreateOpen ? (
+              <button
+                type="button"
+                className="list-status-add-inline-btn"
+                onClick={() => setStatusInlineCreateOpen(true)}
+                disabled={!managerCanPersist}
+              >
+                Add Status
+              </button>
+            ) : (
+              <form
+                className="list-status-manager-create-inline"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void (managerIsSubtask ? handleCreateSubtaskStatus() : handleCreateStatus());
+                  setStatusInlineCreateOpen(false);
+                }}
+              >
+                <label
+                  className="list-status-color-trigger"
+                  style={{ '--status-color': statusColorDraft || '#94a3b8' } as CSSProperties}
+                >
+                  <input
+                    type="color"
+                    value={statusColorDraft}
+                    onChange={(event) => setStatusColorDraft(event.target.value)}
+                    disabled={!managerCanPersist}
+                    aria-label="Pick new status color"
                   />
-                ))}
-              </div>
-              <button type="submit" disabled={!canManagePersistedStatuses}>Add Status</button>
-            </form>
+                </label>
+                <input
+                  value={statusNameDraft}
+                  onChange={(event) => setStatusNameDraft(event.target.value)}
+                  placeholder="Status name"
+                  disabled={!managerCanPersist}
+                  autoFocus
+                />
+                <button type="submit" className="list-status-inline-save-btn" disabled={!managerCanPersist}>
+                  Save
+                </button>
+              </form>
+            )}
           </section>
         </div>
       )}

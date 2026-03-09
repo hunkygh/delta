@@ -26,7 +26,7 @@ interface CalendarProps {
   onSaveEvent?: (event: Event) => Promise<Event | void>;
   onSaveEvents?: (events: Event[]) => Promise<void>;
   onDeleteEvent?: (eventId: string) => Promise<void>;
-  onOptimizeTimeBlock?: (timeBlockId: string) => Promise<{ source?: string; proposal?: any } | void>;
+  onOptimizeTimeBlock?: (timeBlockId: string, prompt?: string) => Promise<{ source?: string; proposal?: any } | void>;
   initialFocusEventId?: string | null;
 }
 
@@ -202,6 +202,8 @@ export default function Calendar({
     sat: { listId: '', itemIds: [] },
     sun: { listId: '', itemIds: [] }
   });
+  const [includeRecurringTasks, setIncludeRecurringTasks] = useState(true);
+  const [repeatTasksByItemId, setRepeatTasksByItemId] = useState<Record<string, boolean>>({});
   const [draftLinkedItems, setDraftLinkedItems] = useState<DraftLinkedItem[]>([]);
   const [formState, setFormState] = useState<{
     title: string;
@@ -665,6 +667,14 @@ export default function Calendar({
     void (async () => {
       try {
         const timezone = getUserTimeZone();
+        const sourceEventById = new Map(eventList.map((entry) => [entry.id, entry]));
+        const sourceTaskRepeatConfigById = new Map<string, ReturnType<typeof extractContentTaskRepeatConfig>>();
+        for (const sourceId of sourceIds) {
+          sourceTaskRepeatConfigById.set(
+            sourceId,
+            extractContentTaskRepeatConfig(sourceEventById.get(sourceId)?.tags)
+          );
+        }
         const perOccurrenceItemIds = new Map<string, string[]>();
         const allItemIds = new Set<string>();
         for (const event of baseVisibleEvents) {
@@ -743,7 +753,14 @@ export default function Calendar({
 
           for (const itemId of itemIds) {
             const itemTasks = actionsByItemId.get(itemId) || [];
-            if (itemTasks.length > 0) {
+            const taskRepeatConfig = sourceTaskRepeatConfigById.get(sourceId) || {
+              includeRecurringTasks: true,
+              repeatTasksByItemId: {}
+            };
+            const shouldIncludeTasks =
+              taskRepeatConfig.includeRecurringTasks &&
+              (taskRepeatConfig.repeatTasksByItemId[itemId] ?? true);
+            if (itemTasks.length > 0 && shouldIncludeTasks) {
               for (const task of itemTasks) {
                 entries.push({
                   id: task.id,
@@ -773,9 +790,36 @@ export default function Calendar({
     return () => {
       active = false;
     };
-  }, [baseVisibleEvents, itemTitleById, timeBlockContentRules, weekEnd, weekStart]);
+  }, [baseVisibleEvents, eventList, itemTitleById, timeBlockContentRules, weekEnd, weekStart]);
 
   const visibleEvents = baseVisibleEvents;
+  const visibleEventsWithLinkedTasks = useMemo(
+    () =>
+      visibleEvents.map((event) => {
+        const linkedRows = resolvedItemsByOccurrence[event.id] || [];
+        if (linkedRows.length === 0) {
+          return event;
+        }
+        return {
+          ...event,
+          tasks: linkedRows.map((row) => ({
+            id: row.id,
+            title: row.title,
+            completed: row.completed,
+            recurrenceMode: 'match_event' as const
+          }))
+        };
+      }),
+    [resolvedItemsByOccurrence, visibleEvents]
+  );
+
+  const occurrenceParentItemTitleById = useMemo(
+    () =>
+      Object.fromEntries(
+        Array.from(itemTitleById.entries()).map(([id, entryTitle]) => [id, entryTitle])
+      ),
+    [itemTitleById]
+  );
 
   const editingEvent = editingEventId
     ? eventList.find((item) => item.id === editingEventId) ?? null
@@ -1013,6 +1057,8 @@ export default function Calendar({
       sat: { listId: '', itemIds: [] },
       sun: { listId: '', itemIds: [] }
     });
+    setIncludeRecurringTasks(true);
+    setRepeatTasksByItemId({});
     setDraftLinkedItems([]);
     setEditScopeMode('this_event');
     setIsModalOpen(true);
@@ -1049,6 +1095,9 @@ export default function Calendar({
     setIsAiContextActive(false);
     setIsTaskLinkPanelOpen(false);
     setAttachSelection(extractAttachSelection(eventItem.tags));
+    const taskRepeatConfig = extractContentTaskRepeatConfig(eventItem.tags);
+    setIncludeRecurringTasks(taskRepeatConfig.includeRecurringTasks);
+    setRepeatTasksByItemId(taskRepeatConfig.repeatTasksByItemId);
     hydrateContentDrafts(eventItem.id);
     setDraftLinkedItems([]);
     setEditScopeMode('this_event');
@@ -1070,6 +1119,8 @@ export default function Calendar({
       setIsAiContextActive(false);
       setIsTaskLinkPanelOpen(false);
       setAttachSelection({});
+      setIncludeRecurringTasks(true);
+      setRepeatTasksByItemId({});
       setDraftLinkedItems([]);
     }, 170);
   };
@@ -1079,7 +1130,18 @@ export default function Calendar({
   const saveEvent = async (): Promise<void> => {
     try {
       const normalizedTitle = formState.title.trim() || 'Untitled event';
+      const baseTags = (editingEvent?.tags || []).filter(
+        (tag) =>
+          !tag.startsWith('attach:') &&
+          !tag.startsWith('attachcfg:') &&
+          !tag.startsWith('contenttasks:') &&
+          !tag.startsWith('contenttaskitem:')
+      );
       const attachTags = buildAttachTags(attachSelection);
+      const taskRepeatTags = buildContentTaskRepeatTags({
+        includeRecurringTasks,
+        repeatTasksByItemId
+      });
       const normalizedRecurrenceConfig = normalizeRecurrenceConfigForRule(
         formState.recurrence,
         formState.recurrenceConfig
@@ -1106,7 +1168,7 @@ export default function Calendar({
         includeWeekends: formState.includeWeekends,
         timezone: getUserTimeZone(),
         tasks: formState.tasks,
-        tags: attachTags
+        tags: [...baseTags, ...attachTags, ...taskRepeatTags]
       };
 
       setEventList((prev) => {
@@ -1177,14 +1239,14 @@ export default function Calendar({
     }
   };
 
-  const handleOptimizeBlock = async (): Promise<void> => {
+  const handleOptimizeBlock = async (prompt?: string): Promise<void> => {
     if (!editingEventId || !onOptimizeTimeBlock) {
       return;
     }
     setIsOptimizingBlock(true);
     setOptimizeError(null);
     try {
-      const result = await onOptimizeTimeBlock(editingEventId);
+      const result = await onOptimizeTimeBlock(editingEventId, prompt);
       const proposal = result?.proposal;
       const rows: ProposalReviewRow[] = [];
       const payloadMap: Record<string, {
@@ -1755,10 +1817,18 @@ export default function Calendar({
   };
 
   const handleAllListChange = async (listId: string): Promise<void> => {
-    const nextItems = (listOptions.find((option) => option.id === listId)?.items || []).map((entry) => entry.id);
+    const previousListId = contentAll.listId;
+    const nextItems = previousListId === listId ? contentAll.itemIds : [];
     setContentAll({
       listId,
       itemIds: nextItems
+    });
+    setRepeatTasksByItemId((prev) => {
+      const next = { ...prev };
+      nextItems.forEach((itemId) => {
+        if (next[itemId] === undefined) next[itemId] = true;
+      });
+      return next;
     });
     await persistContentRule({
       selectorType: 'all',
@@ -1773,6 +1843,17 @@ export default function Calendar({
       ...prev,
       itemIds
     }));
+    setRepeatTasksByItemId((prev) => {
+      const next = { ...prev };
+      const keep = new Set(itemIds);
+      Object.keys(next).forEach((itemId) => {
+        if (!keep.has(itemId)) delete next[itemId];
+      });
+      itemIds.forEach((itemId) => {
+        if (next[itemId] === undefined) next[itemId] = true;
+      });
+      return next;
+    });
     await persistContentRule({
       selectorType: 'all',
       selectorValue: null,
@@ -1785,7 +1866,8 @@ export default function Calendar({
     weekday: 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun',
     listId: string
   ): Promise<void> => {
-    const nextItems = (listOptions.find((option) => option.id === listId)?.items || []).map((entry) => entry.id);
+    const previousListId = contentByWeekday[weekday]?.listId || '';
+    const nextItems = previousListId === listId ? (contentByWeekday[weekday]?.itemIds || []) : [];
     setContentByWeekday((prev) => ({
       ...prev,
       [weekday]: {
@@ -1793,6 +1875,13 @@ export default function Calendar({
         itemIds: nextItems
       }
     }));
+    setRepeatTasksByItemId((prev) => {
+      const next = { ...prev };
+      nextItems.forEach((itemId) => {
+        if (next[itemId] === undefined) next[itemId] = true;
+      });
+      return next;
+    });
     await persistContentRule({
       selectorType: 'weekday',
       selectorValue: weekday,
@@ -1813,6 +1902,13 @@ export default function Calendar({
         itemIds
       }
     }));
+    setRepeatTasksByItemId((prev) => {
+      const next = { ...prev };
+      itemIds.forEach((itemId) => {
+        if (next[itemId] === undefined) next[itemId] = true;
+      });
+      return next;
+    });
     await persistContentRule({
       selectorType: 'weekday',
       selectorValue: weekday,
@@ -1916,7 +2012,7 @@ export default function Calendar({
         <div className="calendar-grid-area">
           <WeekCalendar
             startOfWeek={weekStart}
-            events={visibleEvents}
+            events={visibleEventsWithLinkedTasks}
             hours={{ start: 1, end: 23 }}
             pixelsPerMinute={1}
             onEventClick={(eventItem) => {
@@ -2049,6 +2145,15 @@ export default function Calendar({
             contentFocalTree={contentFocalTree}
             contentAll={contentAll}
             contentByWeekday={contentByWeekday}
+            includeRecurringTasks={includeRecurringTasks}
+            onToggleIncludeRecurringTasks={() => setIncludeRecurringTasks((prev) => !prev)}
+            repeatTasksByItemId={repeatTasksByItemId}
+            onRepeatTasksForItemChange={(itemId, enabled) =>
+              setRepeatTasksByItemId((prev) => ({
+                ...prev,
+                [itemId]: enabled
+              }))
+            }
             onContentAllListChange={(listId) => void handleAllListChange(listId)}
             onContentAllItemsChange={(itemIds) => void handleAllItemsChange(itemIds)}
             onContentWeekdayListChange={(weekday, listId) => void handleWeekdayListChange(weekday, listId)}
@@ -2057,6 +2162,8 @@ export default function Calendar({
             occurrenceItems={activeOccurrenceItems}
             onToggleOccurrenceItem={(entry, checked) => void handleToggleOccurrenceItem(entry, checked)}
             onOpenOccurrenceItem={handleOpenOccurrenceItem}
+            parentItemTitleById={occurrenceParentItemTitleById}
+            onDelete={() => void deleteEvent()}
             onCancel={closeModal}
             onSave={saveEvent}
             />
@@ -2161,6 +2268,44 @@ function buildAttachTags(selection: Record<string, AttachSelectionConfig>): stri
     );
   }
   return tags;
+}
+
+function buildContentTaskRepeatTags(config: {
+  includeRecurringTasks: boolean;
+  repeatTasksByItemId: Record<string, boolean>;
+}): string[] {
+  const tags: string[] = [`contenttasks:${config.includeRecurringTasks ? 'on' : 'off'}`];
+  for (const [itemId, enabled] of Object.entries(config.repeatTasksByItemId || {})) {
+    tags.push(`contenttaskitem:${itemId}:${enabled ? 'on' : 'off'}`);
+  }
+  return tags;
+}
+
+function extractContentTaskRepeatConfig(tags: string[] | undefined): {
+  includeRecurringTasks: boolean;
+  repeatTasksByItemId: Record<string, boolean>;
+} {
+  if (!tags?.length) {
+    return { includeRecurringTasks: true, repeatTasksByItemId: {} };
+  }
+
+  let includeRecurringTasks = true;
+  const repeatTasksByItemId: Record<string, boolean> = {};
+
+  for (const tag of tags) {
+    if (tag.startsWith('contenttasks:')) {
+      const [, enabled] = tag.split(':');
+      includeRecurringTasks = enabled !== 'off';
+      continue;
+    }
+    if (tag.startsWith('contenttaskitem:')) {
+      const [, itemId, enabled] = tag.split(':');
+      if (!itemId) continue;
+      repeatTasksByItemId[itemId] = enabled !== 'off';
+    }
+  }
+
+  return { includeRecurringTasks, repeatTasksByItemId };
 }
 
 function extractAttachSelection(tags: string[] | undefined): Record<string, AttachSelectionConfig> {

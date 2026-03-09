@@ -5,9 +5,17 @@ const DEFAULT_TIMEZONE = 'America/Denver';
 const isMissingActionLabelColumnError = (error) =>
   Boolean(
     error?.message &&
-      error.message.includes("'action_label'") &&
-      error.message.includes("'lanes'") &&
-      error.message.toLowerCase().includes('schema cache')
+      error.message.toLowerCase().includes('action_label') &&
+      error.message.toLowerCase().includes('lanes') &&
+      (error.message.toLowerCase().includes('schema cache') || error.message.toLowerCase().includes('does not exist'))
+  );
+
+const isMissingItemLabelColumnError = (error) =>
+  Boolean(
+    error?.message &&
+      error.message.toLowerCase().includes('item_label') &&
+      error.message.toLowerCase().includes('lanes') &&
+      (error.message.toLowerCase().includes('schema cache') || error.message.toLowerCase().includes('does not exist'))
   );
 
 const isMissingTableOrSchemaCacheError = (error, tableName) =>
@@ -130,8 +138,8 @@ const buildLinkContext = async (userId) => {
     let base = supabase.from('lanes').select('id,focal_id,name,item_label,action_label').eq('user_id', userId);
     let result = await base.order('order_num', { ascending: true });
 
-    if (result.error && isMissingActionLabelColumnError(result.error)) {
-      base = supabase.from('lanes').select('id,focal_id,name,item_label').eq('user_id', userId);
+    if (result.error && (isMissingActionLabelColumnError(result.error) || isMissingItemLabelColumnError(result.error))) {
+      base = supabase.from('lanes').select('id,focal_id,name').eq('user_id', userId);
       result = await base.order('order_num', { ascending: true });
     }
 

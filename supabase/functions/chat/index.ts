@@ -142,6 +142,17 @@ interface DeterministicResponse {
   proposals?: ChatProposal[];
 }
 
+interface MutationPlanStep {
+  kind: 'update_core_item' | 'upsert_item_field_value';
+  summary: string;
+  payload: Record<string, unknown>;
+}
+
+interface MutationPlanContract {
+  idempotencyKey: string;
+  steps: MutationPlanStep[];
+}
+
 type MessageIntentMode = 'act' | 'ask' | 'mixed' | 'inform';
 interface MessagePlan {
   mode: MessageIntentMode;
@@ -204,6 +215,170 @@ const GROQ_MODELS_FALLBACK = [
   'mixtral-8x7b-32768',
   'gemma2-9b-it'
 ];
+const GROQ_MODELS_CLASSIFIER = [
+  'llama-3.1-8b-instant',
+  ...GROQ_MODELS_FALLBACK
+];
+const GROQ_MODEL_CACHE_TTL_MS = 10 * 60 * 1000;
+let groqModelCache: { expiresAt: number; ids: string[] } | null = null;
+
+const extractGroqErrorMessage = (payload: any): string => {
+  if (!payload) return '';
+  if (typeof payload === 'string') return payload;
+  const nested = payload?.error?.message ?? payload?.message;
+  return typeof nested === 'string' ? nested : '';
+};
+
+const isGroqModelUnavailableError = (status: number, payload: any): boolean => {
+  if (status !== 400 && status !== 404) return false;
+  const message = extractGroqErrorMessage(payload).toLowerCase();
+  if (!message) return false;
+  return (
+    message.includes('model') &&
+    (
+      message.includes('decommission') ||
+      message.includes('not found') ||
+      message.includes('does not exist') ||
+      message.includes('unavailable') ||
+      message.includes('invalid')
+    )
+  );
+};
+
+const fetchGroqModelIds = async (
+  groqApiKey: string,
+  requestId: string,
+  forceRefresh = false
+): Promise<string[] | null> => {
+  if (!forceRefresh && groqModelCache && groqModelCache.expiresAt > Date.now()) {
+    return groqModelCache.ids;
+  }
+  try {
+    const response = await fetch('https://api.groq.com/openai/v1/models', {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${groqApiKey}`,
+        'Content-Type': 'application/json'
+      }
+    });
+    if (!response.ok) {
+      const errPayload = await safeJson(response);
+      console.warn(`[chat:${requestId}] models endpoint failed`, {
+        status: response.status,
+        error: errPayload
+      });
+      return null;
+    }
+    const parsed = await safeJson(response);
+    const ids = Array.isArray(parsed?.data)
+      ? parsed.data.map((entry: any) => String(entry?.id || '')).filter(Boolean)
+      : [];
+    groqModelCache = {
+      expiresAt: Date.now() + GROQ_MODEL_CACHE_TTL_MS,
+      ids
+    };
+    return ids;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[chat:${requestId}] models endpoint exception`, { error: message });
+    return null;
+  }
+};
+
+const getGroqCandidateModels = async (
+  groqApiKey: string,
+  preferredModels: string[],
+  requestId: string,
+  forceRefresh = false
+): Promise<string[]> => {
+  const activeIds = await fetchGroqModelIds(groqApiKey, requestId, forceRefresh);
+  if (!activeIds || activeIds.length === 0) {
+    return [...preferredModels];
+  }
+  const activeSet = new Set(activeIds);
+  const selected = preferredModels.filter((model) => activeSet.has(model));
+  return selected.length ? selected : [...preferredModels];
+};
+
+const groqChatCompletionWithFallback = async (
+  groqApiKey: string,
+  preferredModels: string[],
+  bodyFactory: (model: string) => Record<string, unknown>,
+  requestId: string
+): Promise<{
+  ok: boolean;
+  model: string | null;
+  content: string;
+  status: number | null;
+  error: unknown;
+}> => {
+  const attempted = new Set<string>();
+  let models = await getGroqCandidateModels(groqApiKey, preferredModels, requestId);
+  let refreshedAfterModelError = false;
+  let lastStatus: number | null = null;
+  let lastError: unknown = null;
+
+  while (models.length > 0) {
+    const model = models.shift() as string;
+    if (attempted.has(model)) continue;
+    attempted.add(model);
+    try {
+      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${groqApiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(bodyFactory(model))
+      });
+      if (!response.ok) {
+        const errPayload = await safeJson(response);
+        lastStatus = response.status;
+        lastError = errPayload;
+        console.warn(`[chat:${requestId}] model failed`, {
+          model,
+          status: response.status,
+          error: errPayload
+        });
+        if (!refreshedAfterModelError && isGroqModelUnavailableError(response.status, errPayload)) {
+          refreshedAfterModelError = true;
+          const refreshed = await getGroqCandidateModels(groqApiKey, preferredModels, requestId, true);
+          models = [...refreshed.filter((entry) => !attempted.has(entry)), ...models];
+        }
+        continue;
+      }
+
+      const json = await safeJson(response);
+      const content = json?.choices?.[0]?.message?.content?.trim?.() || '';
+      if (content) {
+        return {
+          ok: true,
+          model,
+          content,
+          status: response.status,
+          error: null
+        };
+      }
+      lastStatus = response.status;
+      lastError = 'empty_completion';
+      console.warn(`[chat:${requestId}] empty completion`, { model });
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : error;
+      console.warn(`[chat:${requestId}] model exception`, {
+        model,
+        error: lastError
+      });
+    }
+  }
+
+  return {
+    ok: false,
+    model: null,
+    content: '',
+    status: lastStatus,
+    error: lastError
+  };
+};
 
 const clip = (value: string, max = 160): string => (value.length > max ? `${value.slice(0, max)}…` : value);
 
@@ -689,44 +864,40 @@ const classifyMessagePlanWithModel = async (
   message: string,
   context: ChatContext,
   snapshot: AccountContextSnapshot | null,
-  groqApiKey: string
+  groqApiKey: string,
+  requestId = 'classifier'
 ): Promise<MessagePlan> => {
   const fallback = buildMessagePlan(message);
   if (!message.trim()) return fallback;
   const contextLine = friendlyContextLine(context, snapshot);
-  const body = {
-    model: 'llama-3.1-8b-instant',
-    temperature: 0,
-    response_format: { type: 'json_object' },
-    messages: [
-      {
-        role: 'system',
-        content:
-          'Classify the user message intent for a workspace assistant. Return JSON only with keys: ' +
-          '{"mode":"act|ask|mixed|inform","confidence":0..1,"explicitInventoryAsk":boolean,"mutationRequested":boolean,"ambiguousAction":boolean}. ' +
-          'Use "act" only when user clearly wants workspace changes. Use "mixed" when message contains both question + action request.'
-      },
-      {
-        role: 'user',
-        content: JSON.stringify({
-          message,
-          context: contextLine || null
-        })
-      }
-    ]
-  };
-
-  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${groqApiKey}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(body)
-  });
-  if (!response.ok) return fallback;
-  const parsed = await safeJson(response);
-  const content = parsed?.choices?.[0]?.message?.content;
+  const completion = await groqChatCompletionWithFallback(
+    groqApiKey,
+    GROQ_MODELS_CLASSIFIER,
+    (model) => ({
+      model,
+      temperature: 0,
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'system',
+          content:
+            'Classify the user message intent for a workspace assistant. Return JSON only with keys: ' +
+            '{"mode":"act|ask|mixed|inform","confidence":0..1,"explicitInventoryAsk":boolean,"mutationRequested":boolean,"ambiguousAction":boolean}. ' +
+            'Use "act" only when user clearly wants workspace changes. Use "mixed" when message contains both question + action request.'
+        },
+        {
+          role: 'user',
+          content: JSON.stringify({
+            message,
+            context: contextLine || null
+          })
+        }
+      ]
+    }),
+    requestId
+  );
+  if (!completion.ok) return fallback;
+  const content = completion.content;
   if (typeof content !== 'string' || !content.trim().startsWith('{')) return fallback;
   try {
     const json = JSON.parse(content);
@@ -760,6 +931,49 @@ const parseOwnerCandidateFromText = (userText: string): string | null => {
   if (ownerIs?.[1]) return ownerIs[1].trim().replace(/[.?!,;:]+$/g, '');
 
   return null;
+};
+
+const simpleStableHash = (value: string): string => {
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash * 31 + value.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash).toString(16);
+};
+
+const buildMutationIdempotencyKey = (userId: string, itemId: string, text: string, route: string): string =>
+  `mut:${route}:${itemId}:${simpleStableHash(`${userId}:${normalize(text)}`)}`;
+
+const buildProposalId = (type: ChatProposal['type'], payload: Record<string, unknown>): string =>
+  `p:${type}:${simpleStableHash(JSON.stringify(payload))}`;
+
+const isExplicitItemReference = (message: string, itemTitle: string): boolean => {
+  const nMessage = normalize(message);
+  const nTitle = normalize(itemTitle || '');
+  if (!nTitle) return false;
+  return nMessage.includes(nTitle);
+};
+
+const extractCurrentCustomFieldValue = (
+  snapshot: AccountContextSnapshot,
+  itemId: string,
+  fieldId: string
+): {
+  option_id?: string | null;
+  value_text?: string | null;
+  value_number?: number | null;
+  value_date?: string | null;
+  value_boolean?: boolean | null;
+} | null => {
+  const row = snapshot.itemFieldValues.find((entry) => entry.item_id === itemId && entry.field_id === fieldId);
+  if (!row) return null;
+  return {
+    option_id: row.option_id ?? null,
+    value_text: row.value_text ?? null,
+    value_number: row.value_number ?? null,
+    value_date: row.value_date ?? null,
+    value_boolean: row.value_boolean ?? null
+  };
 };
 
 const extractPrimaryUserContent = (userText: string): string => {
@@ -1174,6 +1388,24 @@ const runMutationTools = async (
       confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
     };
   }
+  const scopedMutationAllowed =
+    Boolean(context.item_id) ||
+    isExplicitItemReference(content, item.title) ||
+    itemMatch.confidence >= 0.92;
+  if (!scopedMutationAllowed) {
+    tools.push({ name: 'policy_engine', status: 'blocked', summary: 'Active scope not explicit enough for safe mutation' });
+    return {
+      handled: true,
+      suppressInventory: true,
+      text: `I found "${item.title}", but I won't mutate until scope is explicit. Reply with: "update ${item.title} …" or open that item and retry.`,
+      route: 'mutation_scope_guard',
+      tools,
+      scopeLabels: {
+        focal: entities.focal.id ? focalNameById.get(entities.focal.id) || undefined : undefined
+      },
+      confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
+    };
+  }
   tools.push({ name: 'find_entity', status: 'applied', summary: `Resolved item ${item.title}` });
 
   const itemList = lists.find((entry) => entry.id === item.lane_id) || null;
@@ -1201,25 +1433,8 @@ const runMutationTools = async (
     if (ownerCandidate) {
       const ownerField = resolveFieldFromAlias(fieldsForList, 'owner');
       if (ownerField) {
-        const ownerUpsertRow: Record<string, unknown> = {
-          user_id: userId,
-          item_id: item.id,
-          field_id: ownerField.id,
-          option_id: null,
-          value_text: ownerCandidate,
-          value_number: null,
-          value_date: null,
-          value_boolean: null
-        };
-        const { error: ownerUpsertError } = await client
-          .from('item_field_values')
-          .upsert(ownerUpsertRow, { onConflict: 'item_id,field_id' });
-        if (ownerUpsertError) {
-          tools.push({ name: 'update_record', status: 'error', summary: `Owner update failed: ${ownerUpsertError.message}` });
-        } else {
-          ownerFieldUpdateSummary = `Updated owner to ${ownerCandidate}.`;
-          tools.push({ name: 'update_record', status: 'applied', summary: `Updated owner field to ${ownerCandidate}` });
-        }
+        ownerFieldUpdateSummary = `Detected owner "${ownerCandidate}" (not auto-applied in this step).`;
+        tools.push({ name: 'update_record', status: 'skipped', summary: 'Owner update staged (proposal-only mode)' });
       } else {
         tools.push({ name: 'update_record', status: 'blocked', summary: 'Owner phrase detected but no owner field exists on list' });
       }
@@ -1246,7 +1461,12 @@ const runMutationTools = async (
           text: `Ready to add "${actionTitle}" into your existing "${overlappingBlock.title}" block at ${new Date(startDate).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}. Approve to apply.${ownerFieldUpdateSummary ? ` ${ownerFieldUpdateSummary}` : ''}`,
           proposals: [
             {
-              id: crypto.randomUUID(),
+              id: buildProposalId('create_action', {
+                item_id: item.id,
+                title: actionTitle,
+                scheduled_at: startDate.toISOString(),
+                time_block_id: overlappingBlock.id
+              }),
               type: 'create_action',
               item_id: item.id,
               title: actionTitle,
@@ -1270,7 +1490,12 @@ const runMutationTools = async (
           text: `I found a conflict with "${overlappingBlock.title}" at that time. I prepared a shift proposal and event creation. Approve to apply.`,
           proposals: [
             {
-              id: crypto.randomUUID(),
+              id: buildProposalId('resolve_time_conflict', {
+                conflict_time_block_id: overlappingBlock.id,
+                event_title: calendarTitle,
+                event_start_utc: startDate.toISOString(),
+                event_end_utc: endDate.toISOString()
+              }),
               type: 'resolve_time_conflict',
               conflict_time_block_id: overlappingBlock.id,
               conflict_title: overlappingBlock.title,
@@ -1302,7 +1527,12 @@ const runMutationTools = async (
         })}. Approve to apply.${ownerFieldUpdateSummary ? ` ${ownerFieldUpdateSummary}` : ''}`,
         proposals: [
           {
-            id: crypto.randomUUID(),
+            id: buildProposalId('create_time_block', {
+              title: calendarTitle,
+              scheduled_start_utc: startDate.toISOString(),
+              scheduled_end_utc: endDate.toISOString(),
+              lane_id: item.lane_id || null
+            }),
             type: 'create_time_block',
             title: calendarTitle,
             scheduled_start_utc: startDate.toISOString(),
@@ -1335,7 +1565,12 @@ const runMutationTools = async (
       text: `Ready to add "${actionTitle}"${timeLine} on ${item.title}${targetBlock ? ` and link it to ${targetBlock.title}` : ''}. Approve to apply.${ownerFieldUpdateSummary ? ` ${ownerFieldUpdateSummary}` : ''}`,
       proposals: [
         {
-          id: crypto.randomUUID(),
+          id: buildProposalId('create_action', {
+            item_id: item.id,
+            title: actionTitle,
+            scheduled_at: scheduledAt || null,
+            time_block_id: targetBlock?.id || null
+          }),
           type: 'create_action',
           item_id: item.id,
           title: actionTitle,
@@ -1369,7 +1604,22 @@ const runMutationTools = async (
 
   // Core item fields
   if (fieldAlias === 'title') {
-    const { error } = await client.from('items').update({ title: rawValue }).eq('id', item.id).eq('user_id', userId);
+    const plan: MutationPlanContract = {
+      idempotencyKey: buildMutationIdempotencyKey(userId, item.id, userText, 'update_title'),
+      steps: [{ kind: 'update_core_item', summary: 'set title', payload: { title: rawValue } }]
+    };
+    if (normalize(item.title || '') === normalize(rawValue)) {
+      tools.push({ name: 'idempotency', status: 'applied', summary: `No-op (${plan.idempotencyKey}) title already set` });
+      return {
+        handled: true,
+        text: `Already up to date. Title on ${item.title} is already "${rawValue}".`,
+        route: 'update_record_idempotent',
+        tools,
+        scopeLabels: { focal: itemList?.focalName || undefined, list: itemList?.name || undefined },
+        confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
+      };
+    }
+    const { error } = await client.from('items').update(plan.steps[0].payload).eq('id', item.id).eq('user_id', userId);
     if (error) {
       tools.push({ name: 'update_record', status: 'error', summary: error.message });
       return {
@@ -1381,6 +1631,7 @@ const runMutationTools = async (
         confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
       };
     }
+    tools.push({ name: 'idempotency', status: 'applied', summary: plan.idempotencyKey });
     tools.push({ name: 'update_record', status: 'applied', summary: 'Updated core field: title' });
     return {
       handled: true,
@@ -1393,7 +1644,22 @@ const runMutationTools = async (
   }
 
   if (fieldAlias === 'description' || fieldAlias === 'notes' || fieldAlias === 'note') {
-    const { error } = await client.from('items').update({ description: rawValue }).eq('id', item.id).eq('user_id', userId);
+    const plan: MutationPlanContract = {
+      idempotencyKey: buildMutationIdempotencyKey(userId, item.id, userText, 'update_description'),
+      steps: [{ kind: 'update_core_item', summary: 'set description', payload: { description: rawValue } }]
+    };
+    if (normalize(item.description || '') === normalize(rawValue)) {
+      tools.push({ name: 'idempotency', status: 'applied', summary: `No-op (${plan.idempotencyKey}) description already set` });
+      return {
+        handled: true,
+        text: `Already up to date. Notes on ${item.title} already include that value.`,
+        route: 'update_record_idempotent',
+        tools,
+        scopeLabels: { focal: itemList?.focalName || undefined, list: itemList?.name || undefined },
+        confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
+      };
+    }
+    const { error } = await client.from('items').update(plan.steps[0].payload).eq('id', item.id).eq('user_id', userId);
     if (error) {
       tools.push({ name: 'update_record', status: 'error', summary: error.message });
       return {
@@ -1405,6 +1671,7 @@ const runMutationTools = async (
         confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
       };
     }
+    tools.push({ name: 'idempotency', status: 'applied', summary: plan.idempotencyKey });
     tools.push({ name: 'update_record', status: 'applied', summary: 'Updated core field: description' });
     return {
       handled: true,
@@ -1418,7 +1685,22 @@ const runMutationTools = async (
 
   if (fieldAlias === 'status') {
     const statusValue = formatStatusLabel(rawValue);
-    const { error } = await client.from('items').update({ status: statusValue }).eq('id', item.id).eq('user_id', userId);
+    const plan: MutationPlanContract = {
+      idempotencyKey: buildMutationIdempotencyKey(userId, item.id, userText, 'update_status'),
+      steps: [{ kind: 'update_core_item', summary: 'set status', payload: { status: statusValue } }]
+    };
+    if (normalize(item.status || '') === normalize(statusValue)) {
+      tools.push({ name: 'idempotency', status: 'applied', summary: `No-op (${plan.idempotencyKey}) status already set` });
+      return {
+        handled: true,
+        text: `Already up to date. Status on ${item.title} is already ${statusValue}.`,
+        route: 'update_record_idempotent',
+        tools,
+        scopeLabels: { focal: itemList?.focalName || undefined, list: itemList?.name || undefined },
+        confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
+      };
+    }
+    const { error } = await client.from('items').update(plan.steps[0].payload).eq('id', item.id).eq('user_id', userId);
     if (error) {
       tools.push({ name: 'update_record', status: 'error', summary: error.message });
       return {
@@ -1430,6 +1712,7 @@ const runMutationTools = async (
         confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
       };
     }
+    tools.push({ name: 'idempotency', status: 'applied', summary: plan.idempotencyKey });
     tools.push({ name: 'update_record', status: 'applied', summary: `Updated core field: status=${statusValue}` });
     return {
       handled: true,
@@ -1531,9 +1814,33 @@ const runMutationTools = async (
     upsertRow.value_text = rawValue;
   }
 
+  const plan: MutationPlanContract = {
+    idempotencyKey: buildMutationIdempotencyKey(userId, item.id, `${targetField.id}:${rawValue}`, 'update_custom_field'),
+    steps: [{ kind: 'upsert_item_field_value', summary: `set ${targetField.name}`, payload: upsertRow }]
+  };
+  const currentField = extractCurrentCustomFieldValue(snapshot, item.id, targetField.id);
+  const nextComparable = {
+    option_id: (upsertRow.option_id as string | null | undefined) ?? null,
+    value_text: (upsertRow.value_text as string | null | undefined) ?? null,
+    value_number: (upsertRow.value_number as number | null | undefined) ?? null,
+    value_date: (upsertRow.value_date as string | null | undefined) ?? null,
+    value_boolean: (upsertRow.value_boolean as boolean | null | undefined) ?? null
+  };
+  if (currentField && JSON.stringify(currentField) === JSON.stringify(nextComparable)) {
+    tools.push({ name: 'idempotency', status: 'applied', summary: `No-op (${plan.idempotencyKey}) field already set` });
+    return {
+      handled: true,
+      text: `Already up to date. ${item.title} already has ${targetField.name} set to "${rawValue}".`,
+      route: 'update_record_idempotent',
+      tools,
+      scopeLabels: { focal: itemList?.focalName || undefined, list: itemList?.name || undefined },
+      confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
+    };
+  }
+
   const { error } = await client
     .from('item_field_values')
-    .upsert(upsertRow, { onConflict: 'item_id,field_id' });
+    .upsert(plan.steps[0].payload, { onConflict: 'item_id,field_id' });
   if (error) {
     tools.push({ name: 'update_record', status: 'error', summary: error.message });
     return {
@@ -1546,6 +1853,7 @@ const runMutationTools = async (
     };
   }
 
+  tools.push({ name: 'idempotency', status: 'applied', summary: plan.idempotencyKey });
   tools.push({ name: 'update_record', status: 'applied', summary: `Updated custom field: ${targetField.name}` });
   return {
     handled: true,
@@ -2124,7 +2432,7 @@ Deno.serve(async (req) => {
 
     if (GROQ_API_KEY && lastUserMessage) {
       try {
-        messagePlan = await classifyMessagePlanWithModel(lastUserMessage, context, accountSnapshot, GROQ_API_KEY);
+        messagePlan = await classifyMessagePlanWithModel(lastUserMessage, context, accountSnapshot, GROQ_API_KEY, requestId);
       } catch {
         messagePlan = fallbackPlan;
       }
@@ -2283,47 +2591,25 @@ Deno.serve(async (req) => {
     let lastGroqStatus: number | null = null;
     let lastGroqError: unknown = null;
 
-    for (const model of GROQ_MODELS_FALLBACK) {
-      try {
-        const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${GROQ_API_KEY}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            model,
-            temperature: 0.2,
-            max_tokens: 500,
-            messages: promptMessages
-          })
-        });
+    const llmAttempt = await groqChatCompletionWithFallback(
+      GROQ_API_KEY,
+      GROQ_MODELS_FALLBACK,
+      (model) => ({
+        model,
+        temperature: 0.2,
+        max_tokens: 500,
+        messages: promptMessages
+      }),
+      requestId
+    );
 
-        if (!response.ok) {
-          lastGroqStatus = response.status;
-          lastGroqError = await safeJson(response);
-          console.warn(`[chat:${requestId}] model failed`, {
-            model,
-            status: response.status,
-            error: lastGroqError
-          });
-          continue;
-        }
-
-        const json = await safeJson(response);
-        const candidate = json?.choices?.[0]?.message?.content?.trim() || '';
-        if (candidate) {
-          text = candidate;
-          usedModel = model;
-          console.log(`[chat:${requestId}] model success`, { model });
-          break;
-        }
-
-        console.warn(`[chat:${requestId}] empty completion`, { model });
-      } catch (modelError) {
-        lastGroqError = modelError instanceof Error ? modelError.message : modelError;
-        console.warn(`[chat:${requestId}] model exception`, { model, error: lastGroqError });
-      }
+    if (llmAttempt.ok) {
+      text = llmAttempt.content;
+      usedModel = llmAttempt.model;
+      console.log(`[chat:${requestId}] model success`, { model: usedModel });
+    } else {
+      lastGroqStatus = llmAttempt.status;
+      lastGroqError = llmAttempt.error;
     }
 
     if (!text) {

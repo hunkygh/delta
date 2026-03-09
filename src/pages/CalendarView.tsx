@@ -120,13 +120,14 @@ export default function CalendarView(): JSX.Element {
   );
 
   const handleOptimizeTimeBlock = useCallback(
-    async (timeBlockId: string) => {
+    async (timeBlockId: string, prompt?: string) => {
       if (!timeBlockId) {
         return { source: 'heuristic', proposal: null };
       }
       return focalBoardService.getOptimizationProposal({
         scope: 'timeblock',
-        scope_id: timeBlockId
+        scope_id: timeBlockId,
+        user_prompt: prompt || undefined
       });
     },
     []

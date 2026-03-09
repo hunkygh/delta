@@ -134,6 +134,17 @@ export default function EventCard({
       <span className="week-event-card-title">{event.title}</span>
       <span className="week-event-card-time">{formatTimeRange(event.start, event.end)}</span>
 
+      {!isTiny && !isOpen && tasks.length > 0 && (
+        <div className="week-event-task-preview" onClick={(eventMouse) => eventMouse.stopPropagation()}>
+          {tasks.slice(0, 2).map((task) => (
+            <span key={task.id} className={task.completed ? 'completed' : ''}>
+              {task.title}
+            </span>
+          ))}
+          {tasks.length > 2 && <span className="more">+{tasks.length - 2}</span>}
+        </div>
+      )}
+
       {!isCompact && isOpen && (
         <div className="week-event-tasks" onClick={(eventMouse) => eventMouse.stopPropagation()}>
           {tasks.map((task, index) => (

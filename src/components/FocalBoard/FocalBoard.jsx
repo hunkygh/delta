@@ -2,10 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useFocalBoard } from '../../hooks/useFocalBoard';
 import InlineInput from '../UI/InlineInput';
-import { calendarService } from '../../services/calendarService';
 import focalBoardService from '../../services/focalBoardService';
-import listFieldService from '../../services/listFieldService';
-import itemFieldValueService from '../../services/itemFieldValueService';
 import './FocalBoard.css';
 
 const FocalBoard = ({ userId, selectedFocalFromNav, selectedFocalIdFromNav }) => {
@@ -31,9 +28,6 @@ const FocalBoard = ({ userId, selectedFocalFromNav, selectedFocalIdFromNav }) =>
   const [newLaneName, setNewLaneName] = useState('');
   const [newItemLabel, setNewItemLabel] = useState('');
   const [newActionLabel, setNewActionLabel] = useState('');
-  const [focalEvents, setFocalEvents] = useState([]);
-  const [recurringSummaryByLane, setRecurringSummaryByLane] = useState({});
-  const [customStatusSummaryByLane, setCustomStatusSummaryByLane] = useState({});
 
   const handleCreateFocal = async (name) => {
     if (!name.trim()) return;
@@ -82,121 +76,6 @@ const FocalBoard = ({ userId, selectedFocalFromNav, selectedFocalIdFromNav }) =>
     });
   }, [navigate, selectedFocal]);
 
-  useEffect(() => {
-    if (!selectedFocal || !userId) {
-      setFocalEvents([]);
-      return;
-    }
-
-    const loadFocalEvents = async () => {
-      try {
-        const allEvents = await calendarService.getTimeBlocks(userId);
-        const laneIds = new Set((lanes || []).map((lane) => lane.id));
-        const filtered = (allEvents || [])
-          .filter((event) => event.focal_id === selectedFocal.id || (event.lane_id && laneIds.has(event.lane_id)))
-          .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime())
-          .slice(0, 8);
-        setFocalEvents(filtered);
-      } catch (err) {
-        console.error('Failed to load focal events:', err);
-        setFocalEvents([]);
-      }
-    };
-
-    void loadFocalEvents();
-  }, [lanes, selectedFocal, userId]);
-
-  useEffect(() => {
-    const loadRecurringSummaries = async () => {
-      const recurringLanes = (lanes || []).filter((lane) => (lane.mode || 'one_off') === 'recurring');
-      if (recurringLanes.length === 0) {
-        setRecurringSummaryByLane({});
-        return;
-      }
-      const weekStart = new Date();
-      weekStart.setUTCHours(0, 0, 0, 0);
-      const day = weekStart.getUTCDay();
-      const diff = day === 0 ? -6 : 1 - day;
-      weekStart.setUTCDate(weekStart.getUTCDate() + diff);
-      const weekEnd = new Date(weekStart);
-      weekEnd.setUTCDate(weekEnd.getUTCDate() + 6);
-      weekEnd.setUTCHours(23, 59, 59, 999);
-
-      try {
-        const entries = await Promise.all(
-          recurringLanes.map(async (lane) => {
-            const payload = await focalBoardService.getRecurringListMvpView(
-              lane.id,
-              weekStart.toISOString(),
-              weekEnd.toISOString()
-            );
-            const avgStreak = (payload.items || []).length
-              ? Math.round(
-                  (payload.items || []).reduce(
-                    (sum, item) => sum + (item?.recurring?.streak || 0),
-                    0
-                  ) / (payload.items || []).length
-                )
-              : 0;
-            return [
-              lane.id,
-              {
-                scheduled: payload.summary?.scheduled_count || 0,
-                completed: payload.summary?.completed_count || 0,
-                avgStreak
-              }
-            ];
-          })
-        );
-        setRecurringSummaryByLane(Object.fromEntries(entries));
-      } catch (err) {
-        console.error('Failed to load recurring list summaries:', err);
-      }
-    };
-
-    void loadRecurringSummaries();
-  }, [lanes]);
-
-  useEffect(() => {
-    const loadCustomStatusSummaries = async () => {
-      if (!lanes?.length) {
-        setCustomStatusSummaryByLane({});
-        return;
-      }
-      try {
-        const entries = await Promise.all(
-          lanes.map(async (lane) => {
-            const fields = await listFieldService.getFields(lane.id);
-            const statusField =
-              fields.find((field) => field.type === 'status' && field.is_primary) ||
-              fields.find((field) => field.type === 'status') ||
-              null;
-            if (!statusField) {
-              return [lane.id, { hasStatusField: false, top: [] }];
-            }
-            const valuesMap = await itemFieldValueService.bulkFetchForList(lane.id);
-            const counts = new Map();
-            Object.values(valuesMap).forEach((perItem) => {
-              const value = perItem?.[statusField.id];
-              const option = (statusField.options || []).find((entry) => entry.id === value?.option_id);
-              const label = option?.label || 'Unassigned';
-              counts.set(label, (counts.get(label) || 0) + 1);
-            });
-            const top = [...counts.entries()]
-              .sort((a, b) => b[1] - a[1])
-              .slice(0, 3)
-              .map(([label, count]) => ({ label, count }));
-            return [lane.id, { hasStatusField: true, top }];
-          })
-        );
-        setCustomStatusSummaryByLane(Object.fromEntries(entries));
-      } catch (error) {
-        console.error('Failed to load custom field status summaries:', error);
-      }
-    };
-    void loadCustomStatusSummaries();
-  }, [lanes]);
-
   const laneStats = useMemo(() => {
     const itemsByLane = new Map();
     const actionsByLane = new Map();
@@ -221,13 +100,32 @@ const FocalBoard = ({ userId, selectedFocalFromNav, selectedFocalIdFromNav }) =>
       const doneItems = laneItems.filter((item) => item.status === 'completed').length;
       const doneActions = laneActions.filter((action) => action.status === 'completed').length;
 
-      const statuses = (lane.lane_statuses || [])
+      let statuses = (lane.lane_statuses || [])
         .sort((a, b) => (a.order_num ?? 0) - (b.order_num ?? 0))
         .map((status) => ({
           id: status.id,
+          key: status.key,
           name: status.name,
+          color: status.color || '#94a3b8',
           count: laneItems.filter((item) => item.status_id === status.id || (!item.status_id && item.status === status.key)).length
         }));
+
+      // Fallback when lane_statuses are unavailable in this environment/query:
+      // derive status columns from item.status values so counts are still accurate.
+      if (statuses.length === 0) {
+        const statusCounts = new Map();
+        laneItems.forEach((item) => {
+          const key = String(item.status || 'pending');
+          statusCounts.set(key, (statusCounts.get(key) || 0) + 1);
+        });
+        statuses = [...statusCounts.entries()].map(([key, count], index) => ({
+          id: key,
+          key,
+          name: key.replace(/_/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase()),
+          color: key === 'completed' ? '#22c55e' : key === 'in_progress' ? '#f59e0b' : '#94a3b8',
+          count
+        }));
+      }
 
       return {
         lane,
@@ -239,6 +137,34 @@ const FocalBoard = ({ userId, selectedFocalFromNav, selectedFocalIdFromNav }) =>
       };
     });
   }, [actions, items, lanes]);
+
+  const statusColumns = useMemo(() => {
+    const byKey = new Map();
+    for (const row of laneStats) {
+      for (const status of row.statuses || []) {
+        if (!byKey.has(status.key)) {
+          byKey.set(status.key, {
+            key: status.key,
+            name: status.name,
+            color: status.color
+          });
+        }
+      }
+    }
+    if (byKey.size === 0) {
+      return [
+        { key: 'pending', name: 'To do', color: '#94a3b8' },
+        { key: 'in_progress', name: 'In progress', color: '#f59e0b' },
+        { key: 'completed', name: 'Done', color: '#22c55e' }
+      ];
+    }
+    return Array.from(byKey.values());
+  }, [laneStats]);
+
+  const tableGridTemplate = useMemo(() => {
+    const statusCols = statusColumns.map(() => 'minmax(104px, 0.7fr)').join(' ');
+    return `minmax(180px, 1.2fr) minmax(140px, 1fr) ${statusCols}`;
+  }, [statusColumns]);
 
   useEffect(() => {
     if (selectedFocalIdFromNav && focals.length > 0) {
@@ -306,27 +232,6 @@ const FocalBoard = ({ userId, selectedFocalFromNav, selectedFocalIdFromNav }) =>
 
       {selectedFocal ? (
         <div className="focal-overview">
-          <section className="focal-overview-card calendar-card">
-            <header className="focal-overview-card-head"><h3>Space Calendar</h3></header>
-            {focalEvents.length === 0 ? (
-              <p className="focal-overview-card-subtitle">No related time blocks yet.</p>
-            ) : (
-              <div className="focal-calendar-list">
-                {focalEvents.map((event) => (
-                  <button
-                    key={event.id}
-                    type="button"
-                    className="focal-calendar-row"
-                    onClick={() => navigate('/calendar', { state: { focusEventId: event.id } })}
-                  >
-                    <span>{event.title}</span>
-                    <time>{new Date(event.start).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</time>
-                  </button>
-                ))}
-              </div>
-            )}
-          </section>
-
           <section className="focal-overview-card lists-card">
             <header className="focal-overview-card-head">
               <h3>Lists</h3>
@@ -375,42 +280,33 @@ const FocalBoard = ({ userId, selectedFocalFromNav, selectedFocalIdFromNav }) =>
             )}
 
             <div className="lists-table">
-              <div className="lists-table-head">
+              <div className="lists-table-head" style={{ gridTemplateColumns: tableGridTemplate }}>
                 <span>Name</span>
                 <span>Terms</span>
-                <span>Progress</span>
-                <span>Status Mix</span>
+                {statusColumns.map((status) => (
+                  <span key={`head-${status.key}`} className="lists-status-head">
+                    <span className="lists-status-head-dot" style={{ backgroundColor: status.color }} aria-hidden="true" />
+                    {status.name}
+                  </span>
+                ))}
               </div>
-              {laneStats.map(({ lane, itemCount, actionCount, doneItems, statuses }) => {
-                const isRecurring = (lane.mode || 'one_off') === 'recurring';
-                const recurringSummary = recurringSummaryByLane[lane.id];
-                const completionPct = itemCount > 0 ? Math.round((doneItems / itemCount) * 100) : 0;
-                const customSummary = customStatusSummaryByLane[lane.id];
+              {laneStats.map(({ lane, statuses }) => {
+                const countByStatus = new Map((statuses || []).map((status) => [status.key, status.count || 0]));
                 return (
-                  <button key={lane.id} type="button" className="lists-table-row" onClick={() => handleOpenList(lane)}>
+                  <button
+                    key={lane.id}
+                    type="button"
+                    className="lists-table-row"
+                    style={{ gridTemplateColumns: tableGridTemplate }}
+                    onClick={() => handleOpenList(lane)}
+                  >
                     <span className="lists-row-name">{lane.name}</span>
                     <span className="lists-row-muted">{lane.item_label || 'Items'} / {lane.action_label || 'Tasks'}</span>
-                    <span className="lists-row-progress">
-                      {isRecurring ? (
-                        <span>{recurringSummary ? `${recurringSummary.completed}/${recurringSummary.scheduled}` : '—'}</span>
-                      ) : (
-                        <>
-                          <span className="lists-progress-track">
-                            <span className="lists-progress-fill" style={{ width: `${completionPct}%` }} />
-                          </span>
-                          <span>{doneItems}/{itemCount}</span>
-                        </>
-                      )}
-                    </span>
-                    <span className="lists-row-muted">
-                      {isRecurring
-                        ? `Recurring • Avg streak ${recurringSummary?.avgStreak ?? 0}`
-                        : customSummary?.hasStatusField
-                          ? customSummary.top.length > 0
-                            ? customSummary.top.map((entry) => `${entry.label} ${entry.count}`).join(' • ')
-                            : 'No status values yet'
-                          : (statuses || []).slice(0, 2).map((status) => `${status.name} ${status.count}`).join(' • ') || 'Add Status Field'}
-                    </span>
+                    {statusColumns.map((status) => (
+                      <span key={`${lane.id}-${status.key}`} className="lists-row-status-count">
+                        {countByStatus.get(status.key) || 0}
+                      </span>
+                    ))}
                   </button>
                 );
               })}
@@ -418,17 +314,6 @@ const FocalBoard = ({ userId, selectedFocalFromNav, selectedFocalIdFromNav }) =>
                 <div className="lists-table-empty">No lists yet. Create your first list to get started.</div>
               )}
             </div>
-          </section>
-
-          <section className="focal-card-grid secondary">
-            <article className="focal-overview-card utility-card">
-              <header className="focal-overview-card-head"><h3>Bookmarks</h3></header>
-              <p className="focal-overview-card-subtitle">Pinned links and references for this space.</p>
-            </article>
-            <article className="focal-overview-card utility-card">
-              <header className="focal-overview-card-head"><h3>Resources</h3></header>
-              <p className="focal-overview-card-subtitle">Files and uploads scoped to this space.</p>
-            </article>
           </section>
         </div>
       ) : (

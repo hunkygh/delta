@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { X } from 'lucide-react';
 import type { CustomRecurrenceConfig, RecurrenceRule } from '../../types/Event';
 import Button from '../Button';
 import ProposalReviewTable, { type ProposalReviewRow } from '../ProposalReviewTable';
@@ -32,7 +33,7 @@ interface EventDrawerProps {
   isOptimizingBlock?: boolean;
   optimizeError?: string | null;
   optimizeSource?: string;
-  onOptimizeBlock?: () => void;
+  onOptimizeBlock?: (prompt?: string) => void;
   proposalRows?: ProposalReviewRow[];
   proposalsApplying?: boolean;
   onToggleProposalRow?: (id: string, approved: boolean) => void;
@@ -65,6 +66,10 @@ interface EventDrawerProps {
   }>;
   contentAll: { listId: string; itemIds: string[] };
   contentByWeekday: Record<'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun', { listId: string; itemIds: string[] }>;
+  includeRecurringTasks: boolean;
+  onToggleIncludeRecurringTasks: () => void;
+  repeatTasksByItemId: Record<string, boolean>;
+  onRepeatTasksForItemChange: (itemId: string, enabled: boolean) => void;
   onContentAllListChange: (listId: string) => void;
   onContentAllItemsChange: (itemIds: string[]) => void;
   onContentWeekdayListChange: (
@@ -94,8 +99,10 @@ interface EventDrawerProps {
     kind: 'task' | 'item';
     parentItemId?: string;
   }) => void;
+  parentItemTitleById?: Record<string, string>;
   onCancel: () => void;
   onSave: () => void;
+  onDelete?: () => void;
 }
 
 export default function EventDrawer({
@@ -133,20 +140,16 @@ export default function EventDrawer({
   onToggleProposalRow,
   onApproveSelectedProposals,
   onCancelProposals,
-  timeblockNotes = [],
-  timeblockNotesLoading = false,
-  timeblockNoteError = null,
-  timeblockNoteDraft = '',
-  timeblockNoteSubmitting = false,
-  onTimeblockNoteDraftChange,
-  onSubmitTimeblockNote,
   contentMode,
   onContentModeChange,
   contentListOptions,
   contentItemOptionsByList,
-  contentFocalTree,
   contentAll,
   contentByWeekday,
+  includeRecurringTasks,
+  onToggleIncludeRecurringTasks,
+  repeatTasksByItemId,
+  onRepeatTasksForItemChange,
   onContentAllListChange,
   onContentAllItemsChange,
   onContentWeekdayListChange,
@@ -156,15 +159,95 @@ export default function EventDrawer({
   onToggleOccurrenceItem,
   onOpenOccurrenceItem,
   onCancel,
-  onSave
+  onSave,
+  onDelete
 }: EventDrawerProps): JSX.Element {
-  const [openListPicker, setOpenListPicker] = useState<string | null>(null);
-  const [pickerSearch, setPickerSearch] = useState('');
+  const normalizeSearchText = (value: string): string =>
+    value
+      .toLowerCase()
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/['’`"]/g, '')
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  const levenshteinDistance = (a: string, b: string): number => {
+    if (a === b) return 0;
+    if (!a.length) return b.length;
+    if (!b.length) return a.length;
+    const matrix = Array.from({ length: a.length + 1 }, (_, i) => [i]);
+    for (let j = 1; j <= b.length; j += 1) {
+      matrix[0][j] = j;
+    }
+    for (let i = 1; i <= a.length; i += 1) {
+      for (let j = 1; j <= b.length; j += 1) {
+        const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j] + 1,
+          matrix[i][j - 1] + 1,
+          matrix[i - 1][j - 1] + cost
+        );
+      }
+    }
+    return matrix[a.length][b.length];
+  };
+
+  const fuzzyTokenMatch = (needleRaw: string, haystackRaw: string): boolean => {
+    const needle = normalizeSearchText(needleRaw);
+    const haystack = normalizeSearchText(haystackRaw);
+    if (!needle) return true;
+    if (!haystack) return false;
+    if (haystack.includes(needle)) return true;
+
+    const needleParts = needle.split(' ').filter(Boolean);
+    const hayParts = haystack.split(' ').filter(Boolean);
+    return needleParts.every((needlePart) => {
+      if (haystack.includes(needlePart)) return true;
+      const maxDistance = needlePart.length <= 4 ? 1 : 2;
+      return hayParts.some((hayPart) => {
+        const distance = levenshteinDistance(needlePart, hayPart);
+        return distance <= maxDistance;
+      });
+    });
+  };
+
+  const fuzzyScore = (queryRaw: string, targetRaw: string): number => {
+    const query = normalizeSearchText(queryRaw);
+    const target = normalizeSearchText(targetRaw);
+    if (!query) return 1;
+    if (!target) return 0;
+    if (target.startsWith(query)) return 1;
+    if (target.includes(query)) return 0.85;
+    const queryParts = query.split(' ').filter(Boolean);
+    const targetParts = target.split(' ').filter(Boolean);
+    let matches = 0;
+    for (const queryPart of queryParts) {
+      const maxDistance = queryPart.length <= 4 ? 1 : 2;
+      const found = targetParts.some((part) => levenshteinDistance(queryPart, part) <= maxDistance);
+      if (found) matches += 1;
+    }
+    return queryParts.length ? matches / queryParts.length : 0;
+  };
+
+  type SlashAttachOption = {
+    listId: string;
+    listName: string;
+    itemId: string;
+    itemTitle: string;
+  };
+  const [attachSearch, setAttachSearch] = useState('');
   const [activeWeekday, setActiveWeekday] = useState<'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun'>('mon');
   const [recurrenceExpanded, setRecurrenceExpanded] = useState(false);
-  const [notesExpanded, setNotesExpanded] = useState(false);
   const [draftTitle, setDraftTitle] = useState('');
   const [openDraftAssignId, setOpenDraftAssignId] = useState<string | null>(null);
+  const [optimizePrompt, setOptimizePrompt] = useState('');
+  const [optimizePromptOpen, setOptimizePromptOpen] = useState(false);
+  const [slashAttachOpen, setSlashAttachOpen] = useState(false);
+  const [slashAttachQuery, setSlashAttachQuery] = useState('');
+  const [slashAttachIndex, setSlashAttachIndex] = useState(0);
+  const [slashTokenStart, setSlashTokenStart] = useState<number | null>(null);
+  const descriptionInputRef = useRef<HTMLTextAreaElement | null>(null);
   const recurrenceEnabled = recurrence !== 'none';
   const recurrenceUnit: CustomRecurrenceConfig['unit'] =
     recurrence === 'daily'
@@ -217,122 +300,139 @@ export default function EventDrawer({
       setRecurrenceExpanded(false);
     }
   }, [recurrenceEnabled]);
+  const filterItemsForList = (listId: string): Array<{ id: string; title: string }> => {
+    const source = contentItemOptionsByList[listId] || [];
+    const query = attachSearch.trim();
+    if (!query) return source;
+    return source
+      .filter((item) => fuzzyTokenMatch(query, item.title))
+      .sort((a, b) => fuzzyScore(query, b.title) - fuzzyScore(query, a.title));
+  };
 
-  const filteredTree = useMemo(() => {
-    const query = pickerSearch.trim().toLowerCase();
-    if (!query) return contentFocalTree;
-    return contentFocalTree
-      .map((focal) => {
-        const focalMatch = focal.name.toLowerCase().includes(query);
-        const lists = focal.lists
-          .map((list) => {
-            const listMatch = list.name.toLowerCase().includes(query);
-            const items = list.items.filter((item) => item.title.toLowerCase().includes(query));
-            if (focalMatch || listMatch || items.length > 0) {
-              return {
-                ...list,
-                items
-              };
-            }
-            return null;
-          })
-          .filter(Boolean) as typeof focal.lists;
-        if (focalMatch || lists.length > 0) {
-          return {
-            ...focal,
-            lists
-          };
-        }
-        return null;
-      })
-      .filter(Boolean) as typeof contentFocalTree;
-  }, [contentFocalTree, pickerSearch]);
-
-  const renderListPickerMenu = (
-    pickerKey: string,
-    selectedListId: string,
-    onSelectList: (listId: string) => void
-  ) => {
-    if (openListPicker !== pickerKey) {
-      return null;
+  const slashAttachOptions = useMemo<SlashAttachOption[]>(() => {
+    const rows: SlashAttachOption[] = [];
+    for (const list of contentListOptions) {
+      const items = contentItemOptionsByList[list.id] || [];
+      for (const item of items) {
+        rows.push({
+          listId: list.id,
+          listName: list.name,
+          itemId: item.id,
+          itemTitle: item.title
+        });
+      }
     }
-    return (
-      <div className="calendar-event-list-picker-menu">
-        <div className="calendar-event-list-picker-search-wrap">
-          <input
-            type="text"
-            value={pickerSearch}
-            onChange={(event) => setPickerSearch(event.target.value)}
-            className="calendar-event-list-picker-search"
-            placeholder="Find items or lists..."
-          />
-        </div>
-        <div className="calendar-event-list-picker-tree">
-          {filteredTree.length > 0 ? (
-            filteredTree.map((focal) => (
-              <div key={focal.id} className="calendar-event-list-picker-focal">
-                <div className="calendar-event-list-picker-focal-name">{focal.name}</div>
-                <div className="calendar-event-list-picker-lists">
-                  {focal.lists.map((list) => (
-                    <button
-                      key={list.id}
-                      type="button"
-                      className={`calendar-event-list-picker-option ${selectedListId === list.id ? 'active' : ''}`.trim()}
-                      onClick={() => {
-                        onSelectList(list.id);
-                        setPickerSearch('');
-                        setOpenListPicker(null);
-                      }}
-                    >
-                      <span>{list.name}</span>
-                      {list.items.length > 0 && (
-                        <small>
-                          {list.items.slice(0, 2).map((item) => item.title).join(' · ')}
-                          {list.items.length > 2 ? ` +${list.items.length - 2}` : ''}
-                        </small>
-                      )}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ))
-          ) : (
-            <div className="calendar-event-list-picker-lists">
-              {contentListOptions.length > 0 ? (
-                contentListOptions.map((list) => (
-                  <button
-                    key={list.id}
-                    type="button"
-                    className={`calendar-event-list-picker-option ${selectedListId === list.id ? 'active' : ''}`.trim()}
-                    onClick={() => {
-                      onSelectList(list.id);
-                      setPickerSearch('');
-                      setOpenListPicker(null);
-                    }}
-                  >
-                    <span>{list.name}</span>
-                  </button>
-                ))
-              ) : (
-                <div className="calendar-event-list-picker-empty">No lists found</div>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-    );
+    const query = slashAttachQuery.trim();
+    if (!query) return rows.slice(0, 12);
+    return rows
+      .filter((row) => fuzzyTokenMatch(query, row.itemTitle) || fuzzyTokenMatch(query, row.listName))
+      .sort(
+        (a, b) =>
+          Math.max(fuzzyScore(query, b.itemTitle), fuzzyScore(query, b.listName)) -
+          Math.max(fuzzyScore(query, a.itemTitle), fuzzyScore(query, a.listName))
+      )
+      .slice(0, 20);
+  }, [contentItemOptionsByList, contentListOptions, slashAttachQuery]);
+
+  const attachedItemsRows = useMemo(() => {
+    const byListId = new Map(contentListOptions.map((entry) => [entry.id, entry.name]));
+    const currentSelection =
+      contentMode === 'all'
+        ? { listId: contentAll.listId, itemIds: contentAll.itemIds || [] }
+        : contentByWeekday[activeWeekday] || { listId: '', itemIds: [] };
+
+    if (!currentSelection.listId || !currentSelection.itemIds?.length) return [];
+    const listId = currentSelection.listId;
+    const listName = byListId.get(listId) || 'List';
+    const source = contentItemOptionsByList[listId] || [];
+    const itemById = new Map(source.map((entry) => [entry.id, entry.title]));
+
+    return currentSelection.itemIds.map((itemId) => ({
+      itemId,
+      listId,
+      listName,
+      title: itemById.get(itemId) || 'Item'
+    }));
+  }, [activeWeekday, contentAll.itemIds, contentAll.listId, contentByWeekday, contentItemOptionsByList, contentListOptions, contentMode]);
+
+  const closeSlashAttach = (): void => {
+    setSlashAttachOpen(false);
+    setSlashAttachQuery('');
+    setSlashAttachIndex(0);
+    setSlashTokenStart(null);
   };
 
-  const formatNoteTime = (value: string): string => {
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return '';
-    return date.toLocaleString(undefined, {
-      month: 'short',
-      day: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit'
-    });
+  const applySlashAttach = (row: SlashAttachOption): void => {
+    if (contentMode === 'all') {
+      if (contentAll.listId !== row.listId) {
+        onContentAllListChange(row.listId);
+        onContentAllItemsChange([row.itemId]);
+      } else {
+        onContentAllItemsChange(Array.from(new Set([...(contentAll.itemIds || []), row.itemId])));
+      }
+    } else {
+      const weekdayRow = contentByWeekday[activeWeekday];
+      if ((weekdayRow?.listId || '') !== row.listId) {
+        onContentWeekdayListChange(activeWeekday, row.listId);
+        onContentWeekdayItemsChange(activeWeekday, [row.itemId]);
+      } else {
+        onContentWeekdayItemsChange(
+          activeWeekday,
+          Array.from(new Set([...(weekdayRow?.itemIds || []), row.itemId]))
+        );
+      }
+    }
+
+    if (slashTokenStart != null && descriptionInputRef.current) {
+      const textarea = descriptionInputRef.current;
+      const caret = textarea.selectionStart ?? description.length;
+      const prefix = description.slice(0, slashTokenStart);
+      const suffix = description.slice(caret);
+      const mentionText = `@${row.itemTitle}`;
+      const needsLeadingSpace = prefix.length > 0 && !/\s$/.test(prefix);
+      const insertion = `${needsLeadingSpace ? ' ' : ''}${mentionText}`;
+      const nextValue = `${prefix}${insertion}${suffix}`.replace(/[ \t]{2,}/g, ' ');
+      onDescriptionChange(nextValue);
+      window.requestAnimationFrame(() => {
+        if (!descriptionInputRef.current) return;
+        const nextCaret = (prefix + insertion).length;
+        descriptionInputRef.current.selectionStart = nextCaret;
+        descriptionInputRef.current.selectionEnd = nextCaret;
+      });
+    }
+    closeSlashAttach();
   };
+
+  const syncSlashQueryFromTextarea = (value: string, caret: number): void => {
+    const slashIndex = value.lastIndexOf('/', Math.max(0, caret - 1));
+    if (slashIndex === -1) {
+      closeSlashAttach();
+      return;
+    }
+    const token = value.slice(slashIndex + 1, caret);
+    if (token.includes('\n')) {
+      closeSlashAttach();
+      return;
+    }
+    const hasBoundaryBefore = slashIndex === 0 || /\s/.test(value[slashIndex - 1] || '');
+    if (!hasBoundaryBefore) {
+      closeSlashAttach();
+      return;
+    }
+    setSlashAttachOpen(true);
+    setSlashTokenStart(slashIndex);
+    setSlashAttachQuery(token.trim());
+    setSlashAttachIndex(0);
+  };
+
+  useEffect(() => {
+    if (!slashAttachOpen) return;
+    setSlashAttachIndex((prev) => {
+      if (slashAttachOptions.length === 0) return 0;
+      if (prev >= slashAttachOptions.length) return slashAttachOptions.length - 1;
+      return prev;
+    });
+  }, [slashAttachOpen, slashAttachOptions.length]);
 
   return (
     <aside className={`calendar-event-drawer-side ${aiHandoffActive ? 'ai-handoff' : ''}`.trim()}>
@@ -364,7 +464,7 @@ export default function EventDrawer({
             {new Date(end).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
           </div>
           <div className="calendar-event-time-inputs">
-            <label className="calendar-field">
+            <label className="calendar-field calendar-event-time-field">
               <span>Start</span>
               <input
                 className="calendar-input"
@@ -373,7 +473,7 @@ export default function EventDrawer({
                 onChange={(event) => onStartChange(event.target.value)}
               />
             </label>
-            <label className="calendar-field">
+            <label className="calendar-field calendar-event-time-field">
               <span>End</span>
               <input
                 className="calendar-input"
@@ -384,11 +484,83 @@ export default function EventDrawer({
             </label>
           </div>
           <textarea
+            ref={descriptionInputRef}
             className="calendar-event-description-input"
             value={description}
-            onChange={(event) => onDescriptionChange(event.target.value)}
-            placeholder="Add description"
+            onChange={(event) => {
+              onDescriptionChange(event.target.value);
+              syncSlashQueryFromTextarea(event.target.value, event.target.selectionStart ?? event.target.value.length);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === '/') {
+                window.requestAnimationFrame(() => {
+                  if (!descriptionInputRef.current) return;
+                  const input = descriptionInputRef.current;
+                  syncSlashQueryFromTextarea(input.value, input.selectionStart ?? input.value.length);
+                });
+                return;
+              }
+
+              if (!slashAttachOpen) return;
+              if (event.key === 'Escape') {
+                event.preventDefault();
+                closeSlashAttach();
+                return;
+              }
+              if (event.key === 'ArrowDown') {
+                event.preventDefault();
+                setSlashAttachIndex((prev) =>
+                  slashAttachOptions.length === 0 ? 0 : Math.min(prev + 1, slashAttachOptions.length - 1)
+                );
+                return;
+              }
+              if (event.key === 'ArrowUp') {
+                event.preventDefault();
+                setSlashAttachIndex((prev) => Math.max(prev - 1, 0));
+                return;
+              }
+              if (event.key === 'Enter' && !event.shiftKey) {
+                if (slashAttachOptions[slashAttachIndex]) {
+                  event.preventDefault();
+                  applySlashAttach(slashAttachOptions[slashAttachIndex]);
+                }
+              }
+            }}
+            placeholder="Type notes… Press / to attach items"
           />
+          {slashAttachOpen && (
+            <div className="calendar-event-slash-popover" role="dialog" aria-label="Attach item">
+              <div className="calendar-event-slash-results">
+                {slashAttachOptions.length === 0 ? (
+                  <p className="calendar-event-slash-empty">No matching items</p>
+                ) : (
+                  slashAttachOptions.map((row, index) => (
+                    <button
+                      key={`${row.listId}:${row.itemId}`}
+                      type="button"
+                      className={`calendar-event-slash-result ${index === slashAttachIndex ? 'active' : ''}`.trim()}
+                      onMouseEnter={() => setSlashAttachIndex(index)}
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => applySlashAttach(row)}
+                    >
+                      <span className="calendar-event-slash-result-copy">
+                        <strong>{row.itemTitle}</strong>
+                        <small>{row.listName}</small>
+                      </span>
+                      <span className="calendar-event-slash-add" aria-hidden="true">
+                        +
+                      </span>
+                    </button>
+                  ))
+                )}
+              </div>
+              <div className="calendar-event-slash-footer">
+                <button type="button" className="calendar-event-slash-advanced" onClick={onLinkTasks}>
+                  Advanced picker
+                </button>
+              </div>
+            </div>
+          )}
         </section>
 
         <section className="calendar-event-recurrence-block">
@@ -526,15 +698,81 @@ export default function EventDrawer({
                   <span className="calendar-switch-thumb" />
                 </button>
               </label>
+              <label className="calendar-event-recurrence-row">
+                <span>Include Tasks</span>
+                <button
+                  type="button"
+                  className={`calendar-switch ${includeRecurringTasks ? 'on' : 'off'}`.trim()}
+                  aria-label={`Include tasks ${includeRecurringTasks ? 'on' : 'off'}`}
+                  onClick={onToggleIncludeRecurringTasks}
+                >
+                  <span className="calendar-switch-thumb" />
+                </button>
+              </label>
             </div>
           )}
         </section>
 
         <section className="calendar-event-task-link-block">
           <div className="calendar-event-task-link-row">
-            <button type="button" className="calendar-event-link-tasks-btn" onClick={onLinkTasks}>
-              Add Items
-            </button>
+            <div className="calendar-event-attach-inline">
+              {attachedItemsRows.length === 0 ? (
+                <span className="calendar-event-attach-empty">no items attached</span>
+              ) : (
+                attachedItemsRows.map((row) => (
+                  <div key={`${row.listId}:${row.itemId}`} className="calendar-event-attach-row-wrap">
+                    <div className="calendar-event-attach-row">
+                      <span className="calendar-event-attach-caret placeholder" aria-hidden="true" />
+                      <span className="calendar-event-attach-status todo" aria-hidden="true" />
+                      <button
+                        type="button"
+                        className="calendar-event-attach-inline-add"
+                        onClick={() =>
+                          onOpenOccurrenceItem?.({
+                            id: row.itemId,
+                            title: row.title,
+                            completed: false,
+                            kind: 'item'
+                          })
+                        }
+                        aria-label="Open item"
+                      >
+                        +
+                      </button>
+                      <button type="button" className="calendar-event-attach-title">
+                        {row.title}
+                      </button>
+                      <button
+                        type="button"
+                        className="calendar-event-attach-remove"
+                        onClick={() => {
+                          if (contentMode === 'all') {
+                            onContentAllItemsChange((contentAll.itemIds || []).filter((entry) => entry !== row.itemId));
+                            return;
+                          }
+                          const weekdayRow = contentByWeekday[activeWeekday];
+                          const next = (weekdayRow?.itemIds || []).filter((entry) => entry !== row.itemId);
+                          onContentWeekdayItemsChange(activeWeekday, next);
+                        }}
+                        aria-label="Remove item"
+                      >
+                        −
+                      </button>
+                      {recurrenceEnabled && includeRecurringTasks && (
+                        <button
+                          type="button"
+                          className={`calendar-switch calendar-switch-inline ${repeatTasksByItemId[row.itemId] === false ? 'off' : 'on'}`.trim()}
+                          aria-label={`Repeat tasks for ${row.title} ${(repeatTasksByItemId[row.itemId] === false) ? 'off' : 'on'}`}
+                          onClick={() => onRepeatTasksForItemChange(row.itemId, repeatTasksByItemId[row.itemId] === false)}
+                        >
+                          <span className="calendar-switch-thumb" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
         </section>
 
@@ -542,17 +780,56 @@ export default function EventDrawer({
           <div className="calendar-event-task-flyout" role="dialog" aria-label="Add items to time block">
             <div className="calendar-event-task-flyout-head">
               <p>Add Items</p>
-              <button type="button" className="calendar-event-link-tasks-btn" onClick={onLinkTasks}>
-                Close
-              </button>
+              <div className="calendar-event-task-flyout-head-actions">
+                {canOptimize && onOptimizeBlock && (
+                  <button
+                    type="button"
+                    className="calendar-event-flyout-ai-btn"
+                    onClick={() => setOptimizePromptOpen((prev) => !prev)}
+                    aria-label="Ask Delta for item plan"
+                  >
+                    <img className="delta-ai-button-icon" src="/Delta-AI-Button.png" alt="" aria-hidden="true" width={13} height={13} />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="calendar-event-flyout-close-btn"
+                  onClick={onLinkTasks}
+                  aria-label="Close add items panel"
+                >
+                  <X size={14} />
+                </button>
+              </div>
             </div>
+
+            {canOptimize && onOptimizeBlock && optimizePromptOpen && (
+              <form
+                className="calendar-event-flyout-ai-prompt"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  onOptimizeBlock(optimizePrompt.trim() || undefined);
+                }}
+              >
+                <input
+                  type="text"
+                  value={optimizePrompt}
+                  onChange={(event) => setOptimizePrompt(event.target.value)}
+                  className="calendar-event-list-picker-search"
+                  placeholder="Ask Delta what to pull into this block..."
+                />
+                <button type="submit" className="calendar-event-link-tasks-btn" disabled={isOptimizingBlock}>
+                  {isOptimizingBlock ? 'Thinking…' : 'Run'}
+                </button>
+              </form>
+            )}
+
             <div className="calendar-event-task-flyout-filter">
               <input
                 type="text"
-                value={pickerSearch}
-                onChange={(event) => setPickerSearch(event.target.value)}
+                value={attachSearch}
+                onChange={(event) => setAttachSearch(event.target.value)}
                 className="calendar-event-list-picker-search"
-                placeholder="Filter by list/item text"
+                placeholder="Search"
               />
             </div>
 
@@ -639,18 +916,24 @@ export default function EventDrawer({
 
               {contentMode === 'all' ? (
                 <div className="calendar-event-contents-block">
-                  <div className="calendar-event-list-picker-wrap">
-                    <button
-                      type="button"
-                      className="calendar-event-list-picker-trigger"
-                      onClick={() => setOpenListPicker((prev) => (prev === 'all' ? null : 'all'))}
+                  <label className="calendar-field">
+                    <span>List</span>
+                    <select
+                      className="calendar-input calendar-event-list-select"
+                      value={contentAll.listId}
+                      onChange={(event) => onContentAllListChange(event.target.value)}
                     >
-                      <span>{listNameById.get(contentAll.listId) || 'Select list'}</span>
-                    </button>
-                  </div>
+                      <option value="">Select list</option>
+                      {contentListOptions.map((list) => (
+                        <option key={list.id} value={list.id}>
+                          {list.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                   {contentAll.listId && (
                     <div className="calendar-event-contents-items">
-                      {(contentItemOptionsByList[contentAll.listId] || []).map((item) => (
+                      {filterItemsForList(contentAll.listId).map((item) => (
                         <label key={item.id} className="calendar-event-contents-item-row">
                           <input
                             type="checkbox"
@@ -692,19 +975,24 @@ export default function EventDrawer({
                   </div>
                   {(() => {
                     const row = contentByWeekday[activeWeekday];
-                    const options = row?.listId ? (contentItemOptionsByList[row.listId] || []) : [];
-                    const pickerKey = `weekday-${activeWeekday}`;
+                    const options = row?.listId ? filterItemsForList(row.listId) : [];
                     return (
                       <div className="calendar-event-contents-weekday-panel">
-                        <div className="calendar-event-list-picker-wrap">
-                          <button
-                            type="button"
-                            className="calendar-event-list-picker-trigger"
-                            onClick={() => setOpenListPicker((prev) => (prev === pickerKey ? null : pickerKey))}
+                        <label className="calendar-field">
+                          <span>List</span>
+                          <select
+                            className="calendar-input calendar-event-list-select"
+                            value={row?.listId || ''}
+                            onChange={(event) => onContentWeekdayListChange(activeWeekday, event.target.value)}
                           >
-                            <span>{listNameById.get(row?.listId || '') || 'Select list'}</span>
-                          </button>
-                        </div>
+                            <option value="">Select list</option>
+                            {contentListOptions.map((list) => (
+                              <option key={list.id} value={list.id}>
+                                {list.name}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
                         {row?.listId && (
                           <div className="calendar-event-contents-items">
                             {options.map((item) => (
@@ -730,15 +1018,6 @@ export default function EventDrawer({
                 </div>
               )}
 
-              {contentMode === 'all' && renderListPickerMenu('all', contentAll.listId, onContentAllListChange)}
-              {contentMode === 'weekday' && openListPicker?.startsWith('weekday-') && (() => {
-                const weekdayKey = openListPicker.replace('weekday-', '') as 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
-                const selected = contentByWeekday[weekdayKey]?.listId || '';
-                return renderListPickerMenu(openListPicker, selected, (listId) =>
-                  onContentWeekdayListChange(weekdayKey, listId)
-                );
-              })()}
-
               {occurrenceItems.length > 0 && (
                 <div className="calendar-event-contents-completion">
                   {occurrenceItems.map((entry) => (
@@ -760,97 +1039,32 @@ export default function EventDrawer({
                 </div>
               )}
             </div>
-          </div>
-        )}
 
-        {canOptimize && (
-          <section className="calendar-event-task-link-block">
-            <div className="calendar-event-task-link-row">
-              <button
-                type="button"
-                className="calendar-event-link-tasks-btn calendar-event-ai-btn"
-                onClick={onOptimizeBlock}
-                disabled={isOptimizingBlock}
-              >
-                <img className="delta-ai-button-icon" src="/Delta-AI-Button.png" alt="" aria-hidden="true" width={13} height={13} />
-                {isOptimizingBlock ? 'Optimizing...' : 'Optimize Block'}
-              </button>
-              {optimizeSource && (
-                <span className="calendar-event-drawer-card-placeholder">Source: {optimizeSource === 'groq' ? 'ai' : optimizeSource}</span>
-              )}
-            </div>
-            {optimizeError && (
-              <p className="calendar-event-drawer-card-placeholder">{optimizeError}</p>
-            )}
-            <ProposalReviewTable
-              title="Optimization Review"
-              source={optimizeSource === 'groq' ? 'ai' : optimizeSource}
-              rows={proposalRows}
-              applying={proposalsApplying}
-              onToggleRow={(id, approved) => onToggleProposalRow?.(id, approved)}
-              onApproveSelected={() => onApproveSelectedProposals?.()}
-              onCancel={() => onCancelProposals?.()}
-            />
-          </section>
-        )}
-
-        {canOptimize && (
-          <section className="calendar-event-task-link-block">
-            <div className="calendar-event-task-link-row">
-              <button
-                type="button"
-                className="calendar-event-summary-btn"
-                onClick={() => setNotesExpanded((prev) => !prev)}
-              >
-                <span>Notes</span>
-                <strong>{notesExpanded ? 'Hide' : 'Show'}</strong>
-              </button>
-            </div>
-            {notesExpanded && (
-              <div className="calendar-event-drawer-card notes-expanded">
-                {timeblockNotesLoading && (
-                  <p className="calendar-event-drawer-card-placeholder">Loading notes...</p>
-                )}
-                {!timeblockNotesLoading && timeblockNotes.length > 0 && (
-                  <div className="calendar-event-drawer-card notes-list">
-                    {timeblockNotes.slice(-8).map((note) => (
-                      <article key={note.id} className="calendar-event-drawer-card-row">
-                        <strong>{note.author_type === 'ai' ? 'AI' : 'You'}</strong>
-                        <span>{note.content}</span>
-                        <span className="calendar-event-drawer-card-placeholder">{formatNoteTime(note.created_at)}</span>
-                      </article>
-                    ))}
-                  </div>
-                )}
-                <textarea
-                  className="calendar-event-description-input"
-                  style={{ border: 'none', padding: '0.15rem 0', minHeight: '80px' }}
-                  value={timeblockNoteDraft}
-                  onChange={(event) => onTimeblockNoteDraftChange?.(event.target.value)}
-                  placeholder="Write a note..."
-                  onFocus={() => setNotesExpanded(true)}
+            {canOptimize && (
+              <div className="calendar-event-flyout-proposals">
+                {optimizeError && <p className="calendar-event-drawer-card-placeholder">{optimizeError}</p>}
+                <ProposalReviewTable
+                  title="Optimization Review"
+                  source={optimizeSource === 'groq' ? 'ai' : optimizeSource}
+                  rows={proposalRows}
+                  applying={proposalsApplying}
+                  onToggleRow={(id, approved) => onToggleProposalRow?.(id, approved)}
+                  onApproveSelected={() => onApproveSelectedProposals?.()}
+                  onCancel={() => onCancelProposals?.()}
                 />
-                {timeblockNoteError && (
-                  <p className="calendar-event-drawer-card-placeholder">{timeblockNoteError}</p>
-                )}
-                <div className="calendar-event-task-link-row">
-                  <button
-                    type="button"
-                    className="calendar-event-link-tasks-btn"
-                    onClick={onSubmitTimeblockNote}
-                    disabled={timeblockNoteSubmitting || !timeblockNoteDraft.trim()}
-                  >
-                    {timeblockNoteSubmitting ? 'Posting...' : 'Post'}
-                  </button>
-                </div>
               </div>
             )}
-          </section>
+          </div>
         )}
 
       </div>
 
       <footer className="calendar-event-drawer-side-footer">
+        {!isCreateFlow && onDelete && (
+          <Button variant="secondary" className="calendar-event-delete-btn" onClick={onDelete}>
+            Delete
+          </Button>
+        )}
         <Button variant="secondary" className="calendar-event-secondary-btn" onClick={onCancel}>
           Cancel
         </Button>

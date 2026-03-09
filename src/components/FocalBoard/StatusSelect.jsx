@@ -5,6 +5,12 @@ import './StatusSelect.css';
 const normalizeKey = (label) =>
   label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
 
+const isPendingLikeStatus = (status) => {
+  if (!status) return true;
+  const key = normalizeKey(status.key || status.name || '');
+  return key === 'pending' || key === 'not_started' || key === 'needs_action';
+};
+
 export default function StatusSelect({
   statuses = [],
   value,
@@ -41,7 +47,7 @@ export default function StatusSelect({
     resolvedStatuses.find((status) => status.id && value && status.id === value) ??
     resolvedStatuses.find((status) => status.key === value) ??
     resolvedStatuses[0];
-  const isPendingLike = !selected || selected.key === 'pending';
+  const isPendingLike = isPendingLikeStatus(selected);
   const circleClassName = [
     'status-select-circle',
     isPendingLike ? 'pending' : 'active'
