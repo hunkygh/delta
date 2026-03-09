@@ -4,7 +4,7 @@ import Greeting from '../components/Greeting';
 const cardDefinitions = [
   { title: 'Tasks' as const, subtitle: 'Action items and to-dos.' },
   { title: 'Bookmarks' as const, subtitle: 'Saved links and references.' },
-  { title: 'Docs' as const, subtitle: 'Structured notes and documents.' },
+  { title: 'Notes' as const, subtitle: 'Quick captures and running notes.' },
   { title: 'Resources' as const, subtitle: 'File uploads and attachments.' }
 ];
 

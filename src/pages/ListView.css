@@ -1002,7 +1002,7 @@
   min-width: 0;
   padding: 18px;
   display: grid;
-  grid-template-rows: auto auto 1fr auto auto;
+  grid-template-rows: auto 1fr auto auto;
   gap: 12px;
   overflow: hidden;
   background: var(--color-surface-panel);
@@ -1063,7 +1063,7 @@
 .list-item-comment-user-bubble {
   max-width: 84%;
   background: var(--color-surface-card);
-  color: rgb(32, 32, 32);
+  color: #0a0a0a;
   border: 1px solid #bcc2cb;
   border-radius: 14px;
   padding: 10px 12px;
@@ -1092,17 +1092,19 @@
   border: 1px solid var(--color-border-default);
   background: var(--color-surface-card);
   color: var(--color-text-primary);
-  border-radius: 999px;
+  border-radius: 18px;
   font-size: 11px;
   font-weight: 500;
   line-height: 1;
   padding: 6px 10px;
   cursor: pointer;
-  transition: background-color 180ms cubic-bezier(0.22, 1, 0.36, 1), border-color 180ms cubic-bezier(0.22, 1, 0.36, 1), color 180ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition: border-color 180ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 180ms cubic-bezier(0.22, 1, 0.36, 1), background-color 180ms cubic-bezier(0.22, 1, 0.36, 1);
+  box-shadow: var(--shadow-subtle);
 }
 
 .list-item-comment-push-ai:hover {
-  background: var(--color-bg-hover);
+  border-color: var(--color-border-default);
+  box-shadow: var(--shadow-soft);
 }
 
 .list-item-comment-push-ai:disabled {
@@ -1133,6 +1135,65 @@
   white-space: pre-wrap;
 }
 
+.list-item-comment-ai-proposal {
+  display: grid;
+  gap: 8px;
+  background: #ffffff;
+  border: 1px solid #d9dde4;
+  border-radius: 10px;
+  padding: 10px;
+}
+
+.list-item-comment-ai-proposal p {
+  margin: 0;
+  font-size: 13px;
+  color: #2d333c;
+  font-weight: 500;
+}
+
+.list-item-comment-ai-proposal-input {
+  width: 100%;
+  height: 30px;
+  border: 1px solid #d9dde4;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #2d333c;
+  font-size: 12px;
+  padding: 0 8px;
+  outline: none;
+}
+
+.list-item-comment-ai-proposal-actions {
+  display: inline-flex;
+  gap: 8px;
+}
+
+.list-item-comment-ai-proposal-actions button {
+  height: 30px;
+  border-radius: 9px;
+  border: 1px solid #d9dde4;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.list-item-comment-ai-proposal-actions button.approve {
+  background: #ffffff;
+  color: #2d333c;
+}
+
+.list-item-comment-ai-proposal-actions button.dismiss {
+  border: none;
+  background: #f7f8fa;
+  color: #6a7280;
+}
+
+.list-item-comment-ai-proposal-actions button:disabled {
+  opacity: 0.65;
+  cursor: default;
+}
+
 .list-item-comment-error {
   margin: 0;
   font-size: 11px;
@@ -1144,19 +1205,16 @@
   gap: 6px;
 }
 
-.list-item-comment-composer-surface {
-  margin: 2px 0 0;
-  border: 1px solid rgba(0, 0, 0, 0.14);
-  border-radius: 22px;
-  background: #eef1f5;
-  box-shadow: 0 10px 24px -20px rgba(0, 0, 0, 0.22);
+.list-item-comment-divider {
+  border-top: 1px solid #d8dbe2;
+  padding-top: 12px;
+  margin-top: 8px;
 }
 
 .list-item-comment-input-row {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 10px;
 }
 
 .list-item-comment-input-wrap {
@@ -1175,9 +1233,9 @@
   min-height: 42px;
   max-height: 120px;
   resize: none;
-  border: 1px solid #d7dce4;
+  border: 1px solid #d8dbe2;
   background: #ffffff;
-  border-radius: 16px;
+  border-radius: 12px;
   color: #2f343d;
   font-size: 14px;
   line-height: 1.3;
@@ -1189,8 +1247,8 @@
 
 .list-item-comment-input:focus {
   outline: none;
-  border-color: #cfd5de;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.06);
+  border-color: #00b7f4;
+  box-shadow: 0 0 0 1px rgba(0, 183, 244, 0.2);
 }
 
 .list-item-comment-input::placeholder {

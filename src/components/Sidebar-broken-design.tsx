@@ -306,7 +306,7 @@ export default function Sidebar({ isExpanded, setIsExpanded }: SidebarProps): JS
         <div className="sidebar-nav-items">
           <button className="sidebar-nav-item" onClick={() => navigate('/docs')}>
             <FileText size={14} />
-            <span className="sidebar-nav-text">Docs</span>
+            <span className="sidebar-nav-text">Notes</span>
           </button>
         </div>
         

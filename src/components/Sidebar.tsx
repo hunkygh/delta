@@ -467,7 +467,7 @@ export default function Sidebar({
         <div className="sidebar-nav-items">
           <button className={`sidebar-nav-item ${isActivePath('/docs') ? 'active' : ''}`.trim()} onClick={() => navigate('/docs')}>
             <FileText size={14} />
-            <span className="sidebar-nav-text">Docs</span>
+            <span className="sidebar-nav-text">Notes</span>
           </button>
         </div>
         

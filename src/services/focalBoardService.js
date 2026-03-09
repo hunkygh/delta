@@ -780,6 +780,27 @@ export const focalBoardService = {
     return data;
   },
 
+  async linkActionToTimeBlock({ actionId, timeBlockId, userId, laneId = null }) {
+    if (!actionId || !timeBlockId || !userId) {
+      throw new Error('actionId, timeBlockId, and userId are required');
+    }
+    const row = {
+      user_id: userId,
+      time_block_id: timeBlockId,
+      lane_id: laneId,
+      item_id: null,
+      action_id: actionId,
+      link_type: 'action'
+    };
+    const { data, error } = await supabase
+      .from('time_block_links')
+      .insert([row])
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  },
+
   // SIGNALS
   async updateItemSignal(itemId, signalLabel, signalScore) {
     const updates = {

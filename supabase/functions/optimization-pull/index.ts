@@ -240,6 +240,12 @@ Deno.serve(async (req) => {
     const payload = await req.json().catch(() => ({})) as Record<string, unknown>;
     const { scope, scopeId } = inferScopeAndId(payload);
     const text = typeof payload.text === 'string' ? payload.text.trim() : '';
+    if (!text) {
+      return new Response(JSON.stringify(emptyHeuristicProposal('No explicit optimization action requested.')), {
+        status: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
     const contextIds = isPlainObject(payload.context_ids) ? payload.context_ids : {};
     if (!scopeId) {
       return new Response(JSON.stringify({ error: 'scope_id is required' }), {

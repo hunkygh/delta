@@ -28,7 +28,7 @@ const focalItems: NavItem[] = [
 ];
 
 const resourceItems: NavItem[] = [
-  { id: 'docs', name: 'Docs', icon: FileText, path: '/docs' },
+  { id: 'docs', name: 'Notes', icon: FileText, path: '/docs' },
 ];
 
 export default function Sidebar({ isExpanded, setIsExpanded }: SidebarProps): JSX.Element {

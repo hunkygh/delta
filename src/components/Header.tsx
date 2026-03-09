@@ -7,6 +7,8 @@ import type { ChatContext, ChatDebugMeta, ChatMessage, ChatProposal } from '../t
 import chatPersistence from '../services/chatPersistence';
 import chatService from '../services/chatService';
 import focalBoardService from '../services/focalBoardService';
+import { calendarService } from '../services/calendarService';
+import docsService from '../services/docsService';
 
 interface HeaderProps {
   user: User | null;
@@ -49,6 +51,7 @@ export default function Header({
   const [isNearBottom, setIsNearBottom] = useState(true);
   const [approvedProposalIds, setApprovedProposalIds] = useState<Record<string, boolean>>({});
   const [dismissedProposalIds, setDismissedProposalIds] = useState<Record<string, boolean>>({});
+  const [proposalNotes, setProposalNotes] = useState<Record<string, string>>({});
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const sourceMenuRef = useRef<HTMLDivElement | null>(null);
@@ -293,8 +296,18 @@ export default function Header({
     insertMessage(userMessage);
 
     if (chatMode === 'memo') {
+      try {
+        await docsService.createNote({
+          userId: user.id,
+          body: value,
+          source: 'memo',
+          originContext: { ...outboundContext }
+        });
+      } catch (error) {
+        console.error('Failed to persist memo note to notes:', error);
+      }
       await startStreamingReply(
-        'Memo mode is staged. This note is ready for Docs persistence once the memo writer path is wired.',
+        'Saved to Notes.',
         []
       );
       setIsSending(false);
@@ -338,6 +351,12 @@ export default function Header({
       .join(' • ');
   };
 
+  const getSourceBadgeLabel = (meta?: ChatDebugMeta | null): string => {
+    if (meta?.source === 'db') return 'DB';
+    if (meta?.source === 'llm') return 'LLM';
+    return 'Fallback';
+  };
+
   const handleInputKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
@@ -348,12 +367,13 @@ export default function Header({
   const handleApproveProposal = async (proposal: ChatProposal): Promise<void> => {
     if (!user?.id) return;
     try {
+      const noteOverride = (proposalNotes[proposal.id] || '').trim() || null;
       if (proposal.type === 'create_follow_up_action') {
         await focalBoardService.createAction(
           proposal.item_id,
           user.id,
           proposal.title,
-          proposal.notes || null
+          noteOverride ?? proposal.notes ?? null
         );
       } else if (proposal.type === 'create_focal') {
         await focalBoardService.createFocal(user.id, proposal.title);
@@ -362,13 +382,52 @@ export default function Header({
       } else if (proposal.type === 'create_item') {
         await focalBoardService.createItem(proposal.list_id, user.id, proposal.title);
       } else if (proposal.type === 'create_action') {
-        await focalBoardService.createAction(proposal.item_id, user.id, proposal.title, null);
+        const createdAction = await focalBoardService.createAction(
+          proposal.item_id,
+          user.id,
+          proposal.title,
+          noteOverride ?? proposal.notes ?? null,
+          proposal.scheduled_at ?? null
+        );
+        if (proposal.time_block_id) {
+          await focalBoardService.linkActionToTimeBlock({
+            actionId: createdAction.id,
+            timeBlockId: proposal.time_block_id,
+            userId: user.id,
+            laneId: proposal.lane_id || null
+          });
+        }
+      } else if (proposal.type === 'create_time_block') {
+        await calendarService.createTimeBlockFromProposal(user.id, {
+          ...proposal,
+          notes: noteOverride ?? proposal.notes ?? null
+        });
+      } else if (proposal.type === 'resolve_time_conflict') {
+        await calendarService.patchTimeBlock(proposal.conflict_time_block_id, {
+          start_time: proposal.conflict_new_start_utc,
+          end_time: proposal.conflict_new_end_utc
+        });
+        await calendarService.createTimeBlockFromProposal(user.id, {
+          id: `${proposal.id}-event`,
+          type: 'create_time_block',
+          title: proposal.event_title,
+          scheduled_start_utc: proposal.event_start_utc,
+          scheduled_end_utc: proposal.event_end_utc,
+          lane_id: proposal.lane_id || null,
+          notes: noteOverride ?? proposal.notes ?? null
+        });
       }
       setApprovedProposalIds((prev) => ({ ...prev, [proposal.id]: true }));
+      setProposalNotes((prev) => {
+        const next = { ...prev };
+        delete next[proposal.id];
+        return next;
+      });
+      const appliedTitle = proposal.type === 'resolve_time_conflict' ? proposal.event_title : proposal.title;
       insertMessage({
         id: crypto.randomUUID(),
         role: 'assistant',
-        content: `Applied: ${proposal.title}.`,
+        content: `Applied: ${appliedTitle}.`,
         created_at: Date.now()
       });
     } catch (error: any) {
@@ -445,16 +504,36 @@ export default function Header({
                       <div className="delta-ai-user-bubble">{message.content}</div>
                     ) : (
                       <div className="delta-ai-assistant-block">
+                        <div className="delta-ai-provenance-chip">{getSourceBadgeLabel(message.debug_meta)}</div>
                         <div className="delta-ai-assistant-text">
                           {message.content || (streamingMessageId === message.id ? '…' : '')}
                         </div>
+                        {Array.isArray(message.debug_meta?.warnings) && message.debug_meta.warnings.length > 0 && (
+                          <div className="delta-ai-warning-footer">
+                            {message.debug_meta.warnings[0]}
+                          </div>
+                        )}
                         {showChatDebug && message.debug_meta && (
                           <div className="delta-ai-debug-footer">{formatDebugMeta(message.debug_meta)}</div>
                         )}
                         {(message.proposals || []).map((proposal) => (
                           dismissedProposalIds[proposal.id] ? null : (
                           <div key={proposal.id} className="delta-ai-inline-card">
-                            <p>{proposal.title}</p>
+                            <p>{proposal.type === 'resolve_time_conflict' ? proposal.event_title : proposal.title}</p>
+                            {(proposal.type === 'create_action' ||
+                              proposal.type === 'create_follow_up_action' ||
+                              proposal.type === 'create_time_block' ||
+                              proposal.type === 'resolve_time_conflict') && (
+                              <input
+                                type="text"
+                                className="delta-ai-inline-input"
+                                placeholder="Optional description"
+                                value={proposalNotes[proposal.id] ?? proposal.notes ?? ''}
+                                onChange={(event) =>
+                                  setProposalNotes((prev) => ({ ...prev, [proposal.id]: event.target.value }))
+                                }
+                              />
+                            )}
                             <div className="delta-ai-inline-card-actions">
                               <button
                                 type="button"

@@ -13,6 +13,7 @@ import fieldOptionService from '../services/fieldOptionService';
 import itemFieldValueService from '../services/itemFieldValueService';
 import commentsService from '../services/commentsService';
 import chatService from '../services/chatService';
+import type { ChatProposal } from '../types/chat';
 import '../components/FocalBoard/StatusSelect.css';
 import './ListView.css';
 import type { CalendarProposal, FieldUpdateProposal, NewActionProposal } from '../contracts/executionContracts';
@@ -105,6 +106,12 @@ type CommentScopeType = 'item' | 'action';
 interface CommentScope {
   type: CommentScopeType;
   scopeId: string;
+}
+
+interface ThreadProposalState {
+  proposal: ChatProposal;
+  applied: boolean;
+  dismissed: boolean;
 }
 
 interface ColumnOptionDraft {
@@ -262,11 +269,14 @@ export default function ListView(): JSX.Element {
   const [activeCommentScope, setActiveCommentScope] = useState<CommentScope | null>(null);
   const [selectedActionForThreadId, setSelectedActionForThreadId] = useState<string | null>(null);
   const [comments, setComments] = useState<ThreadComment[]>([]);
+  const [commentProposalState, setCommentProposalState] = useState<Record<string, ThreadProposalState[]>>({});
   const [commentsLoading, setCommentsLoading] = useState(false);
   const [commentDraft, setCommentDraft] = useState('');
   const [commentSubmitting, setCommentSubmitting] = useState(false);
   const [commentError, setCommentError] = useState<string | null>(null);
   const [pushingCommentId, setPushingCommentId] = useState<string | null>(null);
+  const [applyingCommentProposalId, setApplyingCommentProposalId] = useState<string | null>(null);
+  const [commentProposalNotes, setCommentProposalNotes] = useState<Record<string, string>>({});
   const [statusImportListId, setStatusImportListId] = useState('');
   const [statusImportCandidates, setStatusImportCandidates] = useState<Array<{ id: string; name: string }>>([]);
   const [importingStatuses, setImportingStatuses] = useState(false);
@@ -1086,25 +1096,7 @@ export default function ListView(): JSX.Element {
         item_id: scopeItemId,
         action_id: activeCommentScope.type === 'action' ? activeCommentScope.scopeId : undefined
       };
-      const prompt = [
-        'Treat this comment as actionable workspace input.',
-        'You can update lists/items/actions/time blocks when warranted by the comment.',
-        'Ground every suggestion in the provided live item context and field values.',
-        'Based on current workspace state, suggest specific next steps and any concrete updates needed.',
-        'If an update requires confirmation, ask one short question at the end.',
-        '',
-        `List: ${list?.name || 'Unknown list'}`,
-        `Item: ${scopedItem?.title || 'Unknown item'}`,
-        `Description: ${(scopedItem?.description || '').trim() || 'None'}`,
-        activeCommentScope.type === 'action'
-          ? `Action: ${scopedAction?.title || 'Unknown action'}`
-          : 'Action: (item-level thread)',
-        '',
-        'Custom fields:',
-        ...(scopedFieldContext.length > 0 ? scopedFieldContext : ['- None']),
-        '',
-        `Comment: ${body}`
-      ].join('\n');
+      const prompt = body;
 
       const reply = await chatService.send({
         mode: 'ai',
@@ -1120,11 +1112,108 @@ export default function ListView(): JSX.Element {
         'ai'
       );
       setComments((prev) => [...prev, saved]);
+      if (Array.isArray(reply.proposals) && reply.proposals.length > 0) {
+        setCommentProposalState((prev) => ({
+          ...prev,
+          [saved.id]: reply.proposals!.map((proposal) => ({
+            proposal,
+            applied: false,
+            dismissed: false
+          }))
+        }));
+      }
     } catch (err: any) {
       setCommentError(err?.message || 'Failed to push comment to Delta AI');
     } finally {
       setPushingCommentId(null);
     }
+  };
+
+  const handleApproveCommentProposal = async (commentId: string, proposalId: string): Promise<void> => {
+    if (!user?.id) return;
+    const proposalEntry = (commentProposalState[commentId] || []).find((entry) => entry.proposal.id === proposalId);
+    if (!proposalEntry || proposalEntry.applied) return;
+
+    setApplyingCommentProposalId(proposalId);
+    setCommentError(null);
+    try {
+      const proposal = proposalEntry.proposal;
+      const noteOverride = (commentProposalNotes[proposal.id] || '').trim() || null;
+      if (proposal.type === 'create_follow_up_action') {
+        await focalBoardService.createAction(
+          proposal.item_id,
+          user.id,
+          proposal.title,
+          noteOverride ?? proposal.notes ?? null
+        );
+      } else if (proposal.type === 'create_focal') {
+        await focalBoardService.createFocal(user.id, proposal.title);
+      } else if (proposal.type === 'create_list') {
+        await focalBoardService.createLane(proposal.focal_id, user.id, proposal.title, 'Items', 'Tasks');
+      } else if (proposal.type === 'create_item') {
+        await focalBoardService.createItem(proposal.list_id, user.id, proposal.title);
+      } else if (proposal.type === 'create_action') {
+        const createdAction = await focalBoardService.createAction(
+          proposal.item_id,
+          user.id,
+          proposal.title,
+          noteOverride ?? proposal.notes ?? null,
+          proposal.scheduled_at ?? null
+        );
+        if (proposal.time_block_id) {
+          await focalBoardService.linkActionToTimeBlock({
+            actionId: createdAction.id,
+            timeBlockId: proposal.time_block_id,
+            userId: user.id,
+            laneId: proposal.lane_id || null
+          });
+        }
+      } else if (proposal.type === 'create_time_block') {
+        await calendarService.createTimeBlockFromProposal(user.id, {
+          ...proposal,
+          notes: noteOverride ?? proposal.notes ?? null
+        });
+      } else if (proposal.type === 'resolve_time_conflict') {
+        await calendarService.patchTimeBlock(proposal.conflict_time_block_id, {
+          start_time: proposal.conflict_new_start_utc,
+          end_time: proposal.conflict_new_end_utc
+        });
+        await calendarService.createTimeBlockFromProposal(user.id, {
+          id: `${proposal.id}-event`,
+          type: 'create_time_block',
+          title: proposal.event_title,
+          scheduled_start_utc: proposal.event_start_utc,
+          scheduled_end_utc: proposal.event_end_utc,
+          lane_id: proposal.lane_id || null,
+          notes: noteOverride ?? proposal.notes ?? null
+        });
+      }
+
+      setCommentProposalState((prev) => ({
+        ...prev,
+        [commentId]: (prev[commentId] || []).map((entry) =>
+          entry.proposal.id === proposalId ? { ...entry, applied: true } : entry
+        )
+      }));
+      setCommentProposalNotes((prev) => {
+        const next = { ...prev };
+        delete next[proposal.id];
+        return next;
+      });
+    } catch (err: any) {
+      setCommentError(err?.message || 'Failed to apply AI proposal');
+    } finally {
+      setApplyingCommentProposalId(null);
+    }
+  };
+
+  const handleDismissCommentProposal = (commentId: string, proposalId: string): void => {
+    setCommentProposalState((prev) => ({
+      ...prev,
+      [commentId]: (prev[commentId] || []).map((entry) =>
+        entry.proposal.id === proposalId ? { ...entry, dismissed: true } : entry
+      )
+    }));
   };
 
   const handleCreateField = async (): Promise<void> => {
@@ -2740,30 +2829,6 @@ export default function ListView(): JSX.Element {
               <aside className="list-item-modal-comments">
                 <h3>Comments</h3>
 
-                <div className="list-thread-scope-toggle" role="tablist" aria-label="Thread scope">
-                  <button
-                    type="button"
-                    className={activeCommentScope?.type === 'item' ? 'active' : ''}
-                    onClick={() => {
-                      setSelectedActionForThreadId(null);
-                      setActiveCommentScope({ type: 'item', scopeId: selectedItem.id });
-                    }}
-                  >
-                    Item
-                  </button>
-                  <button
-                    type="button"
-                    className={activeCommentScope?.type === 'action' ? 'active' : ''}
-                    onClick={() => {
-                      if (!selectedActionForThreadId) return;
-                      setActiveCommentScope({ type: 'action', scopeId: selectedActionForThreadId });
-                    }}
-                    disabled={!selectedActionForThreadId}
-                  >
-                    Action
-                  </button>
-                </div>
-
                 <div className="list-item-comments-thread">
                   {commentsLoading && <p className="list-item-comments-empty">Loading comments...</p>}
                   {!commentsLoading && comments.length === 0 && (
@@ -2781,6 +2846,48 @@ export default function ListView(): JSX.Element {
                             <time>{formatCommentTime(comment.created_at)}</time>
                           </div>
                           <p className="list-item-comment-assistant-text">{comment.content}</p>
+                          {(commentProposalState[comment.id] || [])
+                            .filter((entry) => !entry.dismissed)
+                            .map((entry) => (
+                              <div key={entry.proposal.id} className="list-item-comment-ai-proposal">
+                                <p>{entry.proposal.type === 'resolve_time_conflict' ? entry.proposal.event_title : entry.proposal.title}</p>
+                                {(entry.proposal.type === 'create_action' ||
+                                  entry.proposal.type === 'create_follow_up_action' ||
+                                  entry.proposal.type === 'create_time_block' ||
+                                  entry.proposal.type === 'resolve_time_conflict') && (
+                                  <input
+                                    type="text"
+                                    className="list-item-comment-ai-proposal-input"
+                                    placeholder="Optional description"
+                                    value={commentProposalNotes[entry.proposal.id] ?? entry.proposal.notes ?? ''}
+                                    onChange={(event) =>
+                                      setCommentProposalNotes((prev) => ({
+                                        ...prev,
+                                        [entry.proposal.id]: event.target.value
+                                      }))
+                                    }
+                                  />
+                                )}
+                                <div className="list-item-comment-ai-proposal-actions">
+                                  <button
+                                    type="button"
+                                    className="approve"
+                                    disabled={entry.applied || applyingCommentProposalId === entry.proposal.id}
+                                    onClick={() => void handleApproveCommentProposal(comment.id, entry.proposal.id)}
+                                  >
+                                    {entry.applied ? 'Applied' : applyingCommentProposalId === entry.proposal.id ? 'Applying…' : 'Approve'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="dismiss"
+                                    onClick={() => handleDismissCommentProposal(comment.id, entry.proposal.id)}
+                                    disabled={entry.applied || applyingCommentProposalId === entry.proposal.id}
+                                  >
+                                    Dismiss
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
                         </article>
                       ) : (
                         <article className="list-item-comment-user-bubble">
@@ -2811,13 +2918,19 @@ export default function ListView(): JSX.Element {
                     void handleSubmitComment();
                   }}
                 >
-                  <div className="list-item-comment-composer-surface">
+                  <div className="list-item-comment-divider">
                     <div className="list-item-comment-input-row">
                       <div className="list-item-comment-input-wrap">
                         <textarea
                           className="list-item-comment-input"
                           value={commentDraft}
                           onChange={(event) => setCommentDraft(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' && !event.shiftKey) {
+                              event.preventDefault();
+                              void handleSubmitComment();
+                            }
+                          }}
                           placeholder="Write a comment..."
                           rows={1}
                         />

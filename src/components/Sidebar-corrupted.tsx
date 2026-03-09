@@ -28,7 +28,7 @@ const focalItems: NavItem[] = [
 ];
 
 const resourceItems: NavItem[] = [
-  { id: 'docs', name: 'Docs', icon: FileText, path: '/docs' },
+  { id: 'docs', name: 'Notes', icon: FileText, path: '/docs' },
   { id: 'settings', name: 'Settings', icon: Settings, path: '/settings' },
 ];
 
@@ -367,7 +367,7 @@ export default function Sidebar({ isExpanded, setIsExpanded }: SidebarProps): JS
         
         <button className="sidebar-nav-item" onClick={() => navigate('/docs')}>
           <FileText size={14} />
-          <span className="sidebar-nav-text">Docs</span>
+          <span className="sidebar-nav-text">Notes</span>
         </button>
       </div>
 

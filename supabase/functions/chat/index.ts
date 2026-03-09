@@ -52,6 +52,7 @@ interface AccountContextSnapshot {
 
 interface DebugMeta {
   source: 'db' | 'llm' | 'heuristic';
+  request_id?: string;
   route?: string;
   scope: {
     mode?: 'global' | 'scoped';
@@ -74,6 +75,25 @@ interface DebugMeta {
     fields?: number;
     comments?: number;
   };
+  warnings?: string[];
+  tools?: Array<{
+    name: string;
+    status: 'applied' | 'skipped' | 'blocked' | 'error';
+    summary?: string;
+  }>;
+}
+
+interface SnapshotBuildResult {
+  snapshot: AccountContextSnapshot;
+  warnings: string[];
+}
+
+interface FieldSchemaValue {
+  id: string;
+  list_id: string;
+  name: string;
+  type: string;
+  is_primary?: boolean;
 }
 
 type ChatProposal =
@@ -81,7 +101,9 @@ type ChatProposal =
   | { id: string; type: 'create_focal'; title: string }
   | { id: string; type: 'create_list'; title: string; focal_id: string }
   | { id: string; type: 'create_item'; title: string; list_id: string }
-  | { id: string; type: 'create_action'; title: string; item_id: string };
+  | { id: string; type: 'create_action'; title: string; item_id: string; notes?: string | null; scheduled_at?: string | null; time_block_id?: string | null; lane_id?: string | null }
+  | { id: string; type: 'create_time_block'; title: string; scheduled_start_utc: string; scheduled_end_utc?: string | null; lane_id?: string | null; notes?: string | null }
+  | { id: string; type: 'resolve_time_conflict'; conflict_time_block_id: string; conflict_title?: string; conflict_new_start_utc: string; conflict_new_end_utc: string; event_title: string; event_start_utc: string; event_end_utc: string; lane_id?: string | null; notes?: string | null };
 
 type DeterministicIntent =
   | 'list_items'
@@ -120,12 +142,59 @@ interface DeterministicResponse {
   proposals?: ChatProposal[];
 }
 
+type MessageIntentMode = 'act' | 'ask' | 'mixed' | 'inform';
+interface MessagePlan {
+  mode: MessageIntentMode;
+  confidence: number;
+  explicitInventoryAsk: boolean;
+  mutationRequested: boolean;
+  ambiguousAction: boolean;
+}
+
 const safeJson = async (response: Response): Promise<any> => {
   try {
     return await response.json();
   } catch {
     return null;
   }
+};
+
+const decodeJwtPayload = (token: string): Record<string, unknown> | null => {
+  try {
+    const parts = token.split('.');
+    if (parts.length < 2) return null;
+    const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const pad = '='.repeat((4 - (base64.length % 4)) % 4);
+    const json = atob(base64 + pad);
+    const parsed = JSON.parse(json);
+    return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+};
+
+const extractUserIdFromGatewayHeaders = (req: Request): string | null => {
+  const candidates = [
+    req.headers.get('x-supabase-auth-user'),
+    req.headers.get('x-sb-auth-user'),
+    req.headers.get('x-supabase-user'),
+    req.headers.get('x-sb-user-id')
+  ].filter(Boolean) as string[];
+
+  for (const raw of candidates) {
+    const direct = raw.trim();
+    if (/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(direct)) {
+      return direct;
+    }
+    try {
+      const parsed = JSON.parse(direct);
+      const id = typeof parsed?.id === 'string' ? parsed.id : typeof parsed?.sub === 'string' ? parsed.sub : null;
+      if (id) return id;
+    } catch {
+      // noop
+    }
+  }
+  return null;
 };
 
 const GROQ_MODELS_FALLBACK = [
@@ -142,7 +211,8 @@ const buildAccountContextSnapshot = async (
   client: ReturnType<typeof createClient>,
   userId: string,
   context: ChatContext
-): Promise<AccountContextSnapshot> => {
+): Promise<SnapshotBuildResult> => {
+  const warnings: string[] = [];
   const hasScopedIds =
     Boolean(context.focal_id) ||
     Boolean(context.list_id) ||
@@ -263,24 +333,31 @@ const buildAccountContextSnapshot = async (
   if (focalsResult.error) throw focalsResult.error;
   if (listsResult.error) throw listsResult.error;
   if (itemsResult.error) {
+    warnings.push(`items query failed: ${itemsResult.error.message}`);
     console.warn('[chat] snapshot: items query failed, continuing with empty items', itemsResult.error.message);
   }
   if (actionsResult.error) {
+    warnings.push(`actions query failed: ${actionsResult.error.message}`);
     console.warn('[chat] snapshot: actions query failed, continuing with empty actions', actionsResult.error.message);
   }
   if (timeBlocksResult.error) {
+    warnings.push(`time_blocks query failed: ${timeBlocksResult.error.message}`);
     console.warn('[chat] snapshot: time_blocks query failed, continuing with empty timeBlocks', timeBlocksResult.error.message);
   }
   if (fieldsResult.error) {
+    warnings.push(`list_fields query failed: ${fieldsResult.error.message}`);
     console.warn('[chat] snapshot: list_fields query failed, continuing with empty fields', fieldsResult.error.message);
   }
   if (fieldOptionsResult.error) {
+    warnings.push(`field_options query failed: ${fieldOptionsResult.error.message}`);
     console.warn('[chat] snapshot: field_options query failed, continuing with empty fieldOptions', fieldOptionsResult.error.message);
   }
   if (itemFieldValuesResult.error) {
+    warnings.push(`item_field_values query failed: ${itemFieldValuesResult.error.message}`);
     console.warn('[chat] snapshot: item_field_values query failed, continuing with empty values', itemFieldValuesResult.error.message);
   }
   if (itemCommentsResult.error) {
+    warnings.push(`item_comments query failed: ${itemCommentsResult.error.message}`);
     console.warn('[chat] snapshot: item_comments query failed, continuing with empty comments', itemCommentsResult.error.message);
   }
 
@@ -295,43 +372,44 @@ const buildAccountContextSnapshot = async (
   const itemComments = ((itemCommentsResult.error ? [] : itemCommentsResult.data) || []) as AccountContextSnapshot['itemComments'];
 
   return {
-    focals: focals.map((row) => ({ id: row.id, name: clip(row.name || '') })),
-    lists: lists.map((row) => ({
+    snapshot: {
+      focals: focals.map((row) => ({ id: row.id, name: clip(row.name || '') })),
+      lists: lists.map((row) => ({
       id: row.id,
       focal_id: row.focal_id,
       name: clip(row.name || ''),
       mode: row.mode ?? null
-    })),
-    items: items.map((row) => ({
+      })),
+      items: items.map((row) => ({
       id: row.id,
       lane_id: row.lane_id,
       title: clip(row.title || ''),
       status: row.status ?? null
-    })),
-    actions: actions.map((row) => ({
+      })),
+      actions: actions.map((row) => ({
       id: row.id,
       item_id: row.item_id,
       title: clip(row.title || '')
-    })),
-    timeBlocks: timeBlocks.map((row) => ({
+      })),
+      timeBlocks: timeBlocks.map((row) => ({
       id: row.id,
       title: clip(row.title || ''),
       start_time: row.start_time,
       end_time: row.end_time
-    })),
-    fields: fields.map((row) => ({
+      })),
+      fields: fields.map((row) => ({
       id: row.id,
       list_id: row.list_id,
       name: clip(row.name || ''),
       type: row.type,
       is_primary: Boolean(row.is_primary)
-    })),
-    fieldOptions: fieldOptions.map((row) => ({
+      })),
+      fieldOptions: fieldOptions.map((row) => ({
       id: row.id,
       field_id: row.field_id,
       label: clip(row.label || '')
-    })),
-    itemFieldValues: itemFieldValues.map((row) => ({
+      })),
+      itemFieldValues: itemFieldValues.map((row) => ({
       item_id: row.item_id,
       field_id: row.field_id,
       option_id: row.option_id ?? null,
@@ -339,12 +417,14 @@ const buildAccountContextSnapshot = async (
       value_number: row.value_number ?? null,
       value_date: row.value_date ?? null,
       value_boolean: row.value_boolean ?? null
-    })),
-    itemComments: itemComments.map((row) => ({
+      })),
+      itemComments: itemComments.map((row) => ({
       item_id: row.item_id,
       body: clip(row.body || '', 220),
       created_at: row.created_at
-    }))
+      }))
+    },
+    warnings
   };
 };
 
@@ -377,11 +457,19 @@ const snapshotToPromptText = (snapshot: AccountContextSnapshot): string =>
 const getLastUserMessage = (messages: ChatMessage[]): string =>
   [...messages].reverse().find((entry) => entry.role === 'user')?.content?.trim() || '';
 
+const isExplicitInventoryAsk = (text: string): boolean => {
+  const q = text.toLowerCase();
+  return (
+    /\b(show|list|what are|what's in|which|display|inventory)\b/.test(q) &&
+    /\b(focal|focals|space|spaces|list|lists|item|items|task|tasks|action|actions|field|fields|column|columns|time block|timeblock|calendar)\b/.test(q)
+  );
+};
+
 const shouldAnswerDeterministically = (text: string): boolean => {
   const q = text.toLowerCase();
   return (
-    /\b(focal|focals|space|spaces|list|lists|item|items|task|tasks|action|actions|field|fields|column|columns|time block|timeblock|calendar)\b/.test(q) ||
-    /\b(next step|follow[- ]?up|what should i do next)\b/.test(q) ||
+    isExplicitInventoryAsk(text) ||
+    /\b(next step|what should i do next|follow[- ]?up)\b/.test(q) ||
     /\b(in|inside|from)\s+my\s+[a-z0-9].*(focal|space|list)\b/.test(q)
   );
 };
@@ -573,22 +661,349 @@ const resolveItemIdFromQuestion = (
   return { itemId: null, confidence: 0, ambiguous: false };
 };
 
+const hasMutationVerb = (userText: string): boolean =>
+  /\b(set|update|put|mark|change|assign|rename|add|schedule|log|note|visit|remind|follow[- ]?up)\b/i.test(userText);
+
+const isInquiryStyle = (text: string): boolean => {
+  const q = text.toLowerCase().trim();
+  return /\?$/.test(q) || /^(what|why|how|can|could|should|would|is|are|do|does|did)\b/.test(q);
+};
+
+const buildMessagePlan = (text: string): MessagePlan => {
+  const lower = text.toLowerCase();
+  const explicitInventoryAsk = isExplicitInventoryAsk(text);
+  const mutationRequested = hasMutationVerb(text) ||
+    /\b(put it on my calendar|put on my calendar|add .* to calendar)\b/i.test(text);
+  const hasAskVerb = /\b(what|why|how|can you|could you|should i|would you)\b/.test(lower);
+  const inquiry = isInquiryStyle(text);
+  const mixed = mutationRequested && hasAskVerb;
+  const ambiguousAction = mutationRequested && inquiry &&
+    !/\b(set|update|change|assign|rename|mark|schedule)\b/i.test(text);
+  if (mixed) return { mode: 'mixed', confidence: 0.72, explicitInventoryAsk, mutationRequested, ambiguousAction };
+  if (mutationRequested && !ambiguousAction) return { mode: 'act', confidence: 0.85, explicitInventoryAsk, mutationRequested, ambiguousAction };
+  if (explicitInventoryAsk || hasAskVerb || inquiry) return { mode: 'ask', confidence: 0.8, explicitInventoryAsk, mutationRequested, ambiguousAction };
+  return { mode: 'inform', confidence: 0.64, explicitInventoryAsk, mutationRequested, ambiguousAction };
+};
+
+const classifyMessagePlanWithModel = async (
+  message: string,
+  context: ChatContext,
+  snapshot: AccountContextSnapshot | null,
+  groqApiKey: string
+): Promise<MessagePlan> => {
+  const fallback = buildMessagePlan(message);
+  if (!message.trim()) return fallback;
+  const contextLine = friendlyContextLine(context, snapshot);
+  const body = {
+    model: 'llama-3.1-8b-instant',
+    temperature: 0,
+    response_format: { type: 'json_object' },
+    messages: [
+      {
+        role: 'system',
+        content:
+          'Classify the user message intent for a workspace assistant. Return JSON only with keys: ' +
+          '{"mode":"act|ask|mixed|inform","confidence":0..1,"explicitInventoryAsk":boolean,"mutationRequested":boolean,"ambiguousAction":boolean}. ' +
+          'Use "act" only when user clearly wants workspace changes. Use "mixed" when message contains both question + action request.'
+      },
+      {
+        role: 'user',
+        content: JSON.stringify({
+          message,
+          context: contextLine || null
+        })
+      }
+    ]
+  };
+
+  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${groqApiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(body)
+  });
+  if (!response.ok) return fallback;
+  const parsed = await safeJson(response);
+  const content = parsed?.choices?.[0]?.message?.content;
+  if (typeof content !== 'string' || !content.trim().startsWith('{')) return fallback;
+  try {
+    const json = JSON.parse(content);
+    const mode: MessageIntentMode =
+      json?.mode === 'act' || json?.mode === 'ask' || json?.mode === 'mixed' || json?.mode === 'inform'
+        ? json.mode
+        : fallback.mode;
+    const confidence = typeof json?.confidence === 'number' && Number.isFinite(json.confidence)
+      ? Math.max(0, Math.min(1, json.confidence))
+      : fallback.confidence;
+    const explicitInventoryAsk = typeof json?.explicitInventoryAsk === 'boolean'
+      ? json.explicitInventoryAsk
+      : fallback.explicitInventoryAsk;
+    const mutationRequested = typeof json?.mutationRequested === 'boolean'
+      ? json.mutationRequested
+      : fallback.mutationRequested;
+    const ambiguousAction = typeof json?.ambiguousAction === 'boolean'
+      ? json.ambiguousAction
+      : fallback.ambiguousAction;
+    return { mode, confidence, explicitInventoryAsk, mutationRequested, ambiguousAction };
+  } catch {
+    return fallback;
+  }
+};
+
+const parseOwnerCandidateFromText = (userText: string): string | null => {
+  const metWith = userText.match(/\bmet with\s+([a-z][a-z' -]{1,48})\b/i);
+  if (metWith?.[1]) return metWith[1].trim().replace(/[.?!,;:]+$/g, '');
+
+  const ownerIs = userText.match(/\bowner\s+(?:is|=|:)\s*([a-z][a-z' -]{1,48})\b/i);
+  if (ownerIs?.[1]) return ownerIs[1].trim().replace(/[.?!,;:]+$/g, '');
+
+  return null;
+};
+
+const extractPrimaryUserContent = (userText: string): string => {
+  const marker = userText.match(/\bComment:\s*([\s\S]+)$/i);
+  const value = marker?.[1]?.trim() || userText.trim();
+  return value;
+};
+
+const detectTargetFieldAlias = (userText: string): string | null => {
+  const q = normalize(userText);
+  const aliases = [
+    'owner name',
+    'owner',
+    'contact',
+    'email',
+    'phone',
+    'location',
+    'status',
+    'title',
+    'description',
+    'notes',
+    'note'
+  ];
+  for (const alias of aliases) {
+    if (q.includes(alias)) return alias;
+  }
+  return null;
+};
+
+const extractValueForField = (userText: string, fieldAlias: string | null): string | null => {
+  if (!fieldAlias) return null;
+  const quoted = userText.match(/["“](.+?)["”]/);
+  if (quoted?.[1]) return quoted[1].trim();
+
+  const aliasRegex = escapeRegExp(fieldAlias);
+  const direct = userText.match(new RegExp(`\\b${aliasRegex}\\b\\s*(?:to|as)\\s+(.+)$`, 'i'));
+  if (direct?.[1]) return direct[1].trim().replace(/[.?!]+$/g, '');
+
+  const verbFirst = userText.match(new RegExp(`\\b(?:set|update|put|mark|change|assign)\\s+(.+?)\\s+(?:to|as)\\s+\\b${aliasRegex}\\b`, 'i'));
+  if (verbFirst?.[1]) return verbFirst[1].trim().replace(/[.?!]+$/g, '');
+
+  if (/\bput\s+him\s+down\s+as\s+owner\b/i.test(userText) || /\bset\s+him\s+as\s+owner\b/i.test(userText)) {
+    const lead = userText.match(/^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+is\b/);
+    if (lead?.[1]) return lead[1].trim();
+  }
+
+  const general = userText.match(/\b(?:to|as)\s+(.+)$/i);
+  if (general?.[1]) return general[1].trim().replace(/[.?!]+$/g, '');
+  return null;
+};
+
+const resolveFieldFromAlias = (
+  fieldsForList: FieldSchemaValue[],
+  alias: string
+): FieldSchemaValue | null => {
+  const nAlias = normalize(alias);
+  const aliasTokenSets: Record<string, string[]> = {
+    owner: ['owner', 'owner name', 'contact owner'],
+    contact: ['contact', 'owner', 'owner name'],
+    email: ['email', 'contact email'],
+    phone: ['phone', 'contact phone', 'mobile'],
+    location: ['location', 'address'],
+    status: ['status', 'stage'],
+    title: ['title', 'name'],
+    description: ['description', 'desc', 'notes', 'note'],
+    notes: ['notes', 'note', 'description']
+  };
+  const needles = aliasTokenSets[nAlias] || [nAlias];
+  for (const field of fieldsForList) {
+    const name = normalize(field.name || '');
+    for (const needle of needles) {
+      if (name.includes(normalize(needle))) {
+        return field;
+      }
+    }
+  }
+  return null;
+};
+
+const formatStatusLabel = (value: string): string =>
+  value
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((token) => token[0].toUpperCase() + token.slice(1).toLowerCase())
+    .join(' ');
+
+const getTimeZoneOffsetMinutes = (date: Date, timeZone: string): number => {
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hour12: false,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  });
+  const parts = dtf.formatToParts(date);
+  const map = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+  const asUtc = Date.UTC(
+    Number(map.year),
+    Number(map.month) - 1,
+    Number(map.day),
+    Number(map.hour),
+    Number(map.minute),
+    Number(map.second)
+  );
+  return Math.round((asUtc - date.getTime()) / 60000);
+};
+
+const zonedLocalToUtcIso = (
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
+  timeZone: string
+): string => {
+  let guess = Date.UTC(year, month - 1, day, hour, minute, 0);
+  for (let i = 0; i < 3; i += 1) {
+    const offset = getTimeZoneOffsetMinutes(new Date(guess), timeZone);
+    const candidate = Date.UTC(year, month - 1, day, hour, minute, 0) - offset * 60000;
+    if (candidate === guess) break;
+    guess = candidate;
+  }
+  return new Date(guess).toISOString();
+};
+
+const getNowInTimeZoneParts = (timeZone: string): { year: number; month: number; day: number; weekday: number } => {
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hour12: false,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    weekday: 'long'
+  });
+  const parts = dtf.formatToParts(new Date());
+  const map = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+  const weekdayByName: Record<string, number> = {
+    sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6
+  };
+  return {
+    year: Number(map.year),
+    month: Number(map.month),
+    day: Number(map.day),
+    weekday: weekdayByName[(map.weekday || '').toLowerCase()] ?? new Date().getDay()
+  };
+};
+
+const parseScheduledAtFromText = (userText: string, timeZone = 'America/Denver'): string | null => {
+  const lower = userText.toLowerCase();
+  const nowTz = getNowInTimeZoneParts(timeZone);
+  const baseLocal = new Date(Date.UTC(nowTz.year, nowTz.month - 1, nowTz.day, 9, 0, 0));
+
+  if (/\btomorrow\b/.test(lower)) {
+    baseLocal.setUTCDate(baseLocal.getUTCDate() + 1);
+  } else {
+    const weekdays = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+    const idx = weekdays.findIndex((weekday) => new RegExp(`\\b${weekday}\\b`).test(lower));
+    if (idx >= 0) {
+      const current = nowTz.weekday;
+      let delta = (idx - current + 7) % 7;
+      if (delta === 0) delta = 7;
+      baseLocal.setUTCDate(baseLocal.getUTCDate() + delta);
+    }
+  }
+
+  const timeMatch = lower.match(/\b(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/);
+  if (!timeMatch) {
+    return null;
+  }
+  let hours = Number(timeMatch[1]);
+  const minutes = Number(timeMatch[2] || '0');
+  const meridian = timeMatch[3] || null;
+  if (meridian === 'pm' && hours !== 12) hours += 12;
+  if (meridian === 'am' && hours === 12) hours = 0;
+  if (!meridian) {
+    // Default ambiguous "at 12" to 12:00, and early-hour meeting language to PM.
+    if (hours === 12) {
+      hours = 12;
+    } else if (/\b(meeting|calendar|appointment|fta)\b/.test(lower) && hours >= 1 && hours <= 7) {
+      hours += 12;
+    }
+  }
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+  const year = baseLocal.getUTCFullYear();
+  const month = baseLocal.getUTCMonth() + 1;
+  const day = baseLocal.getUTCDate();
+  return zonedLocalToUtcIso(year, month, day, hours, minutes, timeZone);
+};
+
+const inferCalendarTitleFromText = (userText: string): string => {
+  const trimmed = userText.trim();
+  const quoted = trimmed.match(/["“](.+?)["”]/);
+  if (quoted?.[1]?.trim()) return clip(quoted[1].trim(), 80);
+
+  const meeting = trimmed.match(/\b([a-z0-9 '&/-]{2,60})\s+meeting\b/i);
+  if (meeting?.[1]) {
+    return clip(`${meeting[1].trim()} meeting`, 80);
+  }
+
+  const beforeIs = trimmed.match(/^(.+?)\s+is\s+(?:on\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i);
+  if (beforeIs?.[1]) {
+    return clip(beforeIs[1].trim(), 80);
+  }
+  return 'Calendar follow-up';
+};
+
+const inferActionTitleFromText = (userText: string): string => {
+  const quoted = userText.match(/["“](.+?)["”]/);
+  if (quoted?.[1]?.trim()) return clip(quoted[1].trim(), 80);
+
+  const noteTo = userText.match(/\bnote\s+to\s+(.+?)(?:\s+in\s+my\s+.+\s+block|\s+(?:tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b|$)/i);
+  if (noteTo?.[1]?.trim()) {
+    return clip(noteTo[1].trim().replace(/[.?!]+$/g, ''), 80);
+  }
+
+  const visit = userText.match(/\bvisit\s+(.+?)(?:\s+in\s+my\s+.+\s+block|\s+(?:tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b|$)/i);
+  if (visit?.[0]?.trim()) {
+    return clip(visit[0].trim().replace(/[.?!]+$/g, ''), 80);
+  }
+  return 'Follow up';
+};
+
+const inferTimeBlockNameFromText = (userText: string): string | null => {
+  const match = userText.match(/\bin\s+(?:my\s+)?(.+?)\s+block\b/i);
+  if (!match?.[1]) return null;
+  return normalize(match[1]);
+};
+
 const detectIntent = (userText: string): DeterministicIntent => {
   const q = userText.toLowerCase();
+  const explicitInventory = isExplicitInventoryAsk(userText);
   const asksNextStep = /\b(next step|what should i do next|follow[- ]?up|follow up)\b/.test(q);
   const asksFields = /\b(field|fields|columns|column|status field|custom field)\b/.test(q);
-  const asksItems = /\b(items?|tasks?)\b/.test(q);
-  const asksLists = /\blists?\b/.test(q);
   const asksFocals = /\b(focals?|spaces?)\b/.test(q);
   const asksActions = /\bactions?\b/.test(q);
   const asksTimeBlocks = /\btime block|timeblock|calendar\b/.test(q);
   if (asksNextStep) return 'item_next_step';
-  if (asksFields) return 'field_inventory';
-  if (asksItems) return 'list_items';
-  if (asksLists) return 'list_inventory';
-  if (asksFocals) return 'focal_inventory';
-  if (asksActions) return 'action_inventory';
-  if (asksTimeBlocks) return 'timeblock_inventory';
+  if (asksFields && explicitInventory) return 'field_inventory';
+  if (asksFocals && explicitInventory) return 'focal_inventory';
+  if (asksActions && explicitInventory) return 'action_inventory';
+  if (asksTimeBlocks && explicitInventory) return 'timeblock_inventory';
   return 'unknown';
 };
 
@@ -597,6 +1012,13 @@ const extractTitleCandidate = (userText: string): string | null => {
   if (quoted?.[1]) {
     const value = quoted[1].trim();
     return value.length ? value : null;
+  }
+  const addToList = userText.match(
+    /\b(?:create|add|make)\s+(.+?)\s+to\s+(?:the\s+)?[a-z0-9][a-z0-9\s&'/-]{1,80}\s+list\b/i
+  );
+  if (addToList?.[1]) {
+    const value = addToList[1].trim().replace(/[.?!,;:]+$/g, '');
+    if (value.length) return value;
   }
   const patterns = [
     /\b(?:called|named|title(?:d)?|for)\s+([a-z0-9][a-z0-9\s&'/-]{2,80})$/i,
@@ -615,8 +1037,9 @@ const extractTitleCandidate = (userText: string): string | null => {
 const detectCreateTarget = (userText: string): 'focal' | 'list' | 'item' | 'action' | null => {
   const q = userText.toLowerCase();
   if (!/\b(create|add|make|start|setup|set up)\b/.test(q)) return null;
+  if (/\b(?:create|add|make)\s+.+\s+to\s+.+\blist\b/.test(q)) return 'item';
+  if (/\b(?:create|add|make)\s+(?:a|an|new)?\s*list\b/.test(q)) return 'list';
   if (/\b(focal|space)(s)?\b/.test(q)) return 'focal';
-  if (/\blist(s)?\b/.test(q)) return 'list';
   if (/\b(action|sub-?item|subitem|step)\b/.test(q)) return 'action';
   if (/\b(item|task)\b/.test(q)) return 'item';
   return null;
@@ -679,6 +1102,458 @@ const resolveEntities = (
   return {
     focal: { id: focalId, confidence: focalConfidence, ambiguous: focalMatchRaw.ambiguous, fromPrior: focalFromPrior },
     list: { id: listId, confidence: listConfidence, ambiguous: listAmbiguous, fromPrior: listFromPrior }
+  };
+};
+
+const runMutationTools = async (
+  client: ReturnType<typeof createClient>,
+  userId: string,
+  userText: string,
+  snapshot: AccountContextSnapshot,
+  context: ChatContext,
+  messages: ChatMessage[],
+  plan: MessagePlan
+): Promise<{
+  handled: boolean;
+  suppressInventory?: boolean;
+  text?: string;
+  proposals?: ChatProposal[];
+  route?: string;
+  scopeLabels?: { focal?: string; list?: string };
+  confidence?: { focal?: number; list?: number };
+  tools: DebugMeta['tools'];
+}> => {
+  const tools: DebugMeta['tools'] = [];
+  if (!plan.mutationRequested) {
+    tools.push({ name: 'find_entity', status: 'skipped', summary: 'No mutation verb detected' });
+    return { handled: false, suppressInventory: false, tools };
+  }
+  if (plan.ambiguousAction) {
+    tools.push({ name: 'find_entity', status: 'blocked', summary: 'Action intent ambiguous' });
+    return {
+      handled: true,
+      suppressInventory: true,
+      text: 'I can apply that. Confirm with a direct action like "set owner to Rusty" or "schedule Tuesday 12:00 PM".',
+      tools,
+      route: 'mutation_needs_confirmation'
+    };
+  }
+
+  const focalNameById = new Map(snapshot.focals.map((f) => [f.id, f.name]));
+  const lists = snapshot.lists.map((list) => ({
+    ...list,
+    focalName: list.focal_id ? focalNameById.get(list.focal_id) || null : null
+  }));
+  const createTarget = detectCreateTarget(userText);
+  if (createTarget) {
+    tools.push({
+      name: 'update_record',
+      status: 'skipped',
+      summary: `Delegated create-intent (${createTarget}) to deterministic proposal flow`
+    });
+    return { handled: false, suppressInventory: false, tools };
+  }
+  const entities = resolveEntities(userText, snapshot, context, messages);
+  const listId = entities.list.id || context.list_id || null;
+  const itemMatch = resolveItemIdFromQuestion(userText, snapshot, context.item_id, listId);
+  const itemId = itemMatch.itemId || context.item_id || null;
+  const item = itemId ? snapshot.items.find((entry) => entry.id === itemId) || null : null;
+  const content = extractPrimaryUserContent(userText);
+
+  if (!item) {
+    tools.push({ name: 'find_entity', status: 'blocked', summary: 'No active item resolved' });
+    return {
+      handled: true,
+      suppressInventory: true,
+      text: 'I need the specific item to apply that update. Open the item (or name it) and I will apply it directly.',
+      tools,
+      route: 'mutation_no_item',
+      scopeLabels: {
+        focal: entities.focal.id ? focalNameById.get(entities.focal.id) || undefined : undefined
+      },
+      confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
+    };
+  }
+  tools.push({ name: 'find_entity', status: 'applied', summary: `Resolved item ${item.title}` });
+
+  const itemList = lists.find((entry) => entry.id === item.lane_id) || null;
+  const fieldsForList = snapshot.fields.filter((field) => field.list_id === item.lane_id);
+  tools.push({
+    name: 'get_schema_and_state',
+    status: 'applied',
+    summary: `Loaded ${fieldsForList.length} field(s) for list`
+  });
+
+  const wantsSchedulingAction =
+    /\b(visit|follow[- ]?up|schedule|remind|add task|add action|task|meeting|appointment|calendar|put it on my calendar|put on my calendar)\b/i.test(
+      content
+    ) &&
+    /\b(tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|calendar|block|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\b/i.test(
+      content
+    );
+  if (wantsSchedulingAction) {
+    const actionTitle = inferActionTitleFromText(content);
+    const scheduledAt = parseScheduledAtFromText(content, 'America/Denver');
+    const wantsCalendarEvent = /\b(calendar|put it on my calendar|put on my calendar)\b/i.test(content);
+    const isHardEvent = /\b(meeting|appointment|call|event)\b/i.test(content);
+    const ownerCandidate = parseOwnerCandidateFromText(content);
+    let ownerFieldUpdateSummary: string | null = null;
+    if (ownerCandidate) {
+      const ownerField = resolveFieldFromAlias(fieldsForList, 'owner');
+      if (ownerField) {
+        const ownerUpsertRow: Record<string, unknown> = {
+          user_id: userId,
+          item_id: item.id,
+          field_id: ownerField.id,
+          option_id: null,
+          value_text: ownerCandidate,
+          value_number: null,
+          value_date: null,
+          value_boolean: null
+        };
+        const { error: ownerUpsertError } = await client
+          .from('item_field_values')
+          .upsert(ownerUpsertRow, { onConflict: 'item_id,field_id' });
+        if (ownerUpsertError) {
+          tools.push({ name: 'update_record', status: 'error', summary: `Owner update failed: ${ownerUpsertError.message}` });
+        } else {
+          ownerFieldUpdateSummary = `Updated owner to ${ownerCandidate}.`;
+          tools.push({ name: 'update_record', status: 'applied', summary: `Updated owner field to ${ownerCandidate}` });
+        }
+      } else {
+        tools.push({ name: 'update_record', status: 'blocked', summary: 'Owner phrase detected but no owner field exists on list' });
+      }
+    }
+
+    if (wantsCalendarEvent) {
+      const startIso = scheduledAt || new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      const startDate = new Date(startIso);
+      const endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
+      const inferred = inferCalendarTitleFromText(content);
+      const calendarTitle = inferred.toLowerCase().includes(item.title.toLowerCase())
+        ? inferred
+        : `${inferred} - ${item.title}`;
+      const overlappingBlock = snapshot.timeBlocks.find((block) => {
+        const blockStart = new Date(block.start_time).getTime();
+        const blockEnd = new Date(block.end_time).getTime();
+        return startDate.getTime() < blockEnd && endDate.getTime() > blockStart;
+      });
+
+      if (overlappingBlock && !isHardEvent) {
+        tools.push({ name: 'link_and_schedule', status: 'applied', summary: `Prepared action proposal for existing block ${overlappingBlock.title}` });
+        return {
+          handled: true,
+          text: `Ready to add "${actionTitle}" into your existing "${overlappingBlock.title}" block at ${new Date(startDate).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}. Approve to apply.${ownerFieldUpdateSummary ? ` ${ownerFieldUpdateSummary}` : ''}`,
+          proposals: [
+            {
+              id: crypto.randomUUID(),
+              type: 'create_action',
+              item_id: item.id,
+              title: actionTitle,
+              notes: null,
+              scheduled_at: startDate.toISOString(),
+              time_block_id: overlappingBlock.id,
+              lane_id: item.lane_id || null
+            }
+          ],
+          route: 'create_work_item_in_existing_block_proposal',
+          tools,
+          scopeLabels: { focal: itemList?.focalName || undefined, list: itemList?.name || undefined },
+          confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
+        };
+      }
+
+      if (overlappingBlock && isHardEvent) {
+        tools.push({ name: 'link_and_schedule', status: 'blocked', summary: `Calendar conflict with ${overlappingBlock.title}` });
+        return {
+          handled: true,
+          text: `I found a conflict with "${overlappingBlock.title}" at that time. I prepared a shift proposal and event creation. Approve to apply.`,
+          proposals: [
+            {
+              id: crypto.randomUUID(),
+              type: 'resolve_time_conflict',
+              conflict_time_block_id: overlappingBlock.id,
+              conflict_title: overlappingBlock.title,
+              conflict_new_start_utc: new Date(new Date(overlappingBlock.end_time).getTime() + 15 * 60 * 1000).toISOString(),
+              conflict_new_end_utc: new Date(
+                new Date(overlappingBlock.end_time).getTime() +
+                  15 * 60 * 1000 +
+                  (new Date(overlappingBlock.end_time).getTime() - new Date(overlappingBlock.start_time).getTime())
+              ).toISOString(),
+              event_title: calendarTitle,
+              event_start_utc: startDate.toISOString(),
+              event_end_utc: endDate.toISOString(),
+              lane_id: item.lane_id || null,
+              notes: null
+            }
+          ],
+          route: 'calendar_conflict_proposal',
+          tools,
+          scopeLabels: { focal: itemList?.focalName || undefined, list: itemList?.name || undefined },
+          confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
+        };
+      }
+      return {
+        handled: true,
+        text: `Ready to add "${calendarTitle}" to your calendar for ${new Date(startDate).toLocaleString(undefined, {
+          weekday: 'short',
+          hour: 'numeric',
+          minute: '2-digit'
+        })}. Approve to apply.${ownerFieldUpdateSummary ? ` ${ownerFieldUpdateSummary}` : ''}`,
+        proposals: [
+          {
+            id: crypto.randomUUID(),
+            type: 'create_time_block',
+            title: calendarTitle,
+            scheduled_start_utc: startDate.toISOString(),
+            scheduled_end_utc: endDate.toISOString(),
+            lane_id: item.lane_id || null,
+            notes: null
+          }
+        ],
+        route: 'create_calendar_event_proposal',
+        tools,
+        scopeLabels: { focal: itemList?.focalName || undefined, list: itemList?.name || undefined },
+        confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
+      };
+    }
+
+    const blockNeedle = inferTimeBlockNameFromText(content);
+    const targetBlock = blockNeedle
+      ? snapshot.timeBlocks.find((block) => normalize(block.title).includes(blockNeedle)) || null
+      : null;
+    if (targetBlock?.id) {
+      tools.push({ name: 'link_and_schedule', status: 'applied', summary: `Prepared link to ${targetBlock.title}` });
+    } else {
+      tools.push({ name: 'link_and_schedule', status: 'skipped', summary: 'No time block target resolved' });
+    }
+    const timeLine = scheduledAt
+      ? ` at ${new Date(scheduledAt).toLocaleString(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' })}`
+      : '';
+    return {
+      handled: true,
+      text: `Ready to add "${actionTitle}"${timeLine} on ${item.title}${targetBlock ? ` and link it to ${targetBlock.title}` : ''}. Approve to apply.${ownerFieldUpdateSummary ? ` ${ownerFieldUpdateSummary}` : ''}`,
+      proposals: [
+        {
+          id: crypto.randomUUID(),
+          type: 'create_action',
+          item_id: item.id,
+          title: actionTitle,
+          notes: 'Created by Delta AI from item thread.',
+          scheduled_at: scheduledAt || null,
+          time_block_id: targetBlock?.id || null,
+          lane_id: item.lane_id || null
+        }
+      ],
+      route: 'create_work_item_action_proposal',
+      tools,
+      scopeLabels: { focal: itemList?.focalName || undefined, list: itemList?.name || undefined },
+      confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
+    };
+  }
+
+  const fieldAlias = detectTargetFieldAlias(userText);
+  const rawValue = extractValueForField(userText, fieldAlias);
+  if (!fieldAlias || !rawValue) {
+    tools.push({ name: 'update_record', status: 'blocked', summary: 'Could not infer field/value from request' });
+    return {
+      handled: true,
+      suppressInventory: true,
+      text: `I found ${item.title}. Tell me what field/value to set (for example: set owner to "Rusty" or set status to "In Progress").`,
+      route: 'mutation_needs_value',
+      tools,
+      scopeLabels: { focal: itemList?.focalName || undefined, list: itemList?.name || undefined },
+      confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
+    };
+  }
+
+  // Core item fields
+  if (fieldAlias === 'title') {
+    const { error } = await client.from('items').update({ title: rawValue }).eq('id', item.id).eq('user_id', userId);
+    if (error) {
+      tools.push({ name: 'update_record', status: 'error', summary: error.message });
+      return {
+        handled: true,
+        text: `I found ${item.title}, but couldn't update title (${error.message}).`,
+        route: 'update_record_error',
+        tools,
+        scopeLabels: { focal: itemList?.focalName || undefined, list: itemList?.name || undefined },
+        confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
+      };
+    }
+    tools.push({ name: 'update_record', status: 'applied', summary: 'Updated core field: title' });
+    return {
+      handled: true,
+      text: `Saved. Updated title on ${item.title}.`,
+      route: 'update_record_core',
+      tools,
+      scopeLabels: { focal: itemList?.focalName || undefined, list: itemList?.name || undefined },
+      confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
+    };
+  }
+
+  if (fieldAlias === 'description' || fieldAlias === 'notes' || fieldAlias === 'note') {
+    const { error } = await client.from('items').update({ description: rawValue }).eq('id', item.id).eq('user_id', userId);
+    if (error) {
+      tools.push({ name: 'update_record', status: 'error', summary: error.message });
+      return {
+        handled: true,
+        text: `I found ${item.title}, but couldn't update description (${error.message}).`,
+        route: 'update_record_error',
+        tools,
+        scopeLabels: { focal: itemList?.focalName || undefined, list: itemList?.name || undefined },
+        confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
+      };
+    }
+    tools.push({ name: 'update_record', status: 'applied', summary: 'Updated core field: description' });
+    return {
+      handled: true,
+      text: `Saved. Updated notes on ${item.title}.`,
+      route: 'update_record_core',
+      tools,
+      scopeLabels: { focal: itemList?.focalName || undefined, list: itemList?.name || undefined },
+      confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
+    };
+  }
+
+  if (fieldAlias === 'status') {
+    const statusValue = formatStatusLabel(rawValue);
+    const { error } = await client.from('items').update({ status: statusValue }).eq('id', item.id).eq('user_id', userId);
+    if (error) {
+      tools.push({ name: 'update_record', status: 'error', summary: error.message });
+      return {
+        handled: true,
+        text: `I found ${item.title}, but couldn't update status (${error.message}).`,
+        route: 'update_record_error',
+        tools,
+        scopeLabels: { focal: itemList?.focalName || undefined, list: itemList?.name || undefined },
+        confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
+      };
+    }
+    tools.push({ name: 'update_record', status: 'applied', summary: `Updated core field: status=${statusValue}` });
+    return {
+      handled: true,
+      text: `Saved. Status on ${item.title} is now ${statusValue}.`,
+      route: 'update_record_core',
+      tools,
+      scopeLabels: { focal: itemList?.focalName || undefined, list: itemList?.name || undefined },
+      confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
+    };
+  }
+
+  const targetField = resolveFieldFromAlias(fieldsForList, fieldAlias);
+  if (!targetField) {
+    tools.push({ name: 'update_record', status: 'blocked', summary: `Missing field for alias: ${fieldAlias}` });
+    return {
+      handled: true,
+      text: `I found ${item.title}, but this list has no "${fieldAlias}" field. I can save this in notes or you can add that field.`,
+      route: 'update_record_field_missing',
+      tools,
+      scopeLabels: { focal: itemList?.focalName || undefined, list: itemList?.name || undefined },
+      confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
+    };
+  }
+
+  let upsertRow: Record<string, unknown> = {
+    user_id: userId,
+    item_id: item.id,
+    field_id: targetField.id,
+    option_id: null,
+    value_text: null,
+    value_number: null,
+    value_date: null,
+    value_boolean: null
+  };
+
+  if (targetField.type === 'text') {
+    upsertRow.value_text = rawValue;
+  } else if (targetField.type === 'number') {
+    const parsed = Number(rawValue.replace(/,/g, ''));
+    if (!Number.isFinite(parsed)) {
+      tools.push({ name: 'update_record', status: 'blocked', summary: `Invalid numeric value: ${rawValue}` });
+      return {
+        handled: true,
+        text: `I found ${item.title}, but "${rawValue}" is not a valid number for ${targetField.name}.`,
+        route: 'update_record_value_invalid',
+        tools,
+        scopeLabels: { focal: itemList?.focalName || undefined, list: itemList?.name || undefined },
+        confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
+      };
+    }
+    upsertRow.value_number = parsed;
+  } else if (targetField.type === 'boolean') {
+    const truthy = /^(true|yes|y|1|done|completed)$/i.test(rawValue);
+    const falsy = /^(false|no|n|0|not done|pending)$/i.test(rawValue);
+    if (!truthy && !falsy) {
+      tools.push({ name: 'update_record', status: 'blocked', summary: `Invalid boolean value: ${rawValue}` });
+      return {
+        handled: true,
+        text: `I found ${item.title}, but "${rawValue}" is not a valid yes/no value for ${targetField.name}.`,
+        route: 'update_record_value_invalid',
+        tools,
+        scopeLabels: { focal: itemList?.focalName || undefined, list: itemList?.name || undefined },
+        confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
+      };
+    }
+    upsertRow.value_boolean = truthy;
+  } else if (targetField.type === 'date') {
+    const date = new Date(rawValue);
+    if (Number.isNaN(date.getTime())) {
+      tools.push({ name: 'update_record', status: 'blocked', summary: `Invalid date value: ${rawValue}` });
+      return {
+        handled: true,
+        text: `I found ${item.title}, but "${rawValue}" is not a valid date for ${targetField.name}.`,
+        route: 'update_record_value_invalid',
+        tools,
+        scopeLabels: { focal: itemList?.focalName || undefined, list: itemList?.name || undefined },
+        confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
+      };
+    }
+    upsertRow.value_date = date.toISOString();
+  } else if (targetField.type === 'status' || targetField.type === 'select') {
+    const options = snapshot.fieldOptions.filter((option) => option.field_id === targetField.id);
+    const match = options.find((option) => normalize(option.label) === normalize(rawValue))
+      || options.find((option) => normalize(option.label).includes(normalize(rawValue)))
+      || options.find((option) => normalize(rawValue).includes(normalize(option.label)));
+    if (!match) {
+      tools.push({ name: 'update_record', status: 'blocked', summary: `No option "${rawValue}" in ${targetField.name}` });
+      return {
+        handled: true,
+        text: `I found ${item.title}, but "${rawValue}" is not a valid option for ${targetField.name}.`,
+        route: 'update_record_option_missing',
+        tools,
+        scopeLabels: { focal: itemList?.focalName || undefined, list: itemList?.name || undefined },
+        confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
+      };
+    }
+    upsertRow.option_id = match.id;
+  } else {
+    upsertRow.value_text = rawValue;
+  }
+
+  const { error } = await client
+    .from('item_field_values')
+    .upsert(upsertRow, { onConflict: 'item_id,field_id' });
+  if (error) {
+    tools.push({ name: 'update_record', status: 'error', summary: error.message });
+    return {
+      handled: true,
+      text: `I found ${item.title}, but couldn't update ${targetField.name} (${error.message}).`,
+      route: 'update_record_error',
+      tools,
+      scopeLabels: { focal: itemList?.focalName || undefined, list: itemList?.name || undefined },
+      confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
+    };
+  }
+
+  tools.push({ name: 'update_record', status: 'applied', summary: `Updated custom field: ${targetField.name}` });
+  return {
+    handled: true,
+    text: `Saved. ${item.title} now has ${targetField.name} set to "${rawValue}".`,
+    route: 'update_record_field',
+    tools,
+    scopeLabels: { focal: itemList?.focalName || undefined, list: itemList?.name || undefined },
+    confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
   };
 };
 
@@ -929,11 +1804,23 @@ const buildDeterministicAnswer = (
     const recommendation = dateValue
       ? 'Recommended next action: complete the scheduled follow-up and log outcome.'
       : 'Recommended next action: add a follow-up date field value and create a concrete next action.';
+    const proposals: ChatProposal[] = dateValue
+      ? []
+      : [
+          {
+            id: crypto.randomUUID(),
+            type: 'create_follow_up_action',
+            title: `Follow up with ${resolvedItem.title}`,
+            item_id: resolvedItem.id,
+            notes: latestComment?.body ? `Context: ${clip(latestComment.body, 120)}` : null
+          }
+        ];
     return {
       text: `${resolvedItem.title}:\n${formatNameList(bullets)}\n\n${recommendation}`,
       route: intent,
       scopeLabels: { focal: owningList?.focalName || focalName, list: owningList?.name || resolvedList?.name || undefined },
-      confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
+      confidence: { focal: entities.focal.confidence, list: entities.list.confidence },
+      proposals
     };
   }
 
@@ -1064,14 +1951,18 @@ const redactUuids = (text: string): string =>
   );
 
 const buildDebugMeta = (
+  requestId: string,
   context: ChatContext,
   snapshot: AccountContextSnapshot | null,
   source: DebugMeta['source'],
   route?: string,
   scopeLabels?: { focal?: string; list?: string },
-  confidence?: { focal?: number; list?: number }
+  confidence?: { focal?: number; list?: number },
+  warnings?: string[],
+  tools?: DebugMeta['tools']
 ): DebugMeta => ({
   source,
+  request_id: requestId,
   route,
   scope: {
     mode:
@@ -1093,7 +1984,9 @@ const buildDebugMeta = (
         actions: snapshot.actions.length,
         timeBlocks: snapshot.timeBlocks.length
       }
-    : undefined
+    : undefined,
+  warnings,
+  tools
 });
 
 const heuristic = (messages: ChatMessage[], context?: ChatContext) => {
@@ -1143,40 +2036,59 @@ Deno.serve(async (req) => {
     }
 
     const authHeader = req.headers.get('Authorization');
-    const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
-    if (!authHeader || !bearerToken) {
-      console.warn(`[chat:${requestId}] missing auth header`);
-      return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
-        status: 401,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      });
-    }
+    const bearerMatch = authHeader?.match(/^Bearer\s+(.+)$/i) || null;
+    const bearerToken = bearerMatch?.[1]?.trim() || null;
 
     const authClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-      global: { headers: { Authorization: authHeader } }
+      global: { headers: authHeader ? { Authorization: authHeader } : {} }
     });
-    const { data: userData, error: userError } = await authClient.auth.getUser(bearerToken);
+    const { data: userData, error: userError } = await authClient.auth.getUser(
+      bearerToken || undefined
+    );
     let userId = userData?.user?.id ?? null;
-    let authMode: 'getUser' | 'getClaims' | 'none' = userId ? 'getUser' : 'none';
+    let authMode: 'getUser' | 'getClaims' | 'jwt_sub_fallback' | 'gateway_header_fallback' | 'none' = userId
+      ? 'getUser'
+      : 'none';
 
     if (!userId) {
-      const { data: claimsData, error: claimsError } = await authClient.auth.getClaims(bearerToken);
+      const { data: claimsData, error: claimsError } = bearerToken
+        ? await authClient.auth.getClaims(bearerToken)
+        : { data: null, error: null };
       const subject = claimsData?.claims?.sub;
       if (typeof subject === 'string' && subject.length > 0) {
         userId = subject;
         authMode = 'getClaims';
       } else {
-        console.warn(`[chat:${requestId}] unauthorized`, {
-          getUserMessage: userError?.message ?? null,
-          getUserStatus: userError?.status ?? null,
-          getClaimsMessage: claimsError?.message ?? null,
-          hasClaimsSub: Boolean(subject),
-          tokenPrefix: bearerToken.slice(0, 12)
-        });
-        return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-          status: 401,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-        });
+        const jwtPayload = bearerToken ? decodeJwtPayload(bearerToken) : null;
+        const jwtSub = typeof jwtPayload?.sub === 'string' ? jwtPayload.sub : null;
+        const jwtRole = typeof jwtPayload?.role === 'string' ? jwtPayload.role : null;
+        if (jwtSub && (jwtRole === 'authenticated' || jwtRole === 'anon')) {
+          userId = jwtSub;
+          authMode = 'jwt_sub_fallback';
+        } else {
+          const gatewayUserId = extractUserIdFromGatewayHeaders(req);
+          if (gatewayUserId) {
+            userId = gatewayUserId;
+            authMode = 'gateway_header_fallback';
+          } else {
+            console.warn(`[chat:${requestId}] unauthorized`, {
+              getUserMessage: userError?.message ?? null,
+              getUserStatus: userError?.status ?? null,
+              getClaimsMessage: claimsError?.message ?? null,
+              hasClaimsSub: Boolean(subject),
+              hasJwtSub: Boolean(jwtSub),
+              jwtRole,
+              hasAuthHeader: Boolean(authHeader),
+              hasBearerToken: Boolean(bearerToken),
+              gatewayAuthUser: req.headers.get('x-supabase-auth-user') || null,
+              tokenPrefix: bearerToken ? bearerToken.slice(0, 12) : null
+            });
+            return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+              status: 401,
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+            });
+          }
+        }
       }
     }
     console.log(`[chat:${requestId}] auth ok`, { mode: authMode, userIdPrefix: userId.slice(0, 8) });
@@ -1189,11 +2101,15 @@ Deno.serve(async (req) => {
     const messages = Array.isArray(payload.messages) ? payload.messages : [];
     const context = payload.context || {};
     const lastUserMessage = getLastUserMessage(messages);
-    const asksAccountData = shouldAnswerDeterministically(lastUserMessage);
+    const fallbackPlan = buildMessagePlan(lastUserMessage);
+    let messagePlan = fallbackPlan;
     let accountSnapshot: AccountContextSnapshot | null = null;
+    let snapshotWarnings: string[] = [];
     let accountSnapshotError: string | null = null;
     try {
-      accountSnapshot = await buildAccountContextSnapshot(authClient, userId, context);
+      const builtSnapshot = await buildAccountContextSnapshot(authClient, userId, context);
+      accountSnapshot = builtSnapshot.snapshot;
+      snapshotWarnings = builtSnapshot.warnings;
       console.log(`[chat:${requestId}] context snapshot`, {
         focals: accountSnapshot.focals.length,
         lists: accountSnapshot.lists.length,
@@ -1206,6 +2122,18 @@ Deno.serve(async (req) => {
       accountSnapshotError = contextError instanceof Error ? contextError.message : String(contextError);
     }
 
+    if (GROQ_API_KEY && lastUserMessage) {
+      try {
+        messagePlan = await classifyMessagePlanWithModel(lastUserMessage, context, accountSnapshot, GROQ_API_KEY);
+      } catch {
+        messagePlan = fallbackPlan;
+      }
+    }
+    const asksAccountData =
+      shouldAnswerDeterministically(lastUserMessage) ||
+      messagePlan.explicitInventoryAsk ||
+      messagePlan.mutationRequested;
+
     if (asksAccountData && !accountSnapshot) {
       return new Response(
         JSON.stringify({
@@ -1214,7 +2142,7 @@ Deno.serve(async (req) => {
           proposals: [],
           debug_reason: 'account_snapshot_unavailable',
           debug_error: accountSnapshotError,
-          debug_meta: buildDebugMeta(context, accountSnapshot, 'heuristic')
+          debug_meta: buildDebugMeta(requestId, context, accountSnapshot, 'heuristic', 'account_snapshot_unavailable', undefined, undefined, snapshotWarnings)
         }),
         {
           status: 200,
@@ -1223,7 +2151,65 @@ Deno.serve(async (req) => {
       );
     }
 
-    if (accountSnapshot && asksAccountData) {
+    if (accountSnapshot) {
+      const mutationResult = await runMutationTools(authClient, userId, lastUserMessage, accountSnapshot, context, messages, messagePlan);
+      if (mutationResult.handled && mutationResult.text) {
+        console.log(`[chat:${requestId}] mutation tool answer`, { route: mutationResult.route, tools: mutationResult.tools });
+        return new Response(
+          JSON.stringify({
+            text: mutationResult.text,
+            source: 'ai',
+            proposals: mutationResult.proposals || [],
+            debug_reason: mutationResult.route || 'mutation_tool_answer',
+            debug_model: 'none',
+            debug_meta: buildDebugMeta(
+              requestId,
+              context,
+              accountSnapshot,
+              'db',
+              mutationResult.route || 'mutation_tool_answer',
+              mutationResult.scopeLabels,
+              mutationResult.confidence,
+              snapshotWarnings,
+              mutationResult.tools
+            )
+          }),
+          {
+            status: 200,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+          }
+        );
+      }
+
+      if (messagePlan.mutationRequested && mutationResult.suppressInventory !== false) {
+        return new Response(
+          JSON.stringify({
+            text: 'I treated that as an update request, but I need one more detail to apply it safely.',
+            source: 'ai',
+            proposals: [],
+            debug_reason: 'mutation_guard_no_inventory_fallback',
+            debug_model: 'none',
+            debug_meta: buildDebugMeta(
+              requestId,
+              context,
+              accountSnapshot,
+              'db',
+              'mutation_guard_no_inventory_fallback',
+              mutationResult.scopeLabels,
+              mutationResult.confidence,
+              snapshotWarnings,
+              mutationResult.tools
+            )
+          }),
+          {
+            status: 200,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+          }
+        );
+      }
+    }
+
+    if (accountSnapshot && (asksAccountData || messagePlan.explicitInventoryAsk)) {
       const deterministic = buildDeterministicAnswer(lastUserMessage, accountSnapshot, context, messages);
       if (deterministic) {
         console.log(`[chat:${requestId}] deterministic account answer`);
@@ -1235,12 +2221,14 @@ Deno.serve(async (req) => {
             debug_reason: 'deterministic_account_answer',
             debug_model: 'none',
             debug_meta: buildDebugMeta(
+              requestId,
               context,
               accountSnapshot,
               'db',
               deterministic.route,
               deterministic.scopeLabels,
-              deterministic.confidence
+              deterministic.confidence,
+              snapshotWarnings
             )
           }),
           {
@@ -1257,7 +2245,7 @@ Deno.serve(async (req) => {
         ...heuristic(messages, context),
         text: 'Delta AI is temporarily unavailable. Please try again in a moment.',
         debug_reason: 'missing_groq_api_key',
-        debug_meta: buildDebugMeta(context, accountSnapshot, 'heuristic')
+        debug_meta: buildDebugMeta(requestId, context, accountSnapshot, 'heuristic', 'missing_groq_api_key', undefined, undefined, snapshotWarnings)
       }), {
         status: 200,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
@@ -1339,12 +2327,33 @@ Deno.serve(async (req) => {
     }
 
     if (!text) {
+      const fallbackReason = lastGroqStatus ? `groq_http_${lastGroqStatus}` : 'groq_all_models_failed';
+      const fallbackText =
+        lastGroqStatus === 429
+          ? 'I hit a temporary AI rate limit, but I still captured this for you.'
+          : lastGroqStatus === 401 || lastGroqStatus === 403
+            ? 'AI provider auth is temporarily failing, but I still captured this for you.'
+            : 'I’m having trouble reaching AI right now. I still captured this for you.';
+      console.warn(`[chat:${requestId}] llm_fallback`, {
+        reason: fallbackReason,
+        status: lastGroqStatus,
+        error: lastGroqError
+      });
       return new Response(JSON.stringify({
         ...heuristic(messages, context),
-        text: 'I’m having trouble reaching AI right now. I still captured this for you.',
-        debug_reason: lastGroqStatus ? `groq_http_${lastGroqStatus}` : 'groq_all_models_failed',
+        text: fallbackText,
+        debug_reason: fallbackReason,
         debug_error: lastGroqError,
-        debug_meta: buildDebugMeta(context, accountSnapshot, 'heuristic')
+        debug_meta: buildDebugMeta(
+          requestId,
+          context,
+          accountSnapshot,
+          'heuristic',
+          fallbackReason,
+          undefined,
+          undefined,
+          snapshotWarnings
+        )
       }), {
         status: 200,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
@@ -1359,7 +2368,7 @@ Deno.serve(async (req) => {
         proposals: heuristic(messages, context).proposals,
         debug_reason: null,
         debug_model: usedModel,
-        debug_meta: buildDebugMeta(context, accountSnapshot, 'llm')
+        debug_meta: buildDebugMeta(requestId, context, accountSnapshot, 'llm', 'llm_answer', undefined, undefined, snapshotWarnings)
       }),
       {
         status: 200,

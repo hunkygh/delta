@@ -5,7 +5,7 @@ const links = [
   { to: '/calendar', label: 'Calendar' },
   { to: '/tasks', label: 'Tasks' },
   { to: '/projects', label: 'Projects' },
-  { to: '/docs', label: 'Docs' },
+  { to: '/docs', label: 'Notes' },
   { to: '/settings', label: 'Settings' }
 ];
 

@@ -3,7 +3,7 @@ import { ArrowUpRight, Maximize2 } from 'lucide-react';
 import Button from './Button';
 
 interface LaunchpadCardProps {
-  title: 'Docs' | 'Tasks' | 'Bookmarks' | 'Resources';
+  title: 'Notes' | 'Tasks' | 'Bookmarks' | 'Resources';
   subtitle: string;
 }
 

@@ -12,6 +12,7 @@ import {
   Plus,
   Circle,
   CheckCircle2,
+  Search,
   ChevronLeft,
   ChevronRight,
   ChevronDown,
@@ -31,7 +32,8 @@ import { calendarService } from '../../services/calendarService';
 import listFieldService from '../../services/listFieldService';
 import itemFieldValueService from '../../services/itemFieldValueService';
 import commentsService from '../../services/commentsService';
-import type { ChatMessage } from '../../types/chat';
+import docsService, { type DocNote } from '../../services/docsService';
+import type { ChatMessage, ChatProposal } from '../../types/chat';
 
 type MobileBlockItem = {
   id: string;
@@ -61,7 +63,7 @@ type DrawerState = {
 
 type AddSheetState = {
   open: boolean;
-  type: 'space' | 'list' | 'item' | 'subitem' | 'event';
+  type: 'space' | 'list' | 'item' | 'subitem' | 'event' | 'doc';
   focalId?: string | null;
   listId?: string | null;
   itemId?: string | null;
@@ -155,7 +157,8 @@ export default function MobileCalendarWireframe(): JSX.Element {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [quickPanelOpen, setQuickPanelOpen] = useState(false);
   const [quickPanelMounted, setQuickPanelMounted] = useState(false);
-  const [captureMode, setCaptureMode] = useState<'none' | 'voice' | 'text'>('none');
+  const [captureMode, setCaptureMode] = useState<'none' | 'text'>('none');
+  const [captureInputMode, setCaptureInputMode] = useState<'text' | 'voice'>('text');
   const [addSheet, setAddSheet] = useState<AddSheetState>({ open: false, type: 'item' });
   const [addSheetClosing, setAddSheetClosing] = useState(false);
   const [isAddSheetDragging, setIsAddSheetDragging] = useState(false);
@@ -171,6 +174,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
   const [completed, setCompleted] = useState<Record<string, boolean>>({});
   const [showCompletedInDrawer, setShowCompletedInDrawer] = useState(false);
   const [expandedTasksByBlock, setExpandedTasksByBlock] = useState<Record<string, boolean>>({});
+  const [expandedItemsInList, setExpandedItemsInList] = useState<Record<string, boolean>>({});
   const [subtaskComposerByItem, setSubtaskComposerByItem] = useState<Record<string, boolean>>({});
   const [subtaskDraftByItem, setSubtaskDraftByItem] = useState<Record<string, string>>({});
   const [itemDrawerPanel, setItemDrawerPanel] = useState<'details' | 'comments'>('details');
@@ -191,12 +195,27 @@ export default function MobileCalendarWireframe(): JSX.Element {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatDraft, setChatDraft] = useState('');
   const [chatSending, setChatSending] = useState(false);
+  const [applyingMobileProposalId, setApplyingMobileProposalId] = useState<string | null>(null);
+  const [approvedMobileProposalIds, setApprovedMobileProposalIds] = useState<Record<string, boolean>>({});
+  const [dismissedMobileProposalIds, setDismissedMobileProposalIds] = useState<Record<string, boolean>>({});
+  const [mobileProposalNotes, setMobileProposalNotes] = useState<Record<string, string>>({});
   const [useTimeBlockContext, setUseTimeBlockContext] = useState(true);
   const [mobileMemoMode, setMobileMemoMode] = useState(false);
   const [mobileChatSourceMenuOpen, setMobileChatSourceMenuOpen] = useState(false);
   const [mobileChatSourceId, setMobileChatSourceId] = useState('current');
   const [mobileChatSourceContext, setMobileChatSourceContext] = useState<Record<string, string> | null>(null);
   const [textCaptureDraft, setTextCaptureDraft] = useState('');
+  const [captureConfirmation, setCaptureConfirmation] = useState<{
+    open: boolean;
+    text: string;
+    routing: boolean;
+    error: string | null;
+  }>({
+    open: false,
+    text: '',
+    routing: false,
+    error: null
+  });
   const [voiceTranscript, setVoiceTranscript] = useState('');
   const [voiceRecording, setVoiceRecording] = useState(false);
   const [voiceBars, setVoiceBars] = useState<number[]>([8, 14, 10, 16, 11, 13, 9, 15]);
@@ -207,6 +226,15 @@ export default function MobileCalendarWireframe(): JSX.Element {
   const [itemsByList, setItemsByList] = useState<Record<string, MobileItem[]>>({});
   const [focalsLoading, setFocalsLoading] = useState(false);
   const [focalsError, setFocalsError] = useState<string>('');
+  const [docsNotes, setDocsNotes] = useState<DocNote[]>([]);
+  const [docsSearch, setDocsSearch] = useState('');
+  const [docsSearchOpen, setDocsSearchOpen] = useState(false);
+  const [activeNoteEditor, setActiveNoteEditor] = useState<DocNote | null>(null);
+  const [noteEditorTitle, setNoteEditorTitle] = useState('');
+  const [noteEditorBody, setNoteEditorBody] = useState('');
+  const [noteEditorSaving, setNoteEditorSaving] = useState(false);
+  const [docsLoading, setDocsLoading] = useState(false);
+  const [docsError, setDocsError] = useState('');
   const [viewportWidth, setViewportWidth] = useState<number>(() => (typeof window !== 'undefined' ? window.innerWidth : 390));
 
   const longPressTimer = useRef<number | null>(null);
@@ -218,6 +246,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
   const analyserRef = useRef<AnalyserNode | null>(null);
   const audioStreamRef = useRef<MediaStream | null>(null);
   const voiceRafRef = useRef<number | null>(null);
+  const captureConfirmTimerRef = useRef<number | null>(null);
   const speechRecognitionRef = useRef<any>(null);
   const gestureMetaRef = useRef<{ lastX: number; lastY: number; lastT: number; velocityX: number; velocityY: number }>({
     lastX: 0,
@@ -363,7 +392,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
   }, [indexedLists, taskSearchQuery]);
 
   const scopeTitle = useMemo(() => {
-    if (activeNav === 'docs') return 'Docs';
+    if (activeNav === 'docs') return 'Notes';
     if (activeNav !== 'focals') return '';
     if (mobileScope.level === 'focals') return 'Spaces';
     if (mobileScope.level === 'focal') return selectedFocal?.name || 'Space';
@@ -402,7 +431,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
     return itemsByList[addSheet.listId] || [];
   }, [addSheet.listId, itemsByList]);
   const canSubmitAddSheet =
-    !!addSheetName.trim() &&
+    (addSheet.type === 'doc' ? !!(addSheetName.trim() || addSheetDescription.trim()) : !!addSheetName.trim()) &&
     (addSheet.type !== 'list' || !!addSheet.focalId) &&
     (addSheet.type !== 'item' || !!addSheet.listId) &&
     (addSheet.type !== 'subitem' || (!!addSheet.listId && !!addSheet.itemId));
@@ -499,6 +528,28 @@ export default function MobileCalendarWireframe(): JSX.Element {
     }
   };
 
+  const loadDocsNotes = async (): Promise<void> => {
+    if (!user?.id) {
+      setDocsNotes([]);
+      return;
+    }
+    setDocsLoading(true);
+    setDocsError('');
+    try {
+      const rows = await docsService.getNotes({
+        userId: user.id,
+        archived: false,
+        search: docsSearch
+      });
+      setDocsNotes(rows);
+    } catch (error: any) {
+      setDocsError(error?.message || 'Failed to load notes');
+      setDocsNotes([]);
+    } finally {
+      setDocsLoading(false);
+    }
+  };
+
   const loadCalendarBlocks = async (): Promise<void> => {
     if (!user?.id) {
       setBlocks([]);
@@ -548,8 +599,8 @@ export default function MobileCalendarWireframe(): JSX.Element {
     }
   };
 
-  const loadListItems = async (listId: string): Promise<void> => {
-    if (!listId || itemsByList[listId]) return;
+  const loadListItems = async (listId: string, forceReload = false): Promise<void> => {
+    if (!listId || (!forceReload && itemsByList[listId])) return;
     try {
       const rows = await focalBoardService.getItemsByListId(listId);
       const mapped: MobileItem[] = (rows || []).map((entry: any) => ({
@@ -567,6 +618,12 @@ export default function MobileCalendarWireframe(): JSX.Element {
     if (activeNav !== 'focals') return;
     void loadFocals();
   }, [activeNav, user?.id]);
+
+  useEffect(() => {
+    if (activeNav !== 'docs') return;
+    void loadDocsNotes();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeNav, user?.id, docsSearch]);
 
   useEffect(() => {
     if (activeNav !== 'focals') return;
@@ -1220,8 +1277,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
       return;
     }
     if (activeNav === 'docs') {
-      setMobileMemoMode(true);
-      openTextCapture();
+      openAddSheet({ open: true, type: 'doc' });
       return;
     }
     await handleScopedAdd();
@@ -1279,6 +1335,21 @@ export default function MobileCalendarWireframe(): JSX.Element {
     });
   };
 
+  const handleStatusToggle = (itemId: string): void => {
+    // Toggle completion status for the item
+    setCompleted((prev) => ({ ...prev, [itemId]: !prev[itemId] }));
+  };
+
+  const openItemDrawerForItem = (itemId: string): void => {
+    // Open item drawer for the specific item
+    // This would need to be implemented based on your drawer logic
+    console.log('Open item drawer for:', itemId);
+  };
+
+  const toggleItemExpansion = (itemId: string): void => {
+    setExpandedItemsInList((prev) => ({ ...prev, [itemId]: !prev[itemId] }));
+  };
+
   const submitAddSheet = async (): Promise<void> => {
     if (!user?.id) return;
     const name = addSheetName.trim();
@@ -1293,20 +1364,28 @@ export default function MobileCalendarWireframe(): JSX.Element {
         await loadFocals();
       } else if (addSheet.type === 'item' && addSheet.listId) {
         await focalBoardService.createItem(addSheet.listId, user.id, name);
+        // Clear cache and force reload
         setItemsByList((prev) => {
           const next = { ...prev };
           delete next[addSheet.listId as string];
           return next;
         });
-        await loadListItems(addSheet.listId);
+        // Force reload by calling loadListItems after state update
+        setTimeout(() => {
+          void loadListItems(addSheet.listId as string, true);
+        }, 0);
       } else if (addSheet.type === 'subitem' && addSheet.itemId && addSheet.listId) {
         await focalBoardService.createAction(addSheet.itemId, user.id, name);
+        // Clear cache and force reload
         setItemsByList((prev) => {
           const next = { ...prev };
           delete next[addSheet.listId as string];
           return next;
         });
-        await loadListItems(addSheet.listId);
+        // Force reload by calling loadListItems after state update
+        setTimeout(() => {
+          void loadListItems(addSheet.listId as string, true);
+        }, 0);
       } else if (addSheet.type === 'event') {
         const base = new Date(viewedDate);
         const [startHour, startMinute] = addSheetStart.split(':').map((v) => Number(v));
@@ -1357,9 +1436,21 @@ export default function MobileCalendarWireframe(): JSX.Element {
         }
 
         await loadCalendarBlocks();
+      } else if (addSheet.type === 'doc') {
+        const body = addSheetDescription.trim() || addSheetName.trim();
+        const title = addSheetName.trim() || body.split('\n')[0]?.trim() || 'Untitled note';
+        await docsService.createNote({
+          userId: user.id,
+          title,
+          body,
+          source: 'quick_text',
+          originContext: buildMobileChatContext()
+        });
+        await loadDocsNotes();
       }
       closeAddSheet();
       setAddSheetName('');
+      setAddSheetDescription('');
     } catch (error) {
       console.error('Mobile add sheet submit failed:', error);
       // keep the sheet open so user can retry
@@ -1442,51 +1533,142 @@ export default function MobileCalendarWireframe(): JSX.Element {
     }
   };
 
+  const applyMobileProposalMutation = async (
+    proposal: ChatProposal,
+    noteOverride: string | null
+  ): Promise<string> => {
+    if (!user?.id) throw new Error('User not signed in');
+    if (proposal.type === 'create_follow_up_action') {
+      await focalBoardService.createAction(
+        proposal.item_id,
+        user.id,
+        proposal.title,
+        noteOverride ?? proposal.notes ?? null
+      );
+      return proposal.title;
+    }
+    if (proposal.type === 'create_focal') {
+      await focalBoardService.createFocal(user.id, proposal.title);
+      return proposal.title;
+    }
+    if (proposal.type === 'create_list') {
+      await focalBoardService.createLane(proposal.focal_id, user.id, proposal.title, 'Items', 'Tasks');
+      return proposal.title;
+    }
+    if (proposal.type === 'create_item') {
+      await focalBoardService.createItem(proposal.list_id, user.id, proposal.title);
+      return proposal.title;
+    }
+    if (proposal.type === 'create_action') {
+      const createdAction = await focalBoardService.createAction(
+        proposal.item_id,
+        user.id,
+        proposal.title,
+        noteOverride ?? proposal.notes ?? null,
+        proposal.scheduled_at ?? null
+      );
+      if (proposal.time_block_id) {
+        await focalBoardService.linkActionToTimeBlock({
+          actionId: createdAction.id,
+          timeBlockId: proposal.time_block_id,
+          userId: user.id,
+          laneId: proposal.lane_id || null
+        });
+      }
+      return proposal.title;
+    }
+    if (proposal.type === 'create_time_block') {
+      await calendarService.createTimeBlockFromProposal(user.id, {
+        ...proposal,
+        notes: noteOverride ?? proposal.notes ?? null
+      });
+      await loadCalendarBlocks();
+      return proposal.title;
+    }
+
+    await calendarService.patchTimeBlock(proposal.conflict_time_block_id, {
+      start_time: proposal.conflict_new_start_utc,
+      end_time: proposal.conflict_new_end_utc
+    });
+    await calendarService.createTimeBlockFromProposal(user.id, {
+      id: `${proposal.id}-event`,
+      type: 'create_time_block',
+      title: proposal.event_title,
+      scheduled_start_utc: proposal.event_start_utc,
+      scheduled_end_utc: proposal.event_end_utc,
+      lane_id: proposal.lane_id || null,
+      notes: noteOverride ?? proposal.notes ?? null
+    });
+    await loadCalendarBlocks();
+    return proposal.event_title;
+  };
+
+  const handleApproveMobileProposal = async (proposal: ChatProposal): Promise<void> => {
+    if (!user?.id || applyingMobileProposalId) return;
+    setApplyingMobileProposalId(proposal.id);
+    try {
+      const noteOverride = (mobileProposalNotes[proposal.id] || '').trim() || null;
+      const appliedTitle = await applyMobileProposalMutation(proposal, noteOverride);
+
+      setApprovedMobileProposalIds((prev) => ({ ...prev, [proposal.id]: true }));
+      setMobileProposalNotes((prev) => {
+        const next = { ...prev };
+        delete next[proposal.id];
+        return next;
+      });
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          id: makeId(),
+          role: 'assistant',
+          content: `Applied: ${appliedTitle}.`,
+          created_at: Date.now()
+        }
+      ]);
+    } catch (error: any) {
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          id: makeId(),
+          role: 'assistant',
+          content: `Could not apply proposal: ${error?.message || 'Unknown error'}.`,
+          created_at: Date.now()
+        }
+      ]);
+    } finally {
+      setApplyingMobileProposalId(null);
+    }
+  };
+
   useEffect(() => {
     return () => {
       stopVoiceAnimation();
     };
   }, []);
 
-  const sendCaptureToAssistant = async (content: string): Promise<void> => {
-    const text = content.trim();
-    if (!text || chatSending) return;
-    setChatSending(true);
+  const persistCaptureToDocs = async (
+    content: string,
+    source: 'quick_text' | 'quick_voice'
+  ): Promise<void> => {
+    if (!user?.id) return;
+    const trimmed = content.trim();
+    if (!trimmed) return;
     try {
-      const userMessage: ChatMessage = {
-        id: makeId(),
-        role: 'user',
-        content: text,
-        created_at: Date.now()
-      };
-      setChatMessages((prev) => [...prev, userMessage]);
-      const payloadMessages = [...chatMessages, userMessage]
-        .filter((entry) => entry.role === 'user' || entry.role === 'assistant')
-        .slice(-24)
-        .map((entry) => ({ role: entry.role, content: entry.content }));
-      const reply = await chatService.send({
-        messages: payloadMessages,
-        context: buildMobileChatContext(),
-        mode: mobileMemoMode ? 'memo' : 'ai'
+      const now = new Date();
+      const prefix = source === 'quick_voice' ? 'Voice note' : 'Quick note';
+      const title = `${prefix} • ${now.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${now.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`;
+      await docsService.createNote({
+        userId: user.id,
+        title,
+        body: trimmed,
+        source,
+        originContext: buildMobileChatContext()
       });
-      const assistantMessage: ChatMessage = {
-        id: makeId(),
-        role: 'assistant',
-        content: reply.text || 'No response generated.',
-        created_at: Date.now(),
-        proposals: reply.proposals || []
-      };
-      setChatMessages((prev) => [...prev, assistantMessage]);
-    } catch {
-      const assistantMessage: ChatMessage = {
-        id: makeId(),
-        role: 'assistant',
-        content: 'I could not process that request right now. Please try again.',
-        created_at: Date.now()
-      };
-      setChatMessages((prev) => [...prev, assistantMessage]);
-    } finally {
-      setChatSending(false);
+      if (activeNav === 'docs') {
+        await loadDocsNotes();
+      }
+    } catch (error) {
+      console.error('Failed to persist capture note to notes:', error);
     }
   };
 
@@ -1520,7 +1702,8 @@ export default function MobileCalendarWireframe(): JSX.Element {
   };
 
   const startVoiceCapture = async (): Promise<void> => {
-    setCaptureMode('voice');
+    setCaptureInputMode('voice');
+    setCaptureMode('text');
     setQuickPanelOpen(false);
     setVoiceTranscript('');
     try {
@@ -1579,27 +1762,107 @@ export default function MobileCalendarWireframe(): JSX.Element {
     }
   };
 
-  const submitVoiceCapture = async (): Promise<void> => {
-    const transcript = voiceTranscript.trim();
-    stopVoiceAnimation();
-    setCaptureMode('none');
-    if (!transcript) return;
-    await sendCaptureToAssistant(transcript);
-  };
-
-  const openTextCapture = (): void => {
+  const openUnifiedCapture = (mode: 'text' | 'voice'): void => {
+    setCaptureInputMode(mode);
     setCaptureMode('text');
     setQuickPanelOpen(false);
+    if (mode === 'voice') {
+      void startVoiceCapture();
+      return;
+    }
+    stopVoiceAnimation();
     window.setTimeout(() => textCaptureRef.current?.focus(), 30);
   };
 
   const submitTextCapture = async (): Promise<void> => {
-    const text = textCaptureDraft.trim();
+    const text = captureInputMode === 'voice' ? voiceTranscript.trim() : textCaptureDraft.trim();
     if (!text) return;
     setTextCaptureDraft('');
+    setVoiceTranscript('');
+    stopVoiceAnimation();
     setCaptureMode('none');
-    await sendCaptureToAssistant(text);
+    await persistCaptureToDocs(text, 'quick_text');
+    setCaptureConfirmation({ open: true, text, routing: false, error: null });
+    if (captureConfirmTimerRef.current) window.clearTimeout(captureConfirmTimerRef.current);
+    captureConfirmTimerRef.current = window.setTimeout(() => {
+      setCaptureConfirmation((prev) => ({ ...prev, open: false }));
+    }, 3200);
   };
+
+  const routeCaptureNow = async (): Promise<void> => {
+    const text = captureConfirmation.text.trim();
+    if (!text || chatSending || captureConfirmation.routing) return;
+    setCaptureConfirmation((prev) => ({ ...prev, routing: true, error: null }));
+    setChatSending(true);
+    try {
+      const userMessage: ChatMessage = {
+        id: makeId(),
+        role: 'user',
+        content: text,
+        created_at: Date.now()
+      };
+      setChatMessages((prev) => [...prev, userMessage]);
+      const payloadMessages = [...chatMessages, userMessage]
+        .filter((entry) => entry.role === 'user' || entry.role === 'assistant')
+        .slice(-24)
+        .map((entry) => ({ role: entry.role, content: entry.content }));
+      const reply = await chatService.send({
+        messages: payloadMessages,
+        context: buildMobileChatContext(),
+        mode: mobileMemoMode ? 'memo' : 'ai'
+      });
+      const assistantMessage: ChatMessage = {
+        id: makeId(),
+        role: 'assistant',
+        content: reply.text || 'No response generated.',
+        created_at: Date.now(),
+        proposals: reply.proposals || []
+      };
+      setChatMessages((prev) => [...prev, assistantMessage]);
+
+      const proposals = reply.proposals || [];
+      let appliedCount = 0;
+      for (const proposal of proposals) {
+        try {
+          await applyMobileProposalMutation(proposal, null);
+          appliedCount += 1;
+          setApprovedMobileProposalIds((prev) => ({ ...prev, [proposal.id]: true }));
+        } catch {
+          // Keep routing robust: continue applying remaining proposals
+        }
+      }
+
+      setView('ai');
+      if (appliedCount > 0) {
+        setChatMessages((prev) => [
+          ...prev,
+          {
+            id: makeId(),
+            role: 'assistant',
+            content: `Routed and applied ${appliedCount} action${appliedCount === 1 ? '' : 's'}.`,
+            created_at: Date.now()
+          }
+        ]);
+      }
+      setCaptureConfirmation({ open: false, text: '', routing: false, error: null });
+    } catch {
+      setCaptureConfirmation((prev) => ({
+        ...prev,
+        routing: false,
+        error: 'Routing failed. You can review this in AI.'
+      }));
+    } finally {
+      setChatSending(false);
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      if (captureConfirmTimerRef.current) {
+        window.clearTimeout(captureConfirmTimerRef.current);
+      }
+    };
+  }, []);
 
   const renderCalendarHeader = (): JSX.Element => (
     <header className="mobile-wireframe-header">
@@ -1644,7 +1907,18 @@ export default function MobileCalendarWireframe(): JSX.Element {
             <ArrowLeft size={15} />
           </button>
         )}
-        {(activeNav !== 'focals' || mobileScope.level === 'focals') && <span className="mobile-focals-back-spacer" />}
+        {activeNav === 'docs' ? (
+          <button
+            type="button"
+            className="mobile-focals-back"
+            aria-label="Toggle note search"
+            onClick={() => setDocsSearchOpen((prev) => !prev)}
+          >
+            <Search size={15} />
+          </button>
+        ) : (
+          (activeNav !== 'focals' || mobileScope.level === 'focals') && <span className="mobile-focals-back-spacer" />
+        )}
         <div className="mobile-date-pill">{scopeTitle}</div>
       </div>
       <div className="mobile-header-settings-wrap">
@@ -1673,12 +1947,51 @@ export default function MobileCalendarWireframe(): JSX.Element {
 
   const renderDocsBody = (): JSX.Element => (
     <div className="mobile-focals-surface docs">
-      <article className="mobile-focal-card muted">
-        <header>
-          <h3>Docs</h3>
-        </header>
-        <p>Mobile docs workspace is coming in the next pass.</p>
-      </article>
+      {docsSearchOpen && (
+        <div className="mobile-docs-search-wrap drop">
+          <input
+            type="text"
+            placeholder="Search notes"
+            value={docsSearch}
+            onChange={(event) => setDocsSearch(event.target.value)}
+          />
+        </div>
+      )}
+      {docsError && <article className="mobile-focal-card muted"><p>{docsError}</p></article>}
+      {docsLoading && <article className="mobile-focal-card muted"><p>Loading notes…</p></article>}
+      {!docsLoading && !docsError && docsNotes.length === 0 && (
+        <article className="mobile-focal-card muted"><p>No notes yet. Use quick capture to add one.</p></article>
+      )}
+      {!docsLoading &&
+        !docsError &&
+        docsNotes.map((note) => (
+          <article
+            key={note.id}
+            className="mobile-focal-card mobile-doc-note"
+            onClick={() => {
+              setActiveNoteEditor(note);
+              setNoteEditorTitle(note.title || 'Untitled note');
+              setNoteEditorBody(note.body || '');
+            }}
+          >
+            <header>
+              <h3>{note.title}</h3>
+              <span>{new Date(note.created_at).toLocaleDateString()}</span>
+            </header>
+            <p>{note.body}</p>
+            <div className="mobile-doc-note-meta">
+              <span>
+                {note.source === 'quick_text'
+                  ? 'Quick Text'
+                  : note.source === 'quick_voice'
+                    ? 'Quick Voice'
+                    : note.source === 'memo'
+                      ? 'Memo'
+                      : 'AI'}
+              </span>
+            </div>
+          </article>
+        ))}
     </div>
   );
 
@@ -1752,25 +2065,82 @@ export default function MobileCalendarWireframe(): JSX.Element {
       const items = itemsByList[mobileScope.listId] || [];
       return (
         <div className="mobile-focals-surface list-level">
-          {items.map((item) => (
-            <article key={item.id} className="mobile-item-card">
-              <div className="mobile-item-card-row">
-                <button type="button" className="mobile-item-check" aria-label="Mark done">
-                  <Circle size={15} />
-                </button>
-                <span>{item.title}</span>
+          {items.map((item) => {
+            const hasSubitems = (item.actions || []).length > 0;
+            const isExpanded = expandedItemsInList[item.id];
+            
+            return (
+              <div key={item.id} className="mobile-item-with-subitems">
+                <article className="mobile-item-row">
+                  {hasSubitems ? (
+                    <button
+                      type="button"
+                      className="mobile-item-expand"
+                      onClick={() => void toggleItemExpansion(item.id)}
+                      aria-label={isExpanded ? 'Collapse subitems' : 'Expand subitems'}
+                    >
+                      {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                    </button>
+                  ) : (
+                    <span className="mobile-item-expand-placeholder" aria-hidden="true" />
+                  )}
+                  <button
+                    type="button"
+                    className="mobile-item-check todo"
+                    onClick={() => void handleStatusToggle(item.id)}
+                    aria-label="Change status"
+                  >
+                    <span className="mobile-status-ring" />
+                  </button>
+                  <button
+                    type="button"
+                    className="mobile-item-text"
+                    onClick={() => void openItemDrawerForItem(item.id)}
+                  >
+                    <div className="mobile-item-main">
+                      <span className="mobile-item-label">{item.title}</span>
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    className="mobile-item-subtask-toggle"
+                    aria-label="Add subtask"
+                    onClick={() => void handleAddSubItem(item.id)}
+                  >
+                    +
+                  </button>
+                </article>
+                
+                {isExpanded && (
+                  <div className="mobile-subitems-list">
+                    {(item.actions || []).map((action) => (
+                      <article key={action.id} className="mobile-item-row subitem">
+                        <span className="mobile-item-expand-placeholder" aria-hidden="true" />
+                        <button
+                          type="button"
+                          className="mobile-item-check sub todo"
+                          onClick={() => void handleStatusToggle(action.id)}
+                          aria-label="Change status"
+                        >
+                          <span className="mobile-status-ring small" />
+                        </button>
+                        <button
+                          type="button"
+                          className="mobile-item-text"
+                          onClick={() => void openItemDrawerForItem(item.id)}
+                        >
+                          <div className="mobile-item-main">
+                            <span className="mobile-item-label">{action.title}</span>
+                          </div>
+                        </button>
+                        <div></div>
+                      </article>
+                    ))}
+                  </div>
+                )}
               </div>
-              {(item.actions || []).map((action) => (
-                <div key={action.id} className="mobile-subitem-row">
-                  <span>↳ {action.title}</span>
-                </div>
-              ))}
-              <button type="button" className="mobile-add-subitem" onClick={() => void handleAddSubItem(item.id)}>
-                <Plus size={14} />
-                <span>Add sub-item</span>
-              </button>
-            </article>
-          ))}
+            );
+          })}
           {items.length === 0 && <article className="mobile-focal-card muted"><p>No items yet. Tap + to add one.</p></article>}
         </div>
       );
@@ -2039,7 +2409,58 @@ export default function MobileCalendarWireframe(): JSX.Element {
                 </div>
               ) : (
                 <div key={message.id} className="mobile-ai-assistant">
+                  <div className="mobile-ai-provenance-chip">
+                    {message.debug_meta?.source === 'db' ? 'DB' : message.debug_meta?.source === 'llm' ? 'LLM' : 'Fallback'}
+                  </div>
                   {message.content}
+                  {Array.isArray(message.debug_meta?.warnings) && message.debug_meta.warnings.length > 0 && (
+                    <div className="mobile-ai-warning-line">{message.debug_meta.warnings[0]}</div>
+                  )}
+                  {(message.proposals || [])
+                    .filter((proposal) => !dismissedMobileProposalIds[proposal.id])
+                    .map((proposal) => (
+                      <div key={proposal.id} className="mobile-ai-proposal-card">
+                        <p>{proposal.type === 'resolve_time_conflict' ? proposal.event_title : proposal.title}</p>
+                        {(proposal.type === 'create_action' ||
+                          proposal.type === 'create_follow_up_action' ||
+                          proposal.type === 'create_time_block' ||
+                          proposal.type === 'resolve_time_conflict') && (
+                          <input
+                            type="text"
+                            className="mobile-ai-proposal-input"
+                            placeholder="Optional description"
+                            value={mobileProposalNotes[proposal.id] ?? proposal.notes ?? ''}
+                            onChange={(event) =>
+                              setMobileProposalNotes((prev) => ({ ...prev, [proposal.id]: event.target.value }))
+                            }
+                          />
+                        )}
+                        <div className="mobile-ai-proposal-actions">
+                          <button
+                            type="button"
+                            className="approve"
+                            disabled={Boolean(approvedMobileProposalIds[proposal.id]) || applyingMobileProposalId === proposal.id}
+                            onClick={() => void handleApproveMobileProposal(proposal)}
+                          >
+                            {approvedMobileProposalIds[proposal.id]
+                              ? 'Applied'
+                              : applyingMobileProposalId === proposal.id
+                                ? 'Applying…'
+                                : 'Approve'}
+                          </button>
+                          <button
+                            type="button"
+                            className="dismiss"
+                            disabled={Boolean(approvedMobileProposalIds[proposal.id]) || applyingMobileProposalId === proposal.id}
+                            onClick={() =>
+                              setDismissedMobileProposalIds((prev) => ({ ...prev, [proposal.id]: true }))
+                            }
+                          >
+                            Dismiss
+                          </button>
+                        </div>
+                      </div>
+                    ))}
                 </div>
               )
             )}
@@ -2063,7 +2484,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                 className="mobile-ai-voice-btn"
                 aria-label="Voice mode"
                 onClick={() => {
-                  void startVoiceCapture();
+                  openUnifiedCapture('voice');
                 }}
               >
                 <Mic size={16} />
@@ -2127,58 +2548,80 @@ export default function MobileCalendarWireframe(): JSX.Element {
                   const contextualAdd = getContextualAddSpec();
                   const ContextIcon = contextualAdd.icon;
                   return (
-                <button type="button" onClick={() => void quickAddByContext()}>
-                  <ContextIcon size={16} />
-                  <span>{contextualAdd.label}</span>
-                </button>
+                    <button type="button" onClick={() => void quickAddByContext()}>
+                      <ContextIcon size={16} />
+                      <span>{contextualAdd.label}</span>
+                    </button>
                   );
                 })()}
-                <button type="button" onClick={() => void startVoiceCapture()}>
-                  <Mic size={16} />
-                  <span>Voice</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setQuickPanelOpen(false);
+                    openAddSheet({ open: true, type: 'doc' });
+                  }}
+                >
+                  <FileText size={16} />
+                  <span>Note +</span>
                 </button>
-                <button type="button" onClick={openTextCapture}>
+                <button type="button" onClick={() => openUnifiedCapture('text')}>
                   <Type size={16} />
-                  <span>Text</span>
-                </button>
-              </div>
-            )}
-            {captureMode === 'voice' && (
-              <div className={`mobile-capture-surface voice ${voiceRecording ? 'recording' : ''}`.trim()}>
-                <div className="mobile-capture-head">
-                  <span>Voice capture</span>
-                  <button type="button" onClick={() => { stopVoiceAnimation(); setCaptureMode('none'); }} aria-label="Close voice capture">
-                    <X size={14} />
-                  </button>
-                </div>
-                <div className="mobile-voice-bars" aria-hidden="true">
-                  {voiceBars.map((height, idx) => (
-                    <span key={`bar-${idx}`} style={{ height: `${height}px` }} />
-                  ))}
-                </div>
-                <div className="mobile-capture-transcript">
-                  {voiceTranscript || 'Listening…'}
-                </div>
-                <button type="button" className="mobile-capture-send" onClick={() => void submitVoiceCapture()} disabled={!voiceTranscript.trim() || chatSending}>
-                  <Send size={16} />
+                  <span>Capture</span>
                 </button>
               </div>
             )}
             {captureMode === 'text' && (
-              <div className="mobile-text-capture-bar">
+              <div className="mobile-text-capture-bar unified">
+                <div className="mobile-capture-mode-tabs">
+                  <button
+                    type="button"
+                    className={captureInputMode === 'text' ? 'active' : ''}
+                    onClick={() => {
+                      stopVoiceAnimation();
+                      setCaptureInputMode('text');
+                      window.setTimeout(() => textCaptureRef.current?.focus(), 30);
+                    }}
+                  >
+                    Text
+                  </button>
+                  <button
+                    type="button"
+                    className={captureInputMode === 'voice' ? 'active' : ''}
+                    onClick={() => {
+                      setCaptureInputMode('voice');
+                      void startVoiceCapture();
+                    }}
+                  >
+                    Voice
+                  </button>
+                </div>
                 <textarea
                   ref={textCaptureRef}
                   rows={1}
-                  value={textCaptureDraft}
-                  placeholder="Capture quickly…"
+                  value={captureInputMode === 'voice' ? voiceTranscript : textCaptureDraft}
+                  readOnly={captureInputMode === 'voice'}
+                  placeholder={captureInputMode === 'voice' ? 'Listening…' : 'Capture quickly…'}
                   onChange={(event) => {
+                    if (captureInputMode === 'voice') return;
                     setTextCaptureDraft(event.target.value);
                     const target = event.target;
                     target.style.height = '0px';
                     target.style.height = `${Math.min(target.scrollHeight, 148)}px`;
                   }}
                 />
-                <button type="button" className="mobile-capture-send" onClick={() => void submitTextCapture()} disabled={!textCaptureDraft.trim() || chatSending}>
+                {captureInputMode === 'voice' && (
+                  <div className="mobile-voice-bars" aria-hidden="true">
+                    {voiceBars.map((height, idx) => (
+                      <span key={`bar-${idx}`} style={{ height: `${height}px` }} />
+                    ))}
+                  </div>
+                )}
+                <button
+                  type="button"
+                  className="mobile-capture-send"
+                  onClick={() => void submitTextCapture()}
+                  disabled={!(captureInputMode === 'voice' ? voiceTranscript.trim() : textCaptureDraft.trim()) || chatSending}
+                >
                   <Send size={16} />
                 </button>
               </div>
@@ -2190,7 +2633,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
               />
               <button type="button" className={activeNav === 'docs' ? 'active' : ''} onClick={() => setActiveNav('docs')}>
                 <FileText size={15} />
-                <span>Docs</span>
+                <span>Notes</span>
               </button>
               <button type="button" className={activeNav === 'focals' ? 'active' : ''} onClick={() => setActiveNav('focals')}>
                 <Mountains size={15} weight="regular" />
@@ -2206,9 +2649,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
               className={`mobile-quick-add-btn ${quickPanelOpen ? 'open' : ''}`.trim()}
               onClick={() => {
                 if (captureMode !== 'none') {
-                  if (captureMode === 'voice') {
-                    stopVoiceAnimation();
-                  }
+                  stopVoiceAnimation();
                   setCaptureMode('none');
                   return;
                 }
@@ -2226,6 +2667,95 @@ export default function MobileCalendarWireframe(): JSX.Element {
           </div>
         )}
       </div>
+
+      {captureConfirmation.open && (
+        <div className="mobile-capture-confirm">
+          <div className="mobile-capture-confirm-copy">
+            <strong>Captured to Notes</strong>
+            <span>{captureConfirmation.text}</span>
+          </div>
+          {captureConfirmation.error && (
+            <p className="mobile-capture-confirm-error">{captureConfirmation.error}</p>
+          )}
+          <div className="mobile-capture-confirm-actions">
+            <button
+              type="button"
+              className="route"
+              onClick={() => void routeCaptureNow()}
+              disabled={captureConfirmation.routing || chatSending}
+            >
+              {captureConfirmation.routing ? 'Routing…' : 'Route Now'}
+            </button>
+            <button
+              type="button"
+              className="review"
+              onClick={() => {
+                setView('ai');
+                setChatDraft(captureConfirmation.text);
+                setCaptureConfirmation({ open: false, text: '', routing: false, error: null });
+              }}
+            >
+              Review in AI
+            </button>
+            <button
+              type="button"
+              className="done"
+              onClick={() => setCaptureConfirmation({ open: false, text: '', routing: false, error: null })}
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      )}
+
+      {activeNoteEditor && (
+        <div className="mobile-note-editor-overlay" onClick={() => setActiveNoteEditor(null)}>
+          <div className="mobile-note-editor" onClick={(event) => event.stopPropagation()}>
+            <div className="mobile-note-editor-head">
+              <button type="button" className="done" onClick={() => setActiveNoteEditor(null)}>
+                Done
+              </button>
+              <button
+                type="button"
+                className="save"
+                disabled={noteEditorSaving}
+                onClick={async () => {
+                  if (!activeNoteEditor) return;
+                  setNoteEditorSaving(true);
+                  try {
+                    const updated = await docsService.updateNote(activeNoteEditor.id, {
+                      title: noteEditorTitle,
+                      body: noteEditorBody
+                    });
+                    setDocsNotes((prev) => prev.map((row) => (row.id === updated.id ? { ...row, ...updated } : row)));
+                    setActiveNoteEditor((prev) => (prev ? { ...prev, ...updated } : prev));
+                  } catch (error) {
+                    console.error('Failed to update note:', error);
+                  } finally {
+                    setNoteEditorSaving(false);
+                  }
+                }}
+              >
+                {noteEditorSaving ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+            <div className="mobile-note-editor-body">
+              <input
+                type="text"
+                value={noteEditorTitle}
+                onChange={(event) => setNoteEditorTitle(event.target.value)}
+                placeholder="Note title"
+              />
+              <textarea
+                value={noteEditorBody}
+                onChange={(event) => setNoteEditorBody(event.target.value)}
+                placeholder="Write your note"
+                rows={14}
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       {addSheet.open && (
         <div className={`mobile-add-sheet-overlay ${addSheetClosing ? 'closing' : ''}`.trim()} onClick={closeAddSheet}>
@@ -2252,17 +2782,20 @@ export default function MobileCalendarWireframe(): JSX.Element {
                 {addSheet.type === 'item' && 'Add Item'}
                 {addSheet.type === 'subitem' && 'Add Sub-item'}
                 {addSheet.type === 'event' && 'Add Event'}
+                {addSheet.type === 'doc' && 'Add Note'}
               </strong>
               <button
                 type="button"
-                aria-label="Close add drawer"
+                className="mobile-add-sheet-submit-top"
+                aria-label="Add"
                 onTouchStart={(event) => event.stopPropagation()}
                 onClick={(event) => {
                   event.stopPropagation();
-                  closeAddSheet();
+                  void submitAddSheet();
                 }}
+                disabled={!canSubmitAddSheet}
               >
-                <X size={14} />
+                Add
               </button>
             </div>
             <div className={`mobile-add-sheet-body ${addSheet.type === 'event' ? 'event-editor' : ''}`.trim()}>
@@ -2332,13 +2865,25 @@ export default function MobileCalendarWireframe(): JSX.Element {
               )}
 
               <label className={`mobile-add-field ${addSheet.type === 'event' ? 'mobile-event-title-field' : ''}`.trim()}>
-                {addSheet.type !== 'event' && <span>Name</span>}
+                {addSheet.type !== 'event' && <span>{addSheet.type === 'doc' ? 'Title' : 'Name'}</span>}
                 <input
                   value={addSheetName}
                   onChange={(event) => setAddSheetName(event.target.value)}
-                  placeholder={addSheet.type === 'event' ? 'Event title' : 'Enter name'}
+                  placeholder={addSheet.type === 'event' ? 'Event title' : addSheet.type === 'doc' ? 'Note title' : 'Enter name'}
                 />
               </label>
+
+              {addSheet.type === 'doc' && (
+                <label className="mobile-add-field">
+                  <span>Body</span>
+                  <textarea
+                    value={addSheetDescription}
+                    onChange={(event) => setAddSheetDescription(event.target.value)}
+                    placeholder="Write your note"
+                    rows={4}
+                  />
+                </label>
+              )}
 
               {addSheet.type === 'event' && (
                 <>
@@ -2398,43 +2943,34 @@ export default function MobileCalendarWireframe(): JSX.Element {
                 </>
               )}
             </div>
-            <div className="mobile-add-sheet-actions">
-              <button type="button" className="ghost" onClick={closeAddSheet}>
-                Cancel
-              </button>
-              <button type="button" className="primary" onClick={() => void submitAddSheet()} disabled={!canSubmitAddSheet}>
-                Add
-              </button>
-            </div>
           </div>
         </div>
       )}
 
       {drawer.open && (
-        <div
-          className={`mobile-drawer ${drawer.mode} ${isDrawerDragging ? 'dragging' : ''} ${drawerClosing ? 'closing' : ''}`.trim()}
-          style={{ transform: `translateY(${drawerDragY}px)` }}
-        >
+        <div className="mobile-drawer-overlay" onClick={closeDrawer}>
           <div
-            className="mobile-drawer-grab"
-            onTouchStart={onDrawerTouchStart}
-            onTouchMove={onDrawerTouchMove}
-            onTouchEnd={onDrawerTouchEnd}
-          />
-          <div className="mobile-drawer-head">
-            <Clock3 size={15} />
-            <strong>
-              {drawer.mode === 'addTask'
-                ? 'Add Task'
-                : drawer.mode === 'item'
-                  ? activeDrawerItem?.name || 'Item Details'
-                  : activeDrawerBlock?.name || 'Time Block'}
-            </strong>
-            <button type="button" onClick={closeDrawer}>
-              <X size={14} />
-            </button>
-          </div>
-          <div className="mobile-drawer-body">
+            className={`mobile-drawer ${drawer.mode} ${isDrawerDragging ? 'dragging' : ''} ${drawerClosing ? 'closing' : ''}`.trim()}
+            style={{ transform: `translateY(${drawerDragY}px)` }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div
+              className="mobile-drawer-grab"
+              onTouchStart={onDrawerTouchStart}
+              onTouchMove={onDrawerTouchMove}
+              onTouchEnd={onDrawerTouchEnd}
+            />
+            <div className="mobile-drawer-head">
+              <Clock3 size={15} />
+              <strong>
+                {drawer.mode === 'addTask'
+                  ? 'Add Task'
+                  : drawer.mode === 'item'
+                    ? activeDrawerItem?.name || 'Item Details'
+                    : activeDrawerBlock?.name || 'Time Block'}
+              </strong>
+            </div>
+            <div className="mobile-drawer-body">
             {drawer.mode === 'addTask' && drawer.blockId && (
               <div className="mobile-task-drawer">
                 <label className="mobile-task-drawer-search">
@@ -2646,6 +3182,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                 )}
               </div>
             )}
+            </div>
           </div>
         </div>
       )}

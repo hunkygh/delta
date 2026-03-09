@@ -6167,6 +6167,19 @@ body.sidebar-resizing {
   gap: 8px;
 }
 
+.delta-ai-provenance-chip {
+  width: fit-content;
+  border-radius: 999px;
+  border: 1px solid var(--color-border-subtle);
+  background: #ffffff;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+}
+
 .delta-ai-assistant-text {
   color: #2d333c;
   font-size: 14px;
@@ -6182,6 +6195,13 @@ body.sidebar-resizing {
   font-weight: 500;
 }
 
+.delta-ai-warning-footer {
+  font-size: 11px;
+  line-height: 1.35;
+  color: #6a7280;
+  font-weight: 500;
+}
+
 .delta-ai-inline-card {
   background: #ffffff;
   border-radius: 14px;
@@ -6193,6 +6213,19 @@ body.sidebar-resizing {
   margin: 0;
   font-size: 13px;
   color: #323842;
+}
+
+.delta-ai-inline-input {
+  margin-top: 8px;
+  width: 100%;
+  height: 30px;
+  border: 1px solid #d9dde4;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #2f343d;
+  font-size: 12px;
+  padding: 0 8px;
+  outline: none;
 }
 
 .delta-ai-inline-card-actions {
@@ -6217,7 +6250,7 @@ body.sidebar-resizing {
 }
 
 .delta-ai-inline-secondary {
-  border: 1px solid #d9dde4;
+  border: none;
   background: #eceff3;
   color: #2f343d;
 }
