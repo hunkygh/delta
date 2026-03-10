@@ -2840,8 +2840,14 @@
     font-size: 13px;
   }
 
-  .mobile-drawer-head button {
+  .mobile-drawer-head-actions {
     margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .mobile-drawer-head button {
     width: auto;
     height: auto;
     border: none;

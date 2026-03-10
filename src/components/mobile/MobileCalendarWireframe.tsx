@@ -691,11 +691,26 @@ export default function MobileCalendarWireframe(): JSX.Element {
     }
     try {
       const events = await calendarService.getTimeBlocks(user.id);
+      const visibleEvents = (events || []);
+      const contentRuleEntries = await Promise.all(
+        visibleEvents.map(async (event: any) => [event.id, await calendarService.getTimeBlockContentRules(event.id)] as const)
+      );
+      const contentRulesByEventId = Object.fromEntries(contentRuleEntries) as Record<string, any[]>;
+      const listIdsToHydrate = [...new Set(
+        contentRuleEntries.flatMap(([, rules]) =>
+          (rules || []).map((rule: any) => rule?.list_id).filter(Boolean)
+        )
+      )];
+      const listRows = await Promise.all(
+        listIdsToHydrate.map(async (listId) => [listId, await focalBoardService.getItemsByListId(listId)] as const)
+      );
+      const itemsByListId = new Map<string, any[]>(listRows);
+
       const dayStart = new Date(viewedDate);
       dayStart.setHours(0, 0, 0, 0);
       const dayEnd = new Date(dayStart);
       dayEnd.setDate(dayEnd.getDate() + 1);
-      const mapped = (events || [])
+      const mapped = visibleEvents
         .filter((event: any) => {
           const start = new Date(event.start);
           const end = new Date(event.end || event.start);
@@ -713,7 +728,33 @@ export default function MobileCalendarWireframe(): JSX.Element {
             event.recurrence === 'daily' || event.recurrence === 'weekly' || event.recurrence === 'monthly'
               ? event.recurrence
               : 'none',
-          items: []
+          items: (() => {
+            const rules = contentRulesByEventId[event.id] || [];
+            const hydratedItems: MobileBlockItem[] = [];
+            const seenItemIds = new Set<string>();
+            for (const rule of rules) {
+              const listId = rule?.list_id;
+              const rows = listId ? (itemsByListId.get(listId) || []) : [];
+              const rowById = new Map(rows.map((row: any) => [row.id, row]));
+              for (const itemId of rule?.item_ids || []) {
+                if (!itemId || seenItemIds.has(itemId)) continue;
+                seenItemIds.add(itemId);
+                const row = rowById.get(itemId);
+                hydratedItems.push({
+                  id: itemId,
+                  name: row?.title || indexedLists.find((list) => list.id === listId)?.items.find((item) => item.id === itemId)?.title || 'Untitled',
+                  description: row?.description || '',
+                  focalId: listId ? indexedLists.find((list) => list.id === listId)?.focalId : undefined,
+                  listId: listId || undefined,
+                  subItems: (row?.actions || []).map((action: any) => ({
+                    id: action.id,
+                    name: action.title || 'Untitled subtask'
+                  }))
+                });
+              }
+            }
+            return hydratedItems;
+          })()
         }))
         .sort((a: MobileBlock, b: MobileBlock) => a.startMin - b.startMin);
       setBlocks(mapped);
@@ -1821,6 +1862,13 @@ export default function MobileCalendarWireframe(): JSX.Element {
     try {
       await upsertBlockContentItems(blockId, item.listId, [item.id]);
       addItemsIntoBlockState(blockId, [{ id: item.id, title: item.title, listId: item.listId }]);
+      setItemsByList((prev) => {
+        if ((prev[item.listId] || []).some((entry) => entry.id === item.id)) return prev;
+        return {
+          ...prev,
+          [item.listId]: [...(prev[item.listId] || []), { id: item.id, title: item.title, actions: [] }]
+        };
+      });
     } finally {
       setTaskDrawerPendingKey(null);
     }
@@ -1832,24 +1880,33 @@ export default function MobileCalendarWireframe(): JSX.Element {
     setTaskDrawerPendingKey('create');
     let chosenListId = taskDrawerListId;
     try {
-      let created: any = null;
-      try {
-        created = await focalBoardService.createItem(chosenListId, user.id, title);
-      } catch (firstError) {
-        const fallbackList = indexedLists[0]?.id || null;
-        if (!chosenListId && fallbackList) {
-          chosenListId = fallbackList;
+      if (!chosenListId) {
+        chosenListId = indexedLists[0]?.id || null;
+        if (chosenListId) {
           setTaskDrawerListId(chosenListId);
-          created = await focalBoardService.createItem(chosenListId, user.id, title);
-        } else {
-          throw firstError;
         }
       }
+      if (!chosenListId) {
+        return;
+      }
+      let created: any = null;
+      created = await focalBoardService.createItem(chosenListId, user.id, title);
       if (!created?.id) return;
       if (chosenListId) {
         await upsertBlockContentItems(blockId, chosenListId, [created.id]);
       }
       addItemsIntoBlockState(blockId, [{ id: created.id, title: created.title || title, listId: chosenListId || null }]);
+      setItemsByList((prev) => ({
+        ...prev,
+        [chosenListId as string]: [
+          ...(prev[chosenListId as string] || []),
+          {
+            id: created.id,
+            title: created.title || title,
+            actions: []
+          }
+        ]
+      }));
       setTaskDrawerSearch('');
     } finally {
       setTaskDrawerPendingKey(null);
@@ -3029,10 +3086,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                         key={block.id}
                         className={`mobile-time-block ${isCurrent ? 'current' : ''}`}
                         style={{ top: `${top}px`, height: `${height}px` }}
-                        onClick={() => openPeekDrawer(block.id)}
-                        onPointerDown={() => startLongPress(block.id)}
-                        onPointerUp={clearLongPress}
-                        onPointerLeave={clearLongPress}
+                        onClick={() => openFullDrawer(block.id)}
                       >
                         <div className="mobile-time-block-head">
                           <h3>{block.name}</h3>
@@ -3042,6 +3096,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                               type="button"
                               className="mobile-block-add-btn"
                               aria-label="Add task"
+                              onPointerDown={(event) => event.stopPropagation()}
                               onClick={(event) => {
                                 event.stopPropagation();
                                 openAddTaskDrawer(block.id);
@@ -3056,6 +3111,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                           <button
                             type="button"
                             className="mobile-block-show-tasks"
+                            onPointerDown={(event) => event.stopPropagation()}
                             onClick={(event) => {
                               event.stopPropagation();
                               toggleBlockTaskExpansion(block.id);
@@ -3073,6 +3129,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                                 <button
                                   type="button"
                                   className={`mobile-item-check ${completed[item.id] ? 'done' : 'todo'}`.trim()}
+                                  onPointerDown={(event) => event.stopPropagation()}
                                   onClick={(event) => {
                                     event.stopPropagation();
                                     toggleComplete(item.id);
@@ -3084,6 +3141,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                                 <button
                                   type="button"
                                   className="mobile-item-text"
+                                  onPointerDown={(event) => event.stopPropagation()}
                                   onClick={(event) => {
                                     event.stopPropagation();
                                     openItemDrawer(block.id, item.id);
@@ -3097,6 +3155,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                                   type="button"
                                   className="mobile-item-subtask-toggle"
                                   aria-label="Add subtask"
+                                  onPointerDown={(event) => event.stopPropagation()}
                                   onClick={(event) => {
                                     event.stopPropagation();
                                     toggleSubtaskComposer(item.id);
@@ -3111,6 +3170,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                                         <button
                                           type="button"
                                           className={`mobile-item-check sub ${completed[subItem.id] ? 'done' : 'todo'}`.trim()}
+                                          onPointerDown={(event) => event.stopPropagation()}
                                           onClick={(event) => {
                                             event.stopPropagation();
                                             toggleComplete(subItem.id);
@@ -3122,6 +3182,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                                         <button
                                           type="button"
                                           className="mobile-item-subtext"
+                                          onPointerDown={(event) => event.stopPropagation()}
                                           onClick={(event) => {
                                             event.stopPropagation();
                                             openItemDrawer(block.id, item.id);
@@ -3138,6 +3199,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                                     <input
                                       type="text"
                                       value={subtaskDraftByItem[item.id] || ''}
+                                      onPointerDown={(event) => event.stopPropagation()}
                                       onClick={(event) => event.stopPropagation()}
                                       onChange={(event) =>
                                         setSubtaskDraftByItem((prev) => ({ ...prev, [item.id]: event.target.value }))
@@ -3146,6 +3208,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                                     />
                                     <button
                                       type="button"
+                                      onPointerDown={(event) => event.stopPropagation()}
                                       onClick={(event) => {
                                         event.stopPropagation();
                                         void createSubtaskFromBlock(block.id, item.id);
@@ -3161,6 +3224,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                               <button
                                 type="button"
                                 className="mobile-block-view-more"
+                                onPointerDown={(event) => event.stopPropagation()}
                                 onClick={(event) => {
                                   event.stopPropagation();
                                   openFullDrawer(block.id);
@@ -4031,16 +4095,30 @@ export default function MobileCalendarWireframe(): JSX.Element {
                     : activeDrawerBlock?.name || 'Time Block'}
               </strong>
               {drawer.mode !== 'addTask' && drawer.mode !== 'item' && drawer.blockId && (
-                <button
-                  type="button"
-                  aria-label="Delete event"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void deleteDrawerBlock();
-                  }}
-                >
-                  <Trash2 size={14} />
-                </button>
+                <div className="mobile-drawer-head-actions">
+                  {drawer.mode !== 'edit' && (
+                    <button
+                      type="button"
+                      aria-label="Edit event"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openEditDrawer(drawer.blockId as string);
+                      }}
+                    >
+                      Edit
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    aria-label="Delete event"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void deleteDrawerBlock();
+                    }}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
               )}
             </div>
             <div className="mobile-drawer-body">
@@ -4131,7 +4209,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                       <button
                         type="button"
                         className="mobile-task-drawer-create"
-                        disabled={taskDrawerPendingKey === 'create'}
+                        disabled={taskDrawerPendingKey === 'create' || (!taskDrawerListId && indexedLists.length === 0)}
                         onClick={() => void createNewTaskFromDrawer(drawer.blockId as string)}
                       >
                         Create New
