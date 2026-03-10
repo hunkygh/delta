@@ -1082,9 +1082,10 @@
 
 .list-item-move-menu {
   position: absolute;
-  right: calc(100% + 44px);
-  bottom: 0;
-  min-width: 164px;
+  right: 0;
+  top: calc(100% + 10px);
+  min-width: 224px;
+  max-height: 260px;
   border: 1px solid var(--color-border-default);
   border-radius: 10px;
   background: var(--color-surface-float);
@@ -1093,15 +1094,16 @@
   display: grid;
   gap: 4px;
   opacity: 0;
-  transform: translateX(6px);
+  transform: translateY(-4px);
   pointer-events: none;
+  overflow-y: auto;
   transition: opacity 160ms cubic-bezier(0.22, 1, 0.36, 1), transform 160ms cubic-bezier(0.22, 1, 0.36, 1);
   z-index: 6;
 }
 
 .list-item-move-menu.open {
   opacity: 1;
-  transform: translateX(0);
+  transform: translateY(0);
   pointer-events: auto;
 }
 
@@ -1112,14 +1114,15 @@
 }
 
 .list-item-move-menu button {
-  min-height: 28px;
+  min-height: 34px;
   border: none;
   border-radius: 6px;
   background: transparent;
   color: var(--color-text-primary);
   text-align: left;
   font-size: 12px;
-  padding: 0 8px;
+  line-height: 1.35;
+  padding: 7px 8px;
   cursor: pointer;
 }
 

@@ -318,6 +318,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
   const [taskDrawerLoading, setTaskDrawerLoading] = useState(false);
   const [taskDrawerExpandedFocals, setTaskDrawerExpandedFocals] = useState<Record<string, boolean>>({});
   const [taskDrawerExpandedLists, setTaskDrawerExpandedLists] = useState<Record<string, boolean>>({});
+  const [taskDrawerListPickerOpen, setTaskDrawerListPickerOpen] = useState(false);
   const [taskDrawerError, setTaskDrawerError] = useState('');
   const [optimisticAttachedByBlock, setOptimisticAttachedByBlock] = useState<Record<string, string[]>>({});
 
@@ -544,6 +545,10 @@ export default function MobileCalendarWireframe(): JSX.Element {
     if (!taskSearchQuery) return false;
     return indexedLists.some((list) => list.items.some((item) => item.title.trim().toLowerCase() === taskSearchQuery));
   }, [indexedLists, taskSearchQuery]);
+  const taskDrawerSelectedList = useMemo(
+    () => indexedLists.find((list) => list.id === taskDrawerListId) || null,
+    [indexedLists, taskDrawerListId]
+  );
   const taskTreeRows = useMemo(() => {
     const grouped = new Map<string, { focalId: string; focalName: string; lists: IndexedList[] }>();
     indexedLists.forEach((list) => {
@@ -2068,7 +2073,22 @@ export default function MobileCalendarWireframe(): JSX.Element {
   const inferListForBlock = (blockId: string): string | null => {
     const block = blocks.find((entry) => entry.id === blockId);
     const listIds = [...new Set((block?.items || []).map((item) => item.listId).filter(Boolean))] as string[];
+    const focalIds = [...new Set(
+      listIds
+        .map((listId) => indexedLists.find((entry) => entry.id === listId)?.focalId)
+        .filter(Boolean)
+    )] as string[];
+    const pickListInFocal = (focalId: string): string | null => {
+      const focalLists = indexedLists.filter((entry) => entry.focalId === focalId);
+      if (mobileScope.listId && focalLists.some((entry) => entry.id === mobileScope.listId)) return mobileScope.listId;
+      if (taskDrawerListId && focalLists.some((entry) => entry.id === taskDrawerListId)) return taskDrawerListId;
+      return focalLists[0]?.id || null;
+    };
     if (listIds.length === 1) return listIds[0];
+    if (focalIds.length === 1) {
+      const focalScopedList = pickListInFocal(focalIds[0]);
+      if (focalScopedList) return focalScopedList;
+    }
     if (taskDrawerListId && listIds.includes(taskDrawerListId)) return taskDrawerListId;
     if (mobileScope.listId && listIds.includes(mobileScope.listId)) return mobileScope.listId;
     return taskDrawerListId || mobileScope.listId || indexedLists[0]?.id || null;
@@ -2213,6 +2233,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
     setDrawerClosing(false);
     setTaskDrawerSearch('');
     setTaskDrawerPendingKey(null);
+    setTaskDrawerListPickerOpen(false);
     setTaskDrawerError('');
     setTaskDrawerListId(inferListForBlock(blockId));
     setTaskDrawerExpandedFocals({});
@@ -4579,6 +4600,37 @@ export default function MobileCalendarWireframe(): JSX.Element {
             <div className="mobile-drawer-body">
             {drawer.mode === 'addTask' && drawer.blockId && (
               <div className="mobile-task-drawer">
+                <div className="mobile-task-drawer-target">
+                  <button
+                    type="button"
+                    className={`mobile-task-drawer-target-trigger ${taskDrawerListPickerOpen ? 'open' : ''}`.trim()}
+                    onClick={() => setTaskDrawerListPickerOpen((prev) => !prev)}
+                  >
+                    <span className="mobile-task-drawer-target-label">Target list</span>
+                    <span className="mobile-task-drawer-target-value">
+                      {taskDrawerSelectedList ? `${taskDrawerSelectedList.focalName} / ${taskDrawerSelectedList.name}` : 'Select list'}
+                    </span>
+                    <ChevronDown size={14} />
+                  </button>
+                  {taskDrawerListPickerOpen && (
+                    <div className="mobile-task-drawer-target-menu">
+                      {indexedLists.map((list) => (
+                        <button
+                          key={list.id}
+                          type="button"
+                          className={taskDrawerListId === list.id ? 'active' : ''}
+                          onClick={() => {
+                            setTaskDrawerListId(list.id);
+                            setTaskDrawerListPickerOpen(false);
+                          }}
+                        >
+                          <strong>{list.name}</strong>
+                          <span>{list.focalName}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
                 <label className="mobile-task-drawer-search">
                   <input
                     type="text"

@@ -347,7 +347,7 @@ export default function ListView(): JSX.Element {
   const [itemModalSettingsOpen, setItemModalSettingsOpen] = useState(false);
   const [itemMoveMenuOpen, setItemMoveMenuOpen] = useState(false);
   const [moveTargetListId, setMoveTargetListId] = useState('');
-  const [peerLists, setPeerLists] = useState<Array<{ id: string; name: string }>>([]);
+  const [peerLists, setPeerLists] = useState<Array<{ id: string; name: string; focalName: string }>>([]);
   const [movingItem, setMovingItem] = useState(false);
   const [deletingItem, setDeletingItem] = useState(false);
   const itemAutosaveTimerRef = useRef<number | null>(null);
@@ -518,23 +518,35 @@ export default function ListView(): JSX.Element {
   }, []);
 
   useEffect(() => {
-    if (!selectedItem || !list?.focal_id) {
+    if (!selectedItem || !user?.id) {
       setPeerLists([]);
       return;
     }
     const loadPeerLists = async (): Promise<void> => {
       try {
-        const rows = await focalBoardService.getListsForFocal(list.focal_id);
-        const mapped: Array<{ id: string; name: string }> = (rows || [])
+        const [focalRows, listRows] = await Promise.all([
+          focalBoardService.getFocals(user.id),
+          focalBoardService.getListsForUser(user.id)
+        ]);
+        const focalNameById = new Map<string, string>((focalRows || []).map((entry: any) => [entry.id, entry.name || 'Space']));
+        const mapped: Array<{ id: string; name: string; focalName: string }> = (listRows || [])
           .filter((entry: any) => entry.id !== list.id)
-          .map((entry: any) => ({ id: entry.id, name: entry.name }));
+          .map((entry: any) => ({
+            id: entry.id,
+            name: entry.name,
+            focalName: focalNameById.get(entry.focal_id) || 'Space'
+          }))
+          .sort((a: { focalName: string; name: string }, b: { focalName: string; name: string }) => {
+            if (a.focalName !== b.focalName) return a.focalName.localeCompare(b.focalName);
+            return a.name.localeCompare(b.name);
+          });
         setPeerLists(mapped);
       } catch {
         setPeerLists([]);
       }
     };
     void loadPeerLists();
-  }, [selectedItem, list?.focal_id, list?.id]);
+  }, [selectedItem, list?.id, user?.id]);
 
   useEffect(() => {
     if (!listId) return;
@@ -3181,7 +3193,7 @@ export default function ListView(): JSX.Element {
                         }}
                         disabled={movingItem}
                       >
-                        {entry.name}
+                        {entry.focalName} / {entry.name}
                       </button>
                     ))}
                   </div>
