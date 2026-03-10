@@ -92,6 +92,15 @@ interface OccurrenceContext {
   weekday: 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
 }
 
+interface OccurrenceEntry {
+  id: string;
+  title: string;
+  completed: boolean;
+  kind: 'task' | 'item';
+  parentItemId?: string;
+  parentItemTitle?: string;
+}
+
 interface DraftLinkedItem {
   id: string;
   title: string;
@@ -749,6 +758,7 @@ export default function Calendar({
             completed: boolean;
             kind: 'task' | 'item';
             parentItemId?: string;
+            parentItemTitle?: string;
           }> = [];
 
           for (const itemId of itemIds) {
@@ -767,7 +777,8 @@ export default function Calendar({
                   title: task.title,
                   completed: taskCompletedMap.get(`${task.id}:${sourceId}:${occurrenceStartUtc}`) === true,
                   kind: 'task',
-                  parentItemId: itemId
+                  parentItemId: itemId,
+                  parentItemTitle: itemTitleById.get(itemId) || 'Untitled'
                 });
               }
               continue;
@@ -793,15 +804,27 @@ export default function Calendar({
   }, [baseVisibleEvents, eventList, itemTitleById, timeBlockContentRules, weekEnd, weekStart]);
 
   const visibleEvents = baseVisibleEvents;
+  const sortOccurrenceEntries = (entries: OccurrenceEntry[]): OccurrenceEntry[] =>
+    [...entries].sort((a, b) => {
+      if (a.completed !== b.completed) {
+        return a.completed ? 1 : -1;
+      }
+      if (a.kind !== b.kind) {
+        return a.kind === 'item' ? -1 : 1;
+      }
+      return a.title.localeCompare(b.title);
+    });
+
   const visibleEventsWithLinkedTasks = useMemo(
     () =>
       visibleEvents.map((event) => {
-        const linkedRows = resolvedItemsByOccurrence[event.id] || [];
+        const linkedRows = sortOccurrenceEntries(resolvedItemsByOccurrence[event.id] || []);
         if (linkedRows.length === 0) {
           return event;
         }
         return {
           ...event,
+          occurrenceItems: linkedRows,
           tasks: linkedRows.map((row) => ({
             id: row.id,
             title: row.title,
@@ -827,7 +850,9 @@ export default function Calendar({
   const isCreateFlow = !editingEventId;
   const isRecurringSelection = formState.recurrence !== 'none';
   const showSeriesScopeControls = Boolean(editingEventId) && isRecurringSelection;
-  const activeOccurrenceItems = occurrenceContext ? (resolvedItemsByOccurrence[occurrenceContext.instanceId] || []) : [];
+  const activeOccurrenceItems = occurrenceContext
+    ? sortOccurrenceEntries(resolvedItemsByOccurrence[occurrenceContext.instanceId] || [])
+    : [];
 
   const hydrateContentDrafts = (timeBlockId: string): void => {
     const rules = timeBlockContentRules[timeBlockId] || [];
@@ -976,7 +1001,7 @@ export default function Calendar({
   };
 
   const handleToggleOccurrenceItem = async (
-    entry: { id: string; title: string; completed: boolean; kind: 'task' | 'item'; parentItemId?: string },
+    entry: OccurrenceEntry,
     checked: boolean
   ): Promise<void> => {
     if (!occurrenceContext) return;
@@ -999,19 +1024,15 @@ export default function Calendar({
     }
     setResolvedItemsByOccurrence((prev) => ({
       ...prev,
-      [occurrenceContext.instanceId]: (prev[occurrenceContext.instanceId] || []).map((row) =>
-        row.id === entry.id ? { ...row, completed: checked } : row
+      [occurrenceContext.instanceId]: sortOccurrenceEntries(
+        (prev[occurrenceContext.instanceId] || []).map((row) =>
+          row.id === entry.id ? { ...row, completed: checked } : row
+        )
       )
     }));
   };
 
-  const handleOpenOccurrenceItem = (entry: {
-    id: string;
-    title: string;
-    completed: boolean;
-    kind: 'task' | 'item';
-    parentItemId?: string;
-  }): void => {
+  const handleOpenOccurrenceItem = (entry: OccurrenceEntry): void => {
     const itemId = entry.kind === 'task' ? entry.parentItemId : entry.id;
     if (!itemId) return;
     const listId = listIdByItemId.get(itemId);
@@ -1022,6 +1043,100 @@ export default function Calendar({
     navigate(`/focals/list/${listId}`, {
       state: { openItemId: itemId }
     });
+  };
+
+  const getOccurrenceContextForEvent = (event: CalendarEvent): OccurrenceContext => {
+    const sourceEventId = event.sourceEventId ?? event.id;
+    const scheduledStartUtc = new Date(event.start).toISOString();
+    const scheduledEndUtc = new Date(event.end).toISOString();
+    return {
+      instanceId: event.id,
+      sourceEventId,
+      scheduledStartUtc,
+      scheduledEndUtc,
+      weekday:
+        (calendarService.getWeekdayKeyForOccurrence(scheduledStartUtc, getUserTimeZone()) || 'mon') as OccurrenceContext['weekday']
+    };
+  };
+
+  const getMatchingRuleForOccurrence = (
+    timeBlockId: string,
+    weekday: OccurrenceContext['weekday']
+  ): TimeBlockContentRule | null => {
+    const rules = timeBlockContentRules[timeBlockId] || [];
+    return (
+      rules.find((rule) => rule.selector_type === 'weekday' && rule.selector_value === weekday) ||
+      rules.find((rule) => rule.selector_type === 'all') ||
+      null
+    );
+  };
+
+  const handleCardOccurrenceToggle = async (event: CalendarEvent, entry: OccurrenceEntry, checked: boolean): Promise<void> => {
+    const context = getOccurrenceContextForEvent(event);
+    setOccurrenceContext(context);
+
+    if (entry.kind === 'task') {
+      await calendarService.setOccurrenceTaskCompletion({
+        actionId: entry.id,
+        timeBlockId: context.sourceEventId,
+        scheduledStartUtc: context.scheduledStartUtc,
+        scheduledEndUtc: context.scheduledEndUtc,
+        checked
+      });
+    } else {
+      await calendarService.setOccurrenceItemCompletion({
+        itemId: entry.id,
+        timeBlockId: context.sourceEventId,
+        scheduledStartUtc: context.scheduledStartUtc,
+        scheduledEndUtc: context.scheduledEndUtc,
+        checked
+      });
+    }
+
+    setResolvedItemsByOccurrence((prev) => ({
+      ...prev,
+      [context.instanceId]: sortOccurrenceEntries(
+        (prev[context.instanceId] || []).map((row) => (row.id === entry.id ? { ...row, completed: checked } : row))
+      )
+    }));
+  };
+
+  const handleCardAddItem = async (event: CalendarEvent): Promise<void> => {
+    if (!user?.id) return;
+    const context = getOccurrenceContextForEvent(event);
+    const matchingRule = getMatchingRuleForOccurrence(context.sourceEventId, context.weekday);
+    if (!matchingRule?.list_id) {
+      window.alert('Attach this time block to a list before adding items from the calendar view.');
+      return;
+    }
+    const title = window.prompt('New item title');
+    if (!title?.trim()) return;
+
+    try {
+      const created = await focalBoardService.createItem(matchingRule.list_id, user.id, title.trim(), null);
+      const nextItemIds = [...new Set([...(matchingRule.item_ids || []), created.id])];
+      await persistContentRuleForTimeBlock({
+        timeBlockId: context.sourceEventId,
+        selectorType: matchingRule.selector_type,
+        selectorValue: matchingRule.selector_type === 'weekday' ? matchingRule.selector_value : null,
+        listId: matchingRule.list_id,
+        itemIds: nextItemIds
+      });
+      setResolvedItemsByOccurrence((prev) => ({
+        ...prev,
+        [context.instanceId]: sortOccurrenceEntries([
+          ...(prev[context.instanceId] || []),
+          {
+            id: created.id,
+            title: created.title,
+            completed: false,
+            kind: 'item'
+          }
+        ])
+      }));
+    } catch (error) {
+      console.error('Failed to add item from calendar card:', error);
+    }
   };
 
   const openCreateModal = (range?: { start: Date; end: Date }): void => {
@@ -2038,8 +2153,10 @@ export default function Calendar({
             onEventMovePreview={handleEventMovePreview}
             onEventMoveEnd={handleEventMoveEnd}
             selectedEventId={selectedEventId}
-            onEventAddTask={addTaskToEvent}
+            onEventAddItem={(event) => void handleCardAddItem(event)}
             onEventReorderTasks={reorderEventTasks}
+            onOccurrenceToggle={(event, entry, checked) => void handleCardOccurrenceToggle(event, entry, checked)}
+            onOccurrenceOpen={(_event, entry) => handleOpenOccurrenceItem(entry)}
           />
         </div>
 

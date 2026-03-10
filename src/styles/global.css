@@ -1958,7 +1958,7 @@ p {
   border-radius: 8px;
   background: var(--color-surface-card);
   box-shadow: var(--shadow-subtle);
-  padding: 6px 4px;
+  padding: 6px 4px 5px;
   display: grid;
   align-content: start;
   gap: 2px;
@@ -2031,25 +2031,49 @@ p {
 .week-event-task-preview {
   margin-top: 3px;
   display: grid;
-  gap: 2px;
+  gap: 3px;
+  justify-items: stretch;
 }
 
-.week-event-task-preview span {
-  font-size: 0.58rem;
+.week-event-task-row {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr);
+  align-items: center;
+  gap: 4px;
+}
+
+.week-event-task-row input {
+  margin: 0;
+}
+
+.week-event-task-link,
+.week-event-more {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+  font: inherit;
+}
+
+.week-event-task-link {
+  font-size: 0.6rem;
   color: #5f6877;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  cursor: pointer;
 }
 
-.week-event-task-preview span.completed {
+.week-event-task-row.completed .week-event-task-link {
   text-decoration: line-through;
   color: #8a93a3;
 }
 
-.week-event-task-preview span.more {
+.week-event-more {
+  font-size: 0.58rem;
   color: #7a8394;
   font-weight: 600;
+  cursor: pointer;
 }
 
 .week-event-tasks {
@@ -2091,6 +2115,7 @@ p {
   padding: 2px 4px;
   text-align: left;
   cursor: pointer;
+  margin-top: 3px;
 }
 
 .week-event-resize-handle {
@@ -3549,20 +3574,23 @@ p {
   white-space: nowrap;
 }
 
-.calendar-event-attach-row:hover {
-  background: transparent;
+.calendar-event-attach-title.completed {
+  color: #7b8495;
+  text-decoration: line-through;
 }
 
-.calendar-event-attach-inline-add {
-  width: 24px;
-  height: 24px;
-  border-radius: 8px;
-  border: 1px solid var(--color-border-default);
-  background: #ffffff;
-  color: #2d3342;
-  font-size: 16px;
-  line-height: 1;
-  padding: 0;
+.calendar-event-attach-check {
+  margin: 0;
+}
+
+.calendar-event-attach-listname {
+  font-size: 0.7rem;
+  color: #7b8495;
+  white-space: nowrap;
+}
+
+.calendar-event-attach-row:hover {
+  background: transparent;
 }
 
 .calendar-event-attach-subtasks {

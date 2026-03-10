@@ -43,8 +43,31 @@ interface WeekGridProps {
     originalEnd: Date;
   }) => void;
   selectedEventId?: string | null;
-  onEventAddTask?: (eventId: string, title: string) => void;
+  onEventAddItem?: (event: CalendarEvent) => void;
   onEventReorderTasks?: (eventId: string, fromIndex: number, toIndex: number) => void;
+  onOccurrenceToggle?: (
+    event: CalendarEvent,
+    entry: {
+      id: string;
+      title: string;
+      completed: boolean;
+      kind: 'task' | 'item';
+      parentItemId?: string;
+      parentItemTitle?: string;
+    },
+    checked: boolean
+  ) => void;
+  onOccurrenceOpen?: (
+    event: CalendarEvent,
+    entry: {
+      id: string;
+      title: string;
+      completed: boolean;
+      kind: 'task' | 'item';
+      parentItemId?: string;
+      parentItemTitle?: string;
+    }
+  ) => void;
 }
 
 export default function WeekGrid({
@@ -60,8 +83,10 @@ export default function WeekGrid({
   onEventMovePreview,
   onEventMoveEnd,
   selectedEventId,
-  onEventAddTask,
-  onEventReorderTasks
+  onEventAddItem,
+  onEventReorderTasks,
+  onOccurrenceToggle,
+  onOccurrenceOpen
 }: WeekGridProps): JSX.Element {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const didInitialAnchorRef = useRef(false);
@@ -114,8 +139,10 @@ export default function WeekGrid({
           onEventMovePreview={onEventMovePreview}
           onEventMoveEnd={onEventMoveEnd}
           selectedEventId={selectedEventId}
-          onEventAddTask={onEventAddTask}
+          onEventAddItem={onEventAddItem}
           onEventReorderTasks={onEventReorderTasks}
+          onOccurrenceToggle={onOccurrenceToggle}
+          onOccurrenceOpen={onOccurrenceOpen}
         />
       </div>
     </div>

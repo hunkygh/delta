@@ -1,262 +1,199 @@
-UI Tone & Visual Softness Standard
-Version 1.1
-Authoritative Tone & Visual Control Contract
+Delta UI Tone & Visual Softness Standard
 
-Purpose:
-Ensure Delta feels calm, controlled, minimal, and premium, never harsh, brittle, or loud.
+Version 1.0
+Purpose: Eliminate harshness. Enforce calm, controlled visual tone.
 
-------------------------------------------------------------
-1. Core Principle
-------------------------------------------------------------
+⸻
 
-Softness is not decoration.
-Softness is controlled contrast + restrained structure + disciplined color use.
+1. The Core Problem
 
-Harsh UI is caused by:
-- Pure white backgrounds
-- True black text
-- Thin typography everywhere
-- Too many borders
-- High-contrast dividers
-- Accent overuse
-- Inconsistent motion
+Harsh UI is caused by stacking these factors:
+	•	Pure white backgrounds (#FFFFFF)
+	•	True black text (#000000)
+	•	Excessively thin typography (400 everywhere)
+	•	Overuse of borders
+	•	High-contrast dividers
+	•	Inconsistent animation
+	•	Accent color overuse
 
-Soft UI is achieved by restraint.
+Soft UI is not achieved through blur or heavy styling.
+It is achieved through controlled contrast, weight distribution, and restraint.
 
-------------------------------------------------------------
+⸻
+
 2. Background Rules (No Pure White)
-------------------------------------------------------------
 
-Never use pure white (`#FFFFFF`) for primary app backgrounds.
+Never use pure white for the main app background.
 
-Approved background range:
-- `#F7F8FA`
-- `#F5F6F8`
-- Very subtle neutral near-white only
+Use near-white neutral tones:
+
+Recommended:
+	•	#F7F8FA
+	•	#F5F6F8
 
 Why:
 Pure white + dark gray text creates glare and sharpness.
-Near-white softens perceived contrast.
+Slightly muted backgrounds reduce visual fatigue and increase perceived polish.
 
-------------------------------------------------------------
+⸻
+
 3. Text Contrast Rules (No True Black)
-------------------------------------------------------------
 
-Never use `#000000` for text.
+Never use #000000 for body text.
 
 Primary text:
-- `#1F1F1F` to `#2A2A2A`
+	•	#1F1F1F to #2A2A2A
 
 Secondary text:
-- `#6B6F76` to `#8C9096`
+	•	#6B6F76
+	•	#8C9096
 
 Muted/meta:
-- `#A0A4AA` range
+	•	#A0A4AA range
 
 Target effective contrast:
-`85-92%`, not `100%`.
+85–92%, not 100%.
 
-True black on near white feels brittle.
+True black on near white = brittle.
 
-------------------------------------------------------------
+⸻
+
 4. Typography Weight Distribution
-------------------------------------------------------------
 
-Do not default to weight 400 for everything.
+Do NOT default to 400 for everything.
 
-Standard distribution:
-- Major titles -> 600
-- Section titles -> 600
-- Primary body -> 500
-- Secondary -> 400
-- Meta -> 400 with reduced contrast
+Use structured hierarchy:
+	•	Section titles → 600
+	•	Primary body → 500
+	•	Secondary → 400
+	•	Meta → 400 + reduced contrast
 
-Thin text + high contrast = fragile feeling.
+Thin 400 text on high contrast background feels fragile.
 
-Weight 500 significantly improves perceived quality.
+500 weight dramatically improves perceived solidity.
 
-------------------------------------------------------------
+⸻
+
 5. Border Discipline
-------------------------------------------------------------
 
-Borders are a last resort, not a layout strategy.
+Harsh UI often comes from too many borders.
 
 Allowed:
-- Single outer container where structurally required
-- 1px very low-contrast row dividers
-- Minimal elevation (subtle shadow)
+	•	1px subtle row dividers (very low contrast)
+	•	Single outer container where categorically required
 
 Avoid:
-- Card inside card inside card
-- Nested bordered containers
-- Dark divider lines
-- Boxed textareas
-- Visible input boxes for simple inline editing
+	•	Nested card borders
+	•	Stacked outlined containers
+	•	Dark divider lines
+	•	Boxed textareas
 
 Replace borders with:
-- Spacing
-- Background tone differences
-- Subtle elevation only when necessary
+	•	Spacing
+	•	Background contrast blocks
+	•	Elevation (subtle shadow only when necessary)
 
-------------------------------------------------------------
+⸻
+
 6. Divider Rules
-------------------------------------------------------------
 
-Dividers must be barely visible.
+Row separators should be extremely subtle.
 
 Recommended:
-- `rgba(0,0,0,0.06)`
-- `rgba(0,0,0,0.08)`
+	•	rgba(0,0,0,0.06) to rgba(0,0,0,0.08)
 
-Never exceed:
-- `rgba(0,0,0,0.12)`
+Never:
+	•	rgba(0,0,0,0.2)+
+	•	Full dark gray lines
 
-Dividers should support structure, not dominate it.
+Dividers should barely be noticed.
 
-------------------------------------------------------------
+⸻
+
 7. Elevation > Outlines
-------------------------------------------------------------
 
-Hierarchy should prefer:
-- Slight background shifts
-- Very subtle shadow
-- Clean spacing
+ClickUp feels soft because it uses:
+	•	Slight background shifts
+	•	Gentle shadow
+	•	Minimal outlines
 
-Over:
-- Outlined boxes
-- Heavy borders
-- Thick separators
-
-If spacing and background can express hierarchy,
+If hierarchy can be expressed via background and spacing,
 do not use borders.
 
-------------------------------------------------------------
-8. Accent Discipline (Strict)
-------------------------------------------------------------
+⸻
 
-Primary accent:
-`#00C7FF`
+8. Accent Color Discipline (#00B7F4)
 
-Accent is a signal color, not a decoration color.
+Electric blue must be rare.
 
-Accent may only indicate:
-- Primary CTA
-- AI-triggered action
-- Critical system interaction
+Use ONLY for:
+	•	Primary CTA
+	•	AI trigger buttons
+	•	Selected active state indicator
 
-Hard limits:
-- Maximum 1 primary accent surface per view
-- Maximum 2 accent elements visible simultaneously
-- Accent must not repeat in vertical list patterns
-- Accent must not be used for hover variations
-- Accent must not be used for decorative icons
-- Accent must not be used for section headers
-- Accent must not be used for secondary UI
+Never:
+	•	Blue hover variants
+	•	Blue section backgrounds
+	•	Blue text for secondary UI
 
-Screen-space rule:
+All hover/focus states should be grayscale shifts only.
 
-Accent should occupy less than ~3% of visible screen area.
+⸻
 
-If accent occupies more than that,
-it is overused.
-
-Enforcement rule:
-
-If unsure:
-Use grayscale.
-
-Escalate to accent only when removing it would reduce clarity of the primary action.
-
-Button hierarchy (strict):
-- Secondary and tertiary buttons are always plain text by default.
-- Secondary and tertiary buttons never use persistent fill, border, or accent color.
-- Secondary and tertiary hover/focus state may use only a light gray background fill.
-- Close buttons (including `X`) follow the same plain-text rule and never use persistent fill or border.
-- Per surface (screen, modal, drawer, popover), only one colored button is allowed: the primary action.
-- Settings controls open a compact slide-out options rail from the trigger, not a detached modal/panel.
-- Settings trigger style is icon-first with neutral gray circular fill and no border.
-
-------------------------------------------------------------
 9. Animation Tone
-------------------------------------------------------------
 
-Motion must reinforce calmness.
+Harshness is amplified by:
+	•	Instant pop-ins
+	•	Inconsistent slide/fade combos
+	•	Abrupt state changes
 
-Use:
-- Directional slide
-- Consistent easing (`cubic-bezier(0.22, 1, 0.36, 1)`)
-- Controlled duration (`160-260ms`)
+Standard:
+	•	Directional slide
+	•	Consistent easing (cubic-bezier(0.22, 1, 0.36, 1))
+	•	No bounce
+	•	No random opacity-only transitions
 
-Avoid:
-- Instant structural appearance
-- Bounce
-- Mixed animation styles
-- Fade-only structural surfaces
+Movement should feel architectural, not decorative.
 
-Content should feel revealed, not dropped.
+⸻
 
-------------------------------------------------------------
-10. Spacing & Density
-------------------------------------------------------------
+10. Density & Spacing
 
-Use 8px base grid.
+Softness is also achieved through breathing room.
 
-Common spacing:
-- 16px internal
-- 24px section separation
-- 32px major separation
+Minimum vertical rhythm:
+	•	8px base grid
+	•	16px common vertical spacing
+	•	24px for major section separation
 
-Do not compress spacing for density.
+Do not compress spacing to “fit more.”
 
-Crowding increases perceived harshness.
+Crowding = visual aggression.
 
-------------------------------------------------------------
-11. Softness Diagnostic Checklist
-------------------------------------------------------------
+⸻
 
-If the UI feels harsh, check:
-1. Is background too white?
-2. Is text too close to black?
-3. Is text weight too thin?
-4. Are there too many borders?
-5. Are dividers too dark?
-6. Is accent overused?
-7. Is animation inconsistent?
-8. Is spacing too tight?
-
-Fix those before adding styling.
-
-------------------------------------------------------------
-12. Tone Goal
-------------------------------------------------------------
+11. Tone Goal
 
 Delta should feel:
-- Calm
-- Neutral
-- Structured
-- Intentional
-- Slightly muted
-- Premium without gloss
-- Intelligent without noise
+	•	Calm
+	•	Neutral
+	•	Structural
+	•	Intentional
+	•	Slightly muted
+	•	Never glossy
+	•	Never loud
 
-Complexity belongs in the data model, not in the visuals.
+Complexity should live in data, not in visuals.
 
-------------------------------------------------------------
-13. Event Editor Surface Rules
-------------------------------------------------------------
+⸻
 
-Event create/edit surfaces (desktop drawer, mobile sheet) follow a strict structure:
-- One continuous editor surface. Avoid nested cards and stacked boxed groups.
-- Top priority row order:
-  1. Title
-  2. Time/date
-  3. Repeat summary
-  4. Contents summary
-  5. Notes summary
-- Advanced controls are progressively disclosed and hidden by default.
-- Section grouping uses spacing + hairline separators, not heavy containers.
+12. Anti-Drift Rule
 
-Action hierarchy inside event editor surfaces:
-- Exactly one filled primary action (`Add` or `Save`) per surface.
-- All other actions (`Cancel`, `Close`, `Remove`, helper controls) are plain text/icon.
-- Non-primary actions use grayscale hover/focus fill only.
+If the UI feels sharp:
+	•	Reduce contrast
+	•	Remove borders
+	•	Increase text weight
+	•	Reduce accent usage
+	•	Increase whitespace
+
+Never add styling to compensate.

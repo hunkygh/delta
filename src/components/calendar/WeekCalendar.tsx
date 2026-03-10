@@ -9,6 +9,14 @@ export interface CalendarEvent {
   start: Date | string;
   end: Date | string;
   tasks?: EventTask[];
+  occurrenceItems?: Array<{
+    id: string;
+    title: string;
+    completed: boolean;
+    kind: 'task' | 'item';
+    parentItemId?: string;
+    parentItemTitle?: string;
+  }>;
   color?: string;
   status?: string;
 }
@@ -62,8 +70,31 @@ interface WeekCalendarProps {
     originalEnd: Date;
   }) => void;
   selectedEventId?: string | null;
-  onEventAddTask?: (eventId: string, title: string) => void;
+  onEventAddItem?: (event: CalendarEvent) => void;
   onEventReorderTasks?: (eventId: string, fromIndex: number, toIndex: number) => void;
+  onOccurrenceToggle?: (
+    event: CalendarEvent,
+    entry: {
+      id: string;
+      title: string;
+      completed: boolean;
+      kind: 'task' | 'item';
+      parentItemId?: string;
+      parentItemTitle?: string;
+    },
+    checked: boolean
+  ) => void;
+  onOccurrenceOpen?: (
+    event: CalendarEvent,
+    entry: {
+      id: string;
+      title: string;
+      completed: boolean;
+      kind: 'task' | 'item';
+      parentItemId?: string;
+      parentItemTitle?: string;
+    }
+  ) => void;
   hours?: HoursWindow;
   pixelsPerMinute?: number;
 }
@@ -79,8 +110,10 @@ export default function WeekCalendar({
   onEventMovePreview,
   onEventMoveEnd,
   selectedEventId,
-  onEventAddTask,
+  onEventAddItem,
   onEventReorderTasks,
+  onOccurrenceToggle,
+  onOccurrenceOpen,
   hours = { start: 1, end: 23 },
   pixelsPerMinute = 1
 }: WeekCalendarProps): JSX.Element {
@@ -98,8 +131,10 @@ export default function WeekCalendar({
         onEventMovePreview={onEventMovePreview}
         onEventMoveEnd={onEventMoveEnd}
         selectedEventId={selectedEventId}
-        onEventAddTask={onEventAddTask}
+        onEventAddItem={onEventAddItem}
         onEventReorderTasks={onEventReorderTasks}
+        onOccurrenceToggle={onOccurrenceToggle}
+        onOccurrenceOpen={onOccurrenceOpen}
         hours={hours}
         pixelsPerMinute={pixelsPerMinute}
       />

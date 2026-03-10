@@ -63,8 +63,31 @@ interface DayColumnProps {
     originalEnd: Date;
   }) => void;
   selectedEventId?: string | null;
-  onEventAddTask?: (eventId: string, title: string) => void;
+  onEventAddItem?: (event: CalendarEvent) => void;
   onEventReorderTasks?: (eventId: string, fromIndex: number, toIndex: number) => void;
+  onOccurrenceToggle?: (
+    event: CalendarEvent,
+    entry: {
+      id: string;
+      title: string;
+      completed: boolean;
+      kind: 'task' | 'item';
+      parentItemId?: string;
+      parentItemTitle?: string;
+    },
+    checked: boolean
+  ) => void;
+  onOccurrenceOpen?: (
+    event: CalendarEvent,
+    entry: {
+      id: string;
+      title: string;
+      completed: boolean;
+      kind: 'task' | 'item';
+      parentItemId?: string;
+      parentItemTitle?: string;
+    }
+  ) => void;
   onDragPreviewChange?: (payload: {
     originDayIndex: number;
     dayOffset: number;
@@ -96,8 +119,10 @@ export default function DayColumn({
   onEventMovePreview,
   onEventMoveEnd,
   selectedEventId,
-  onEventAddTask,
+  onEventAddItem,
   onEventReorderTasks,
+  onOccurrenceToggle,
+  onOccurrenceOpen,
   onDragPreviewChange,
   externalDragPreview
 }: DayColumnProps): JSX.Element {
@@ -573,10 +598,12 @@ export default function DayColumn({
                 }
                 onEventClick?.(layout.event);
               }}
-              onAddTask={(title) => onEventAddTask?.(layout.event.sourceEventId ?? layout.event.id, title)}
+              onAddItem={() => onEventAddItem?.(layout.event)}
               onReorderTasks={(fromIndex, toIndex) =>
                 onEventReorderTasks?.(layout.event.sourceEventId ?? layout.event.id, fromIndex, toIndex)
               }
+              onOccurrenceToggle={(entry, checked) => onOccurrenceToggle?.(layout.event, entry, checked)}
+              onOccurrenceOpen={(entry) => onOccurrenceOpen?.(layout.event, entry)}
               onResizeHandleMouseDown={(direction, event) => {
                 resizeDragDetectedRef.current = false;
                 const originalStart = normalizeToDate(layout.event.start);

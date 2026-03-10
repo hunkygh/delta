@@ -158,6 +158,7 @@ export default function EventDrawer({
   occurrenceItems,
   onToggleOccurrenceItem,
   onOpenOccurrenceItem,
+  parentItemTitleById,
   onCancel,
   onSave,
   onDelete
@@ -335,6 +336,24 @@ export default function EventDrawer({
   }, [contentItemOptionsByList, contentListOptions, slashAttachQuery]);
 
   const attachedItemsRows = useMemo(() => {
+    if ((occurrenceItems || []).length > 0) {
+      return occurrenceItems.map((entry) => ({
+        itemId: entry.id,
+        listId: '',
+        listName:
+          entry.kind === 'task'
+            ? entry.parentItemId
+              ? parentItemTitleById?.[entry.parentItemId] || 'Task'
+              : 'Task'
+            : 'Item',
+        title: entry.title,
+        removable: entry.kind === 'item',
+        completed: entry.completed,
+        kind: entry.kind,
+        parentItemId: entry.parentItemId
+      }));
+    }
+
     const byListId = new Map(contentListOptions.map((entry) => [entry.id, entry.name]));
     const currentSelection =
       contentMode === 'all'
@@ -349,7 +368,10 @@ export default function EventDrawer({
           listId: '',
           listName: 'Attached',
           title: entry.title,
-          removable: false
+          removable: false,
+          completed: entry.completed,
+          kind: entry.kind,
+          parentItemId: entry.parentItemId
         }));
       return fallbackRows;
     }
@@ -363,9 +385,12 @@ export default function EventDrawer({
       listId,
       listName,
       title: itemById.get(itemId) || 'Item',
-      removable: true
+      removable: true,
+      completed: false,
+      kind: 'item' as const,
+      parentItemId: undefined
     }));
-  }, [activeWeekday, contentAll.itemIds, contentAll.listId, contentByWeekday, contentItemOptionsByList, contentListOptions, contentMode, occurrenceItems]);
+  }, [activeWeekday, contentAll.itemIds, contentAll.listId, contentByWeekday, contentItemOptionsByList, contentListOptions, contentMode, occurrenceItems, parentItemTitleById]);
 
   const closeSlashAttach = (): void => {
     setSlashAttachOpen(false);
@@ -735,26 +760,40 @@ export default function EventDrawer({
                   <div key={`${row.listId || 'attached'}:${row.itemId}:${index}`} className="calendar-event-attach-row-wrap">
                     <div className="calendar-event-attach-row">
                       <span className="calendar-event-attach-caret placeholder" aria-hidden="true" />
-                      <span className="calendar-event-attach-status todo" aria-hidden="true" />
+                      <input
+                        type="checkbox"
+                        className="calendar-event-attach-check"
+                        checked={Boolean(row.completed)}
+                        onChange={(event) =>
+                          onToggleOccurrenceItem(
+                            {
+                              id: row.itemId,
+                              title: row.title,
+                              completed: Boolean(row.completed),
+                              kind: row.kind,
+                              parentItemId: row.parentItemId
+                            },
+                            event.target.checked
+                          )
+                        }
+                      />
                       <button
                         type="button"
-                        className="calendar-event-attach-inline-add"
+                        className={`calendar-event-attach-title ${row.completed ? 'completed' : ''}`.trim()}
                         onClick={() =>
                           onOpenOccurrenceItem?.({
                             id: row.itemId,
                             title: row.title,
-                            completed: false,
-                            kind: 'item'
+                            completed: Boolean(row.completed),
+                            kind: row.kind,
+                            parentItemId: row.parentItemId
                           })
                         }
-                        aria-label="Open item"
                       >
-                        +
-                      </button>
-                      <button type="button" className="calendar-event-attach-title">
                         {row.title}
                       </button>
-                      {row.removable !== false && (
+                      <span className="calendar-event-attach-listname">{row.listName}</span>
+                      {row.removable !== false && row.kind === 'item' && (
                         <button
                           type="button"
                           className="calendar-event-attach-remove"
@@ -772,7 +811,7 @@ export default function EventDrawer({
                           −
                         </button>
                       )}
-                      {recurrenceEnabled && includeRecurringTasks && (
+                      {recurrenceEnabled && includeRecurringTasks && row.kind === 'item' && (
                         <button
                           type="button"
                           className={`calendar-switch calendar-switch-inline ${repeatTasksByItemId[row.itemId] === false ? 'off' : 'on'}`.trim()}
@@ -1032,7 +1071,7 @@ export default function EventDrawer({
                 </div>
               )}
 
-              {occurrenceItems.length > 0 && (
+              {occurrenceItems.length > 0 && attachedItemsRows.length === 0 && (
                 <div className="calendar-event-contents-completion">
                   {occurrenceItems.map((entry) => (
                     <label key={entry.id} className="calendar-event-contents-item-row completion">

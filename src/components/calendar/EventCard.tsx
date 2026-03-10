@@ -12,8 +12,27 @@ interface EventCardProps {
   isActive?: boolean;
   isOpen?: boolean;
   onClick?: () => void;
-  onAddTask?: (title: string) => void;
+  onAddItem?: () => void;
   onReorderTasks?: (fromIndex: number, toIndex: number) => void;
+  onOccurrenceToggle?: (
+    entry: {
+      id: string;
+      title: string;
+      completed: boolean;
+      kind: 'task' | 'item';
+      parentItemId?: string;
+      parentItemTitle?: string;
+    },
+    checked: boolean
+  ) => void;
+  onOccurrenceOpen?: (entry: {
+    id: string;
+    title: string;
+    completed: boolean;
+    kind: 'task' | 'item';
+    parentItemId?: string;
+    parentItemTitle?: string;
+  }) => void;
   onResizeHandleMouseDown?: (
     direction: 'start' | 'end',
     event: ReactMouseEvent<HTMLElement>
@@ -30,17 +49,18 @@ export default function EventCard({
   isActive = false,
   isOpen = false,
   onClick,
-  onAddTask,
+  onAddItem,
   onReorderTasks,
+  onOccurrenceToggle,
+  onOccurrenceOpen,
   onResizeHandleMouseDown,
   onMoveMouseDown
 }: EventCardProps): JSX.Element {
-  const [isAddingTask, setIsAddingTask] = useState(false);
-  const [draftTaskTitle, setDraftTaskTitle] = useState('');
   const [dragTaskIndex, setDragTaskIndex] = useState<number | null>(null);
   const [isResizing, setIsResizing] = useState(false);
 
   const tasks = event.tasks ?? [];
+  const occurrenceItems = event.occurrenceItems ?? [];
   const isCompact = height <= 46;
   const isTiny = height <= 18;
 
@@ -66,16 +86,10 @@ export default function EventCard({
   ]
     .filter(Boolean)
     .join(' ');
-
-  const submitTask = (): void => {
-    const value = draftTaskTitle.trim();
-    if (!value) {
-      return;
-    }
-    onAddTask?.(value);
-    setDraftTaskTitle('');
-    setIsAddingTask(false);
-  };
+  const interactiveRows = occurrenceItems.length > 0 ? occurrenceItems : tasks.map((task) => ({ ...task, kind: 'item' as const }));
+  const previewLimit = Math.max(1, Math.floor((Math.max(height, isOpen ? 66 : 54) - (isOpen ? 44 : 26)) / 22));
+  const visibleRows = interactiveRows.slice(0, previewLimit);
+  const hiddenCount = Math.max(0, interactiveRows.length - visibleRows.length);
 
   return (
     <div
@@ -134,18 +148,44 @@ export default function EventCard({
       <span className="week-event-card-title">{event.title}</span>
       <span className="week-event-card-time">{formatTimeRange(event.start, event.end)}</span>
 
-      {!isTiny && !isOpen && tasks.length > 0 && (
+      {!isTiny && interactiveRows.length > 0 && (
         <div className="week-event-task-preview" onClick={(eventMouse) => eventMouse.stopPropagation()}>
-          {tasks.slice(0, 2).map((task) => (
-            <span key={task.id} className={task.completed ? 'completed' : ''}>
-              {task.title}
-            </span>
+          {visibleRows.map((entry) => (
+            <div key={`${entry.kind}:${entry.id}`} className={`week-event-task-row ${entry.completed ? 'completed' : ''}`.trim()}>
+              <input
+                type="checkbox"
+                checked={entry.completed}
+                onChange={(eventChange) => onOccurrenceToggle?.(entry, eventChange.target.checked)}
+                onClick={(eventMouse) => eventMouse.stopPropagation()}
+              />
+              <button
+                type="button"
+                className="week-event-task-link"
+                onClick={(eventMouse) => {
+                  eventMouse.stopPropagation();
+                  onOccurrenceOpen?.(entry);
+                }}
+              >
+                {entry.title}
+              </button>
+            </div>
           ))}
-          {tasks.length > 2 && <span className="more">+{tasks.length - 2}</span>}
+          {hiddenCount > 0 && (
+            <button
+              type="button"
+              className="week-event-more"
+              onClick={(eventMouse) => {
+                eventMouse.stopPropagation();
+                onClick?.();
+              }}
+            >
+              {hiddenCount} more ↗
+            </button>
+          )}
         </div>
       )}
 
-      {!isCompact && isOpen && (
+      {!isCompact && isOpen && tasks.length > 0 && occurrenceItems.length === 0 && (
         <div className="week-event-tasks" onClick={(eventMouse) => eventMouse.stopPropagation()}>
           {tasks.map((task, index) => (
             <div
@@ -165,32 +205,20 @@ export default function EventCard({
               {task.title}
             </div>
           ))}
-
-          {isAddingTask ? (
-            <input
-              className="week-event-task-input"
-              value={draftTaskTitle}
-              placeholder="What needs to get done?"
-              onChange={(eventInput) => setDraftTaskTitle(eventInput.target.value)}
-              onKeyDown={(eventKey) => {
-                if (eventKey.key === 'Enter') {
-                  eventKey.preventDefault();
-                  submitTask();
-                }
-              }}
-              onBlur={submitTask}
-              autoFocus
-            />
-          ) : (
-            <button
-              type="button"
-              className="week-event-task-add"
-              onClick={() => setIsAddingTask(true)}
-            >
-              + Add Task
-            </button>
-          )}
         </div>
+      )}
+
+      {!isTiny && occurrenceItems.length > 0 && (
+        <button
+          type="button"
+          className="week-event-task-add"
+          onClick={(eventMouse) => {
+            eventMouse.stopPropagation();
+            onAddItem?.();
+          }}
+        >
+          + Add item
+        </button>
       )}
     </div>
   );

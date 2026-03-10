@@ -42,8 +42,31 @@ interface DayColumnsProps {
     originalEnd: Date;
   }) => void;
   selectedEventId?: string | null;
-  onEventAddTask?: (eventId: string, title: string) => void;
+  onEventAddItem?: (event: CalendarEvent) => void;
   onEventReorderTasks?: (eventId: string, fromIndex: number, toIndex: number) => void;
+  onOccurrenceToggle?: (
+    event: CalendarEvent,
+    entry: {
+      id: string;
+      title: string;
+      completed: boolean;
+      kind: 'task' | 'item';
+      parentItemId?: string;
+      parentItemTitle?: string;
+    },
+    checked: boolean
+  ) => void;
+  onOccurrenceOpen?: (
+    event: CalendarEvent,
+    entry: {
+      id: string;
+      title: string;
+      completed: boolean;
+      kind: 'task' | 'item';
+      parentItemId?: string;
+      parentItemTitle?: string;
+    }
+  ) => void;
 }
 
 interface DragPreviewState {
@@ -67,8 +90,10 @@ export default function DayColumns({
   onEventMovePreview,
   onEventMoveEnd,
   selectedEventId,
-  onEventAddTask,
-  onEventReorderTasks
+  onEventAddItem,
+  onEventReorderTasks,
+  onOccurrenceToggle,
+  onOccurrenceOpen
 }: DayColumnsProps): JSX.Element {
   const [dragPreview, setDragPreview] = useState<DragPreviewState | null>(null);
   const days = Array.from({ length: 7 }, (_, index) => addDays(startOfWeek, index));
@@ -98,8 +123,10 @@ export default function DayColumns({
             onEventMovePreview={onEventMovePreview}
             onEventMoveEnd={onEventMoveEnd}
             selectedEventId={selectedEventId}
-            onEventAddTask={onEventAddTask}
+            onEventAddItem={onEventAddItem}
             onEventReorderTasks={onEventReorderTasks}
+            onOccurrenceToggle={onOccurrenceToggle}
+            onOccurrenceOpen={onOccurrenceOpen}
             onDragPreviewChange={setDragPreview}
             externalDragPreview={dragPreview}
           />
