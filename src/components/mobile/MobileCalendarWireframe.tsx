@@ -94,16 +94,6 @@ type MobileItem = {
   actions?: Array<{ id: string; title: string; subtask_status?: string | null; subtask_status_id?: string | null }>;
 };
 
-type AttachMode = 'node_only' | 'with_children';
-
-type AttachTreeNode = {
-  id?: string;
-  label?: string;
-  name?: string;
-  title?: string;
-  children?: AttachTreeNode[];
-};
-
 type IndexedList = {
   id: string;
   name: string;
@@ -171,6 +161,15 @@ const sortMobileBlockItems = (
     return a.name.localeCompare(b.name);
   });
 
+const dedupeMobileBlockItems = (items: MobileBlockItem[]): MobileBlockItem[] => {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    if (!item?.id || seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
+  });
+};
+
 export default function MobileCalendarWireframe(): JSX.Element {
   const { user } = useAuth();
   const [view, setView] = useState<'calendar' | 'ai'>('calendar');
@@ -209,11 +208,6 @@ export default function MobileCalendarWireframe(): JSX.Element {
   const [addSheetEnd, setAddSheetEnd] = useState('10:00');
   const [addSheetRecurrence, setAddSheetRecurrence] = useState<AddSheetRecurrence>('none');
   const [addSheetRecurrenceExpanded, setAddSheetRecurrenceExpanded] = useState(false);
-  const [addEventAttachSelection, setAddEventAttachSelection] = useState<Record<string, AttachMode>>({});
-  const [addEventAttachExpandedFocals, setAddEventAttachExpandedFocals] = useState<Record<string, boolean>>({});
-  const [addEventAttachExpandedLists, setAddEventAttachExpandedLists] = useState<Record<string, boolean>>({});
-  const [addEventAttachExpandedItems, setAddEventAttachExpandedItems] = useState<Record<string, boolean>>({});
-  const [addEventAttachSearch, setAddEventAttachSearch] = useState('');
   const [viewedDate, setViewedDate] = useState<Date>(() => new Date());
   const [timelineDraft, setTimelineDraft] = useState<{
     startMin: number;
@@ -234,7 +228,6 @@ export default function MobileCalendarWireframe(): JSX.Element {
   const [itemDrawerCommentsLoading, setItemDrawerCommentsLoading] = useState(false);
   const [itemDrawerCommentDraft, setItemDrawerCommentDraft] = useState('');
   const [itemDrawerCommentSubmitting, setItemDrawerCommentSubmitting] = useState(false);
-  const [calendarAttachTree, setCalendarAttachTree] = useState<AttachTreeNode[]>([]);
   const [taskDrawerSearch, setTaskDrawerSearch] = useState('');
   const [taskDrawerListId, setTaskDrawerListId] = useState<string | null>(null);
   const [taskDrawerPendingKey, setTaskDrawerPendingKey] = useState<string | null>(null);
@@ -399,39 +392,10 @@ export default function MobileCalendarWireframe(): JSX.Element {
   }, [focals, listsByFocal]);
 
   const indexedLists = useMemo<IndexedList[]>(() => {
-    const rootNodes = (calendarAttachTree || []) as AttachTreeNode[];
     const rows: IndexedList[] = [];
-    for (const focalNode of rootNodes) {
-      const focalRaw = typeof focalNode.id === 'string' ? focalNode.id : '';
-      const focalId = focalRaw.startsWith('focal|') ? focalRaw.slice(6) : focalRaw;
-      const focalName = focalNode.label || focalNode.name || focalNode.title || 'Space';
-      const listNodes = (focalNode.children || []) as AttachTreeNode[];
-      for (const listNode of listNodes) {
-        const listRaw = typeof listNode.id === 'string' ? listNode.id : '';
-        const listId = listRaw.startsWith('lane|') ? listRaw.slice(5) : listRaw;
-        if (!listId) continue;
-        const itemNodes = (listNode.children || []) as AttachTreeNode[];
-        rows.push({
-          id: listId,
-          name: listNode.label || listNode.name || listNode.title || 'Untitled list',
-          focalId,
-          focalName: focalName || focalId || 'Space',
-          items: itemNodes
-            .map((itemNode) => {
-              const raw = typeof itemNode.id === 'string' ? itemNode.id : '';
-              const itemId = raw.startsWith('item|') ? raw.slice(5) : raw;
-              if (!itemId) return null;
-              return { id: itemId, title: itemNode.label || itemNode.name || itemNode.title || 'Untitled' };
-            })
-            .filter(Boolean) as Array<{ id: string; title: string }>
-        });
-      }
-    }
-    const seenListIds = new Set(rows.map((row) => row.id));
     Object.entries(listsByFocal).forEach(([focalId, lists]) => {
       const focalName = focals.find((entry) => entry.id === focalId)?.name || 'Space';
       lists.forEach((list) => {
-        if (seenListIds.has(list.id)) return;
         rows.push({
           id: list.id,
           name: list.name,
@@ -442,7 +406,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
       });
     });
     return rows;
-  }, [calendarAttachTree, focals, itemsByList, listsByFocal]);
+  }, [focals, itemsByList, listsByFocal]);
 
   const taskSearchQuery = taskDrawerSearch.trim().toLowerCase();
   const taskHasExactMatch = useMemo(() => {
@@ -526,49 +490,6 @@ export default function MobileCalendarWireframe(): JSX.Element {
   }, [indexedLists]);
   const addSubitemParentValue =
     addSheet.type === 'subitem' && addSheet.listId && addSheet.itemId ? `${addSheet.listId}:${addSheet.itemId}` : '';
-  const addEventAttachRows = useMemo(() => {
-    const query = addEventAttachSearch.trim().toLowerCase();
-    const rows = (calendarAttachTree || []).map((focal: any) => ({
-      focalId: focal.id,
-      focalName: focal.label || focal.name || 'Space',
-      lists: (focal.children || []).map((list: any) => ({
-        listId: list.id,
-        listName: list.label || list.name || 'List',
-        items: (list.children || []).map((item: any) => ({
-          itemId: item.id,
-          itemName: item.label || item.title || item.name || 'Item',
-          subtasks: (item.children || []).map((action: any) => ({
-            actionId: action.id,
-            actionName: action.label || action.title || action.name || 'Task'
-          }))
-        }))
-      }))
-    }));
-    if (!query) return rows;
-    return rows
-      .map((focal) => {
-        const focalMatch = focal.focalName.toLowerCase().includes(query);
-        const lists = focal.lists
-          .map((list: any) => {
-            const listMatch = list.listName.toLowerCase().includes(query);
-            const items = list.items
-              .map((item: any) => {
-                const itemMatch = item.itemName.toLowerCase().includes(query);
-                const subtasks = item.subtasks.filter((subtask: any) => subtask.actionName.toLowerCase().includes(query));
-                if (focalMatch || listMatch || itemMatch) return item;
-                if (subtasks.length > 0) return { ...item, subtasks };
-                return null;
-              })
-              .filter(Boolean) as typeof list.items;
-            if (focalMatch || listMatch || items.length > 0) return { ...list, items };
-            return null;
-          })
-          .filter(Boolean) as typeof focal.lists;
-        if (focalMatch || lists.length > 0) return { ...focal, lists };
-        return null;
-      })
-      .filter(Boolean) as typeof rows;
-  }, [addEventAttachSearch, calendarAttachTree]);
   const addItemColumnFields = useMemo(
     () => addItemFields.filter((field: any) => field?.type !== 'status' && !field?.is_primary),
     [addItemFields]
@@ -787,20 +708,6 @@ export default function MobileCalendarWireframe(): JSX.Element {
     }
   };
 
-  const loadCalendarAttachTree = async (): Promise<void> => {
-    if (!user?.id) {
-      setCalendarAttachTree([]);
-      return;
-    }
-    try {
-      const tree = await calendarService.getLinkableFocalTree(user.id);
-      setCalendarAttachTree((tree || []) as AttachTreeNode[]);
-    } catch (error) {
-      console.error('Mobile calendar failed to load attach tree:', error);
-      setCalendarAttachTree([]);
-    }
-  };
-
   const loadListItems = async (listId: string, forceReload = false): Promise<void> => {
     if (!listId || (!forceReload && itemsByList[listId])) return;
     try {
@@ -969,11 +876,6 @@ export default function MobileCalendarWireframe(): JSX.Element {
     if (activeNav !== 'calendar') return;
     void loadCalendarBlocks();
   }, [activeNav, user?.id, viewedDate]);
-
-  useEffect(() => {
-    if (activeNav !== 'calendar') return;
-    void loadCalendarAttachTree();
-  }, [activeNav, user?.id]);
 
   useEffect(() => {
     const loadItemDrawerData = async (): Promise<void> => {
@@ -1408,11 +1310,6 @@ export default function MobileCalendarWireframe(): JSX.Element {
     setAddSheetEnd('10:00');
     setAddSheetRecurrence('none');
     setAddSheetRecurrenceExpanded(false);
-    setAddEventAttachSelection({});
-    setAddEventAttachExpandedFocals({});
-    setAddEventAttachExpandedLists({});
-    setAddEventAttachExpandedItems({});
-    setAddEventAttachSearch('');
     setAddSheet({
       ...next,
       focalId: next.focalId ?? mobileScope.focalId ?? focals[0]?.id ?? null,
@@ -1966,6 +1863,110 @@ export default function MobileCalendarWireframe(): JSX.Element {
     openAddSheet({ open: true, type: 'event' });
   };
 
+  const renderBlockItemRows = (blockId: string, items: MobileBlockItem[], emptyLabel = 'No attached items yet.') => {
+    const orderedItems = dedupeMobileBlockItems(sortMobileBlockItems(items, completed));
+    if (!orderedItems.length) {
+      return <div className="mobile-drawer-empty">{emptyLabel}</div>;
+    }
+
+    return (
+      <div className="mobile-drawer-linked-list actionable">
+        {orderedItems.map((item) => (
+          <div key={item.id} className="mobile-item-row">
+            <button
+              type="button"
+              className={`mobile-item-check ${completed[item.id] ? 'done' : 'todo'}`.trim()}
+              onClick={(event) => {
+                event.stopPropagation();
+                toggleComplete(item.id);
+              }}
+              aria-label={completed[item.id] ? 'Mark not done' : 'Mark done'}
+            >
+              {completed[item.id] ? <CheckCircle2 size={20} /> : <span className="mobile-status-ring" />}
+            </button>
+            <button
+              type="button"
+              className="mobile-item-text"
+              onClick={(event) => {
+                event.stopPropagation();
+                openItemDrawer(blockId, item.id);
+              }}
+            >
+              <div className="mobile-item-main">
+                <span className="mobile-item-label">{item.name}</span>
+              </div>
+            </button>
+            <button
+              type="button"
+              className="mobile-item-subtask-toggle"
+              aria-label="Add subtask"
+              onClick={(event) => {
+                event.stopPropagation();
+                toggleSubtaskComposer(item.id);
+              }}
+            >
+              +
+            </button>
+            {item.subItems && item.subItems.length > 0 && (
+              <div className="mobile-subitems">
+                {item.subItems.map((subItem) => (
+                  <div key={subItem.id} className="mobile-item-subrow">
+                    <button
+                      type="button"
+                      className={`mobile-item-check sub ${completed[subItem.id] ? 'done' : 'todo'}`.trim()}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        toggleComplete(subItem.id);
+                      }}
+                      aria-label={completed[subItem.id] ? 'Mark subtask not done' : 'Mark subtask done'}
+                    >
+                      {completed[subItem.id] ? <CheckCircle2 size={17} /> : <span className="mobile-status-ring small" />}
+                    </button>
+                    <button
+                      type="button"
+                      className="mobile-item-subtext"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openItemDrawer(blockId, item.id);
+                      }}
+                    >
+                      <div className="mobile-item-sub">↳ {subItem.name}</div>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {subtaskComposerByItem[item.id] && (
+              <div className="mobile-item-subtask-composer">
+                <input
+                  type="text"
+                  value={subtaskDraftByItem[item.id] || ''}
+                  onClick={(event) => event.stopPropagation()}
+                  onChange={(event) =>
+                    setSubtaskDraftByItem((prev) => ({
+                      ...prev,
+                      [item.id]: event.target.value
+                    }))
+                  }
+                  placeholder="Add subtask"
+                />
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void createSubtaskFromBlock(blockId, item.id);
+                  }}
+                >
+                  Add
+                </button>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    );
+  };
+
   const getContextualAddSpec = (): { label: string; icon: any } => {
     if (activeNav === 'calendar') return { label: 'Time Block', icon: CalendarPlus };
     if (activeNav === 'docs') return { label: 'Note +', icon: FileText };
@@ -2213,7 +2214,6 @@ export default function MobileCalendarWireframe(): JSX.Element {
         if (end <= base) {
           end.setTime(base.getTime() + 60 * 60 * 1000);
         }
-        const attachTags = Object.entries(addEventAttachSelection).map(([id, mode]) => `attach:${id}:${mode}`);
         const createdEvent = await calendarService.upsertTimeBlock(user.id, {
           title: name,
           description: addSheetDescription.trim(),
@@ -2230,13 +2230,8 @@ export default function MobileCalendarWireframe(): JSX.Element {
                 },
           includeWeekends: true,
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/Denver',
-          tags: attachTags
+          tags: []
         });
-        try {
-          await calendarService.syncTimeBlockLinks(user.id, createdEvent.id, createdEvent.tags || [], createdEvent);
-        } catch (linkError) {
-          console.error('Failed to link selected items/subtasks to new event:', linkError);
-        }
 
         const dayStart = new Date(viewedDate);
         dayStart.setHours(0, 0, 0, 0);
@@ -2265,6 +2260,15 @@ export default function MobileCalendarWireframe(): JSX.Element {
         }
 
         await loadCalendarBlocks();
+        closeAddSheet();
+        setAddSheetName('');
+        setAddSheetDescription('');
+        setAddItemFields([]);
+        setAddItemFieldDrafts({});
+        setAddItemStatuses([]);
+        setAddItemStatusValue('');
+        openAddTaskDrawer(createdEvent.id);
+        return;
       } else if (addSheet.type === 'doc') {
         const body = addSheetDescription.trim() || addSheetName.trim();
         const title = addSheetName.trim() || body.split('\n')[0]?.trim() || 'Untitled note';
@@ -2284,11 +2288,6 @@ export default function MobileCalendarWireframe(): JSX.Element {
       setAddItemFieldDrafts({});
       setAddItemStatuses([]);
       setAddItemStatusValue('');
-      setAddEventAttachSelection({});
-      setAddEventAttachExpandedFocals({});
-      setAddEventAttachExpandedLists({});
-      setAddEventAttachExpandedItems({});
-      setAddEventAttachSearch('');
     } catch (error) {
       console.error('Mobile add sheet submit failed:', error);
       // keep the sheet open so user can retry
@@ -3975,134 +3974,9 @@ export default function MobileCalendarWireframe(): JSX.Element {
                     />
                   </label>
 
-                  <div className="mobile-event-attach-shell">
-                    <div className="mobile-event-attach-head">
-                      <span>Add items</span>
-                      <input
-                        type="text"
-                        value={addEventAttachSearch}
-                        onChange={(event) => setAddEventAttachSearch(event.target.value)}
-                        placeholder="Search"
-                      />
-                    </div>
-                    <div className="mobile-event-attach-tree">
-                      {addEventAttachRows.map((focal: any) => {
-                        const focalExpanded = addEventAttachExpandedFocals[focal.focalId] ?? true;
-                        return (
-                          <div key={focal.focalId} className="mobile-event-attach-focal">
-                            <button
-                              type="button"
-                              className={`mobile-task-drawer-tree-toggle ${focalExpanded ? 'expanded' : ''}`}
-                              onClick={() =>
-                                setAddEventAttachExpandedFocals((prev) => ({ ...prev, [focal.focalId]: !focalExpanded }))
-                              }
-                            >
-                              <span>{focal.focalName}</span>
-                              <ChevronDown size={14} />
-                            </button>
-                            {focalExpanded &&
-                              focal.lists.map((list: any) => {
-                                const listExpanded = addEventAttachExpandedLists[list.listId] ?? false;
-                                return (
-                                  <div key={list.listId} className="mobile-task-drawer-list">
-                                    <button
-                                      type="button"
-                                      className={`mobile-task-drawer-tree-toggle list ${listExpanded ? 'expanded' : ''}`}
-                                      onClick={() =>
-                                        setAddEventAttachExpandedLists((prev) => ({
-                                          ...prev,
-                                          [list.listId]: !listExpanded
-                                        }))
-                                      }
-                                    >
-                                      <span>{list.listName}</span>
-                                      <ChevronDown size={14} />
-                                    </button>
-                                    {listExpanded &&
-                                      list.items.map((item: any) => {
-                                        const selectedMode = addEventAttachSelection[item.itemId] || null;
-                                        const itemExpanded = addEventAttachExpandedItems[item.itemId] ?? false;
-                                        return (
-                                          <div key={item.itemId} className="mobile-event-attach-item">
-                                            <div className="mobile-event-attach-item-row">
-                                              <button
-                                                type="button"
-                                                className={`mobile-event-attach-add ${selectedMode ? 'added' : ''}`}
-                                                onClick={() =>
-                                                  setAddEventAttachSelection((prev) => {
-                                                    const next = { ...prev };
-                                                    if (next[item.itemId]) delete next[item.itemId];
-                                                    else next[item.itemId] = 'node_only';
-                                                    return next;
-                                                  })
-                                                }
-                                              >
-                                                {selectedMode ? 'Added' : 'Add'}
-                                              </button>
-                                              <span>{item.itemName}</span>
-                                              <button
-                                                type="button"
-                                                className={`mobile-event-attach-subtoggle ${selectedMode === 'with_children' ? 'active' : ''}`}
-                                                onClick={() =>
-                                                  setAddEventAttachSelection((prev) => ({
-                                                    ...prev,
-                                                    [item.itemId]:
-                                                      prev[item.itemId] === 'with_children' ? 'node_only' : 'with_children'
-                                                  }))
-                                                }
-                                              >
-                                                Subtasks
-                                              </button>
-                                              <button
-                                                type="button"
-                                                className="mobile-event-attach-expand"
-                                                onClick={() =>
-                                                  setAddEventAttachExpandedItems((prev) => ({
-                                                    ...prev,
-                                                    [item.itemId]: !itemExpanded
-                                                  }))
-                                                }
-                                              >
-                                                <ChevronDown size={12} style={{ transform: itemExpanded ? 'rotate(180deg)' : 'none' }} />
-                                              </button>
-                                            </div>
-                                            {itemExpanded && item.subtasks.length > 0 && (
-                                              <div className="mobile-event-attach-subtasks">
-                                                {item.subtasks.map((subtask: any) => {
-                                                  const actionMode = addEventAttachSelection[subtask.actionId] || null;
-                                                  return (
-                                                    <div key={subtask.actionId} className="mobile-event-attach-subtask-row">
-                                                      <button
-                                                        type="button"
-                                                        className={`mobile-event-attach-add ${actionMode ? 'added' : ''}`}
-                                                        onClick={() =>
-                                                          setAddEventAttachSelection((prev) => {
-                                                            const next = { ...prev };
-                                                            if (next[subtask.actionId]) delete next[subtask.actionId];
-                                                            else next[subtask.actionId] = 'node_only';
-                                                            return next;
-                                                          })
-                                                        }
-                                                      >
-                                                        {actionMode ? 'Added' : 'Add'}
-                                                      </button>
-                                                      <span>{subtask.actionName}</span>
-                                                    </div>
-                                                  );
-                                                })}
-                                              </div>
-                                            )}
-                                          </div>
-                                        );
-                                      })}
-                                  </div>
-                                );
-                              })}
-                          </div>
-                        );
-                      })}
-                      {addEventAttachRows.length === 0 && <div className="mobile-task-drawer-empty">No matching items</div>}
-                    </div>
+                  <div className="mobile-event-flow-note">
+                    <strong>Add items after you create the block</strong>
+                    <span>The block opens straight into the same add-items drawer used everywhere else, so item actions stay consistent.</span>
                   </div>
                 </>
               )}
@@ -4268,27 +4142,17 @@ export default function MobileCalendarWireframe(): JSX.Element {
                   {activeDrawerBlock?.description?.trim() || 'No description yet.'}
                 </p>
                 <div className="mobile-drawer-linked">
-                  <h4>Attached items</h4>
-                  {activeDrawerBlock?.items?.length ? (
-                    <div className="mobile-drawer-linked-list">
-                      {sortMobileBlockItems(activeDrawerBlock.items, completed).map((item) => (
-                        <div key={item.id} className="mobile-drawer-linked-item">
-                          <div className="mobile-drawer-linked-title">{item.name}</div>
-                          {!!item.subItems?.length && (
-                            <div className="mobile-drawer-linked-subtasks">
-                              {item.subItems.map((subItem) => (
-                                <div key={subItem.id} className="mobile-drawer-linked-subitem">
-                                  ↳ {subItem.name}
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="mobile-drawer-empty">No attached items yet.</div>
-                  )}
+                  <div className="mobile-drawer-linked-head">
+                    <h4>Attached items</h4>
+                    <button
+                      type="button"
+                      className="mobile-task-drawer-create"
+                      onClick={() => drawer.blockId && openAddTaskDrawer(drawer.blockId)}
+                    >
+                      Add items
+                    </button>
+                  </div>
+                  {drawer.blockId && renderBlockItemRows(drawer.blockId, activeDrawerBlock?.items || [])}
                 </div>
               </>
             )}
@@ -4361,114 +4225,6 @@ export default function MobileCalendarWireframe(): JSX.Element {
                     ))}
                   </div>
                 )}
-
-                <div className="mobile-drawer-edit-linked">
-                  <div className="mobile-drawer-edit-linked-head">
-                    <h4>Attached items</h4>
-                    <button
-                      type="button"
-                      className="mobile-task-drawer-create"
-                      onClick={() => drawer.blockId && openAddTaskDrawer(drawer.blockId)}
-                    >
-                      Add items
-                    </button>
-                  </div>
-                  {activeDrawerBlock?.items?.length ? (
-                    <div className="mobile-drawer-edit-linked-list">
-                      {sortMobileBlockItems(activeDrawerBlock.items, completed).map((item) => (
-                          <div key={item.id} className="mobile-item-row">
-                            <button
-                              type="button"
-                              className={`mobile-item-check ${completed[item.id] ? 'done' : 'todo'}`.trim()}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                toggleComplete(item.id);
-                              }}
-                              aria-label={completed[item.id] ? 'Mark not done' : 'Mark done'}
-                            >
-                              {completed[item.id] ? <CheckCircle2 size={20} /> : <span className="mobile-status-ring" />}
-                            </button>
-                            <button
-                              type="button"
-                              className="mobile-item-text"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                if (drawer.blockId) openItemDrawer(drawer.blockId, item.id);
-                              }}
-                            >
-                              <div className="mobile-item-main">
-                                <span className="mobile-item-label">{item.name}</span>
-                              </div>
-                            </button>
-                            <button
-                              type="button"
-                              className="mobile-item-subtask-toggle"
-                              aria-label="Add subtask"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                toggleSubtaskComposer(item.id);
-                              }}
-                            >
-                              +
-                            </button>
-                            {item.subItems && item.subItems.length > 0 && (
-                              <div className="mobile-subitems">
-                                {item.subItems.map((subItem) => (
-                                  <div key={subItem.id} className="mobile-item-subrow">
-                                    <button
-                                      type="button"
-                                      className={`mobile-item-check sub ${completed[subItem.id] ? 'done' : 'todo'}`.trim()}
-                                      onClick={(event) => {
-                                        event.stopPropagation();
-                                        toggleComplete(subItem.id);
-                                      }}
-                                      aria-label={completed[subItem.id] ? 'Mark subtask not done' : 'Mark subtask done'}
-                                    >
-                                      {completed[subItem.id] ? <CheckCircle2 size={17} /> : <span className="mobile-status-ring small" />}
-                                    </button>
-                                    <button
-                                      type="button"
-                                      className="mobile-item-subtext"
-                                      onClick={(event) => {
-                                        event.stopPropagation();
-                                        if (drawer.blockId) openItemDrawer(drawer.blockId, item.id);
-                                      }}
-                                    >
-                                      <div className="mobile-item-sub">↳ {subItem.name}</div>
-                                    </button>
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                            {subtaskComposerByItem[item.id] && drawer.blockId && (
-                              <div className="mobile-item-subtask-composer">
-                                <input
-                                  type="text"
-                                  value={subtaskDraftByItem[item.id] || ''}
-                                  onClick={(event) => event.stopPropagation()}
-                                  onChange={(event) =>
-                                    setSubtaskDraftByItem((prev) => ({ ...prev, [item.id]: event.target.value }))
-                                  }
-                                  placeholder="Add subtask"
-                                />
-                                <button
-                                  type="button"
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    void createSubtaskFromBlock(drawer.blockId as string, item.id);
-                                  }}
-                                >
-                                  Add
-                                </button>
-                              </div>
-                            )}
-                          </div>
-                        ))}
-                    </div>
-                  ) : (
-                    <div className="mobile-drawer-empty">No attached items yet.</div>
-                  )}
-                </div>
 
                 <div className="mobile-drawer-edit-actions">
                   <button
