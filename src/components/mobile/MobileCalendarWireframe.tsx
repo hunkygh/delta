@@ -77,7 +77,7 @@ type DrawerState = {
 
 type AddSheetState = {
   open: boolean;
-  type: 'space' | 'list' | 'item' | 'subitem' | 'event' | 'doc';
+  type: 'space' | 'list' | 'item' | 'subitem' | 'event' | 'doc' | 'voice';
   focalId?: string | null;
   listId?: string | null;
   itemId?: string | null;
@@ -124,6 +124,18 @@ type MobileChatSourceOption = {
   label: string;
   context: Record<string, string>;
 };
+
+const MOBILE_UNIVERSAL_ADD_TYPES: Array<{
+  key: AddSheetState['type'];
+  label: string;
+  shortLabel: string;
+}> = [
+  { key: 'item', label: 'Item', shortLabel: 'Item' },
+  { key: 'subitem', label: 'Task', shortLabel: 'Task' },
+  { key: 'event', label: 'Time Block', shortLabel: 'Block' },
+  { key: 'doc', label: 'Note', shortLabel: 'Note' },
+  { key: 'voice', label: 'Voice', shortLabel: 'Voice' }
+];
 
 type MobileStatusOption = {
   id?: string;
@@ -617,7 +629,8 @@ export default function MobileCalendarWireframe(): JSX.Element {
     (addSheet.type === 'doc' ? !!(addSheetName.trim() || addSheetDescription.trim()) : !!addSheetName.trim()) &&
     (addSheet.type !== 'list' || !!addSheet.focalId) &&
     (addSheet.type !== 'item' || !!addSheet.listId) &&
-    (addSheet.type !== 'subitem' || (!!addSheet.listId && !!addSheet.itemId));
+    (addSheet.type !== 'subitem' || (!!addSheet.listId && !!addSheet.itemId)) &&
+    addSheet.type !== 'voice';
 
   const buildMobileChatContext = (): Record<string, string> => {
     if (mobileChatSourceContext) {
@@ -1490,6 +1503,31 @@ export default function MobileCalendarWireframe(): JSX.Element {
     setCaptureMode('none');
   };
 
+  const switchUniversalAddType = (nextType: AddSheetState['type']): void => {
+    if (nextType === 'voice') {
+      closeAddSheet();
+      openUnifiedCapture('voice');
+      return;
+    }
+    setAddSheetName('');
+    setAddSheetDescription('');
+    setAddItemFields([]);
+    setAddItemFieldDrafts({});
+    setAddItemStatuses([]);
+    setAddItemStatusValue('');
+    setAddSheet((prev) => ({
+      ...prev,
+      type: nextType,
+      listId:
+        nextType === 'item'
+          ? prev.listId || mobileScope.listId || null
+          : nextType === 'subitem'
+            ? prev.listId || mobileScope.listId || null
+            : prev.listId,
+      itemId: nextType === 'subitem' ? prev.itemId || null : null
+    }));
+  };
+
   const closeAddSheet = (): void => {
     setAddSheetClosing(true);
     window.setTimeout(() => {
@@ -2029,9 +2067,36 @@ export default function MobileCalendarWireframe(): JSX.Element {
 
   const inferListForBlock = (blockId: string): string | null => {
     const block = blocks.find((entry) => entry.id === blockId);
-    const existing = block?.items.find((item) => item.listId)?.listId || null;
-    if (existing) return existing;
-    return indexedLists[0]?.id || null;
+    const listIds = [...new Set((block?.items || []).map((item) => item.listId).filter(Boolean))] as string[];
+    if (listIds.length === 1) return listIds[0];
+    if (taskDrawerListId && listIds.includes(taskDrawerListId)) return taskDrawerListId;
+    if (mobileScope.listId && listIds.includes(mobileScope.listId)) return mobileScope.listId;
+    return taskDrawerListId || mobileScope.listId || indexedLists[0]?.id || null;
+  };
+
+  const resolveListForBlock = async (blockId: string): Promise<string | null> => {
+    const inferred = inferListForBlock(blockId);
+    const block = blocks.find((entry) => entry.id === blockId);
+    const listIds = [...new Set((block?.items || []).map((item) => item.listId).filter(Boolean))] as string[];
+    if (listIds.length === 1) return listIds[0];
+    if (inferred && listIds.length > 1 && listIds.includes(inferred)) return inferred;
+    try {
+      const rules = await calendarService.getTimeBlockContentRules(blockId);
+      const viewedDateWeekdayKey =
+        calendarService.getWeekdayKeyForOccurrence(
+          new Date(viewedDate.getFullYear(), viewedDate.getMonth(), viewedDate.getDate(), 12, 0, 0, 0).toISOString(),
+          Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/Denver'
+        ) || 'mon';
+      const matchingWeekdayRule = (rules || []).find(
+        (rule: any) => rule.selector_type === 'weekday' && rule.selector_value === viewedDateWeekdayKey && rule.list_id
+      );
+      if (matchingWeekdayRule?.list_id) return matchingWeekdayRule.list_id;
+      const matchingAllRule = (rules || []).find((rule: any) => rule.selector_type === 'all' && rule.list_id);
+      if (matchingAllRule?.list_id) return matchingAllRule.list_id;
+    } catch (error) {
+      console.error('Failed resolving inferred block list:', error);
+    }
+    return inferred;
   };
 
   const upsertBlockContentItems = async (blockId: string, listId: string, itemIds: string[]): Promise<void> => {
@@ -2154,6 +2219,12 @@ export default function MobileCalendarWireframe(): JSX.Element {
     setTaskDrawerExpandedLists({});
     setDrawer({ open: true, mode: 'addTask', blockId });
     void ensureTaskDrawerIndexData();
+    void (async () => {
+      const resolvedListId = await resolveListForBlock(blockId);
+      if (resolvedListId) {
+        setTaskDrawerListId(resolvedListId);
+      }
+    })();
   };
 
   const attachExistingItemToBlock = async (blockId: string, item: { id: string; title: string; listId: string }): Promise<void> => {
@@ -2199,7 +2270,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
     let chosenListId = taskDrawerListId;
     try {
       if (!chosenListId) {
-        chosenListId = indexedLists[0]?.id || null;
+        chosenListId = await resolveListForBlock(blockId);
         if (chosenListId) {
           setTaskDrawerListId(chosenListId);
         }
@@ -2395,25 +2466,17 @@ export default function MobileCalendarWireframe(): JSX.Element {
     );
   };
 
-  const getContextualAddSpec = (): { label: string; icon: any } => {
-    if (activeNav === 'calendar') return { label: 'Time Block', icon: CalendarPlus };
-    if (activeNav === 'docs') return { label: 'Note +', icon: FileText };
-    if (mobileScope.level === 'focals') return { label: 'Space +', icon: Mountains };
-    if (mobileScope.level === 'focal') return { label: 'List +', icon: Folder };
-    return { label: 'Item +', icon: CheckSquare };
-  };
+  const getContextualAddSpec = (): { label: string; icon: any } => ({ label: 'Create', icon: Plus });
 
-  const quickAddByContext = async (): Promise<void> => {
+  const openUniversalQuickAdd = (): void => {
     setQuickPanelOpen(false);
-    if (activeNav === 'calendar') {
-      quickAddCalendarEvent();
-      return;
-    }
-    if (activeNav === 'docs') {
-      openAddSheet({ open: true, type: 'doc' });
-      return;
-    }
-    await handleScopedAdd();
+    setQuickPanelMounted(false);
+    openAddSheet({
+      open: true,
+      type: activeNav === 'calendar' ? 'event' : activeNav === 'docs' ? 'doc' : 'item',
+      focalId: mobileScope.focalId,
+      listId: mobileScope.listId
+    });
   };
 
   const openFocal = (focalId: string): void => {
@@ -2468,82 +2531,6 @@ export default function MobileCalendarWireframe(): JSX.Element {
     });
   };
 
-  const handleStatusToggle = async (itemId: string, entityType: 'item' | 'action' = 'item'): Promise<void> => {
-    if (!mobileScope.listId) return;
-    const listId = mobileScope.listId;
-    const statusSet = entityType === 'item' ? (listStatusesByList[listId] || []) : (subtaskStatusesByList[listId] || []);
-    if (statusSet.length === 0) {
-      return;
-    }
-
-    const getCurrentKey = (): string | null => {
-      const listItems = itemsByList[listId] || [];
-      if (entityType === 'item') {
-        const row = listItems.find((entry) => entry.id === itemId);
-        if (!row) return null;
-        const byId = row.status_id ? statusSet.find((entry) => entry.id === row.status_id) : null;
-        return byId?.key || row.status || null;
-      }
-      for (const row of listItems) {
-        const action = (row.actions || []).find((entry) => entry.id === itemId);
-        if (!action) continue;
-        const byId = action.subtask_status_id ? statusSet.find((entry) => entry.id === action.subtask_status_id) : null;
-        return byId?.key || action.subtask_status || null;
-      }
-      return null;
-    };
-
-    const currentKey = getCurrentKey();
-    const currentIndex = Math.max(0, statusSet.findIndex((entry) => entry.key === currentKey));
-    const nextStatus = statusSet[(currentIndex + 1) % statusSet.length] || statusSet[0];
-
-    setItemsByList((prev) => {
-      const listItems = prev[listId] || [];
-      const nextItems = listItems.map((row) => {
-        if (entityType === 'item' && row.id === itemId) {
-          return {
-            ...row,
-            status: nextStatus.key,
-            status_id: nextStatus.id || null
-          };
-        }
-        if (entityType === 'action' && (row.actions || []).some((entry) => entry.id === itemId)) {
-          return {
-            ...row,
-            actions: (row.actions || []).map((entry) =>
-              entry.id === itemId
-                ? {
-                    ...entry,
-                    subtask_status: nextStatus.key,
-                    subtask_status_id: nextStatus.id || null
-                  }
-                : entry
-            )
-          };
-        }
-        return row;
-      });
-      return { ...prev, [listId]: nextItems };
-    });
-
-    try {
-      if (entityType === 'item') {
-        await focalBoardService.updateItem(itemId, {
-          status: nextStatus.key,
-          status_id: nextStatus.id || null
-        });
-      } else {
-        await focalBoardService.updateAction(itemId, {
-          subtask_status: nextStatus.key,
-          subtask_status_id: nextStatus.id || null
-        });
-      }
-    } catch (error) {
-      console.error('Failed updating status from mobile list view:', error);
-      await loadListItems(listId, true);
-    }
-  };
-
   const openItemDrawerForItem = (itemId: string): void => {
     setItemDrawerPanel('details');
     setItemDrawerCommentDraft('');
@@ -2557,8 +2544,13 @@ export default function MobileCalendarWireframe(): JSX.Element {
 
   const submitAddSheet = async (): Promise<void> => {
     if (!user?.id) return;
+    if (addSheet.type === 'voice') {
+      closeAddSheet();
+      openUnifiedCapture('voice');
+      return;
+    }
     const name = addSheetName.trim();
-    if (!name) return;
+    if (addSheet.type === 'doc' ? !(name || addSheetDescription.trim()) : !name) return;
 
     try {
       if (addSheet.type === 'space') {
@@ -3377,7 +3369,17 @@ export default function MobileCalendarWireframe(): JSX.Element {
                   <button
                     type="button"
                     className={`mobile-item-check ${isDashedStatus(itemStatusEntry) ? 'todo' : 'done'}`.trim()}
-                    onClick={() => void handleStatusToggle(item.id, 'item')}
+                    onClick={() =>
+                      void openStatusChangeFlow({
+                        entityType: 'item',
+                        listId: mobileScope.listId,
+                        targetId: item.id,
+                        parentItemId: item.id,
+                        title: item.title,
+                        currentStatusKey: itemStatusEntry?.key || item.status || null,
+                        currentStatusLabel: itemStatusEntry?.name || 'No status'
+                      })
+                    }
                     aria-label="Change status"
                   >
                     {isDashedStatus(itemStatusEntry) ? (
@@ -3417,7 +3419,17 @@ export default function MobileCalendarWireframe(): JSX.Element {
                         <button
                           type="button"
                           className={`mobile-item-check sub ${actionDashed ? 'todo' : 'done'}`.trim()}
-                          onClick={() => void handleStatusToggle(action.id, 'action')}
+                          onClick={() =>
+                            void openStatusChangeFlow({
+                              entityType: 'action',
+                              listId: mobileScope.listId,
+                              targetId: action.id,
+                              parentItemId: item.id,
+                              title: action.title,
+                              currentStatusKey: actionStatusEntry?.key || action.subtask_status || null,
+                              currentStatusLabel: actionStatusEntry?.name || 'No status'
+                            })
+                          }
                           aria-label="Change status"
                         >
                           {actionDashed ? (
@@ -3924,7 +3936,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                   const contextualAdd = getContextualAddSpec();
                   const ContextIcon = contextualAdd.icon;
                   return (
-                    <button type="button" onClick={() => void quickAddByContext()}>
+                    <button type="button" onClick={openUniversalQuickAdd}>
                       <ContextIcon size={16} />
                       <span>{contextualAdd.label}</span>
                     </button>
@@ -4026,12 +4038,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                   setCaptureMode('none');
                   return;
                 }
-                if (quickPanelOpen) {
-                  setQuickPanelOpen(false);
-                  return;
-                }
-                setQuickPanelMounted(true);
-                window.requestAnimationFrame(() => setQuickPanelOpen(true));
+                openUniversalQuickAdd();
               }}
               aria-label="Quick add"
             >
@@ -4200,13 +4207,22 @@ export default function MobileCalendarWireframe(): JSX.Element {
               onPointerCancel={onAddSheetPointerEnd}
             />
             <div className="mobile-add-sheet-head">
-              {addSheet.type === 'item' || addSheet.type === 'event' || addSheet.type === 'subitem' ? (
+              {addSheet.type === 'item' || addSheet.type === 'event' || addSheet.type === 'subitem' || addSheet.type === 'voice' ? (
                 <input
                   ref={addSheetNameRef}
                   className="mobile-add-sheet-title-input"
                   value={addSheetName}
                   onChange={(event) => setAddSheetName(event.target.value)}
-                  placeholder="Name"
+                  placeholder={
+                    addSheet.type === 'item'
+                      ? 'New item'
+                      : addSheet.type === 'subitem'
+                        ? 'New task'
+                        : addSheet.type === 'event'
+                          ? 'New time block'
+                          : 'Voice capture'
+                  }
+                  readOnly={addSheet.type === 'voice'}
                 />
               ) : (
                 <strong>
@@ -4230,6 +4246,21 @@ export default function MobileCalendarWireframe(): JSX.Element {
               </button>
             </div>
             <div className={`mobile-add-sheet-body ${addSheet.type === 'event' ? 'event-editor' : ''} ${addSheet.type === 'item' ? 'item-editor' : ''}`.trim()}>
+              {(addSheet.type === 'item' || addSheet.type === 'subitem' || addSheet.type === 'event' || addSheet.type === 'doc' || addSheet.type === 'voice') && (
+                <div className="mobile-add-type-switch" role="tablist" aria-label="Create type">
+                  {MOBILE_UNIVERSAL_ADD_TYPES.map((option) => (
+                    <button
+                      key={option.key}
+                      type="button"
+                      className={addSheet.type === option.key ? 'active' : ''}
+                      onClick={() => switchUniversalAddType(option.key)}
+                    >
+                      {option.shortLabel}
+                    </button>
+                  ))}
+                </div>
+              )}
+
               {(addSheet.type === 'list') && (
                 <label className="mobile-add-field">
                   <span>Space</span>
@@ -4293,6 +4324,30 @@ export default function MobileCalendarWireframe(): JSX.Element {
 
               {addSheet.type === 'item' && (
                 <>
+                  <label className="mobile-add-field">
+                    <span>List</span>
+                    <select
+                      value={addSheet.listId || ''}
+                      onChange={(event) => {
+                        const nextListId = event.target.value || null;
+                        const owningFocal =
+                          Object.entries(listsByFocal).find(([, lists]) => lists.some((list) => list.id === nextListId))?.[0] || null;
+                        setAddSheet((prev) => ({
+                          ...prev,
+                          listId: nextListId,
+                          focalId: owningFocal
+                        }));
+                      }}
+                    >
+                      <option value="">Select list</option>
+                      {indexedLists.map((list) => (
+                        <option key={list.id} value={list.id}>
+                          {list.focalName} / {list.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
                   <label className="mobile-add-field mobile-item-description-field">
                     <textarea
                       value={addSheetDescription}
@@ -4391,6 +4446,16 @@ export default function MobileCalendarWireframe(): JSX.Element {
                     rows={4}
                   />
                 </label>
+              )}
+
+              {addSheet.type === 'voice' && (
+                <div className="mobile-universal-voice-card">
+                  <strong>Voice capture</strong>
+                  <span>Jump straight into voice capture and save the note from the same quick-create path.</span>
+                  <button type="button" onClick={() => switchUniversalAddType('voice')}>
+                    Start voice capture
+                  </button>
+                </div>
               )}
 
               {addSheet.type === 'event' && (

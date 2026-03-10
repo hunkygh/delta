@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import type { CustomRecurrenceConfig, Event, EventTask, RecurrenceRule } from '../types/Event';
 import Button from './Button';
+import StatusChangeDialog, { type StatusDialogOption } from './StatusChangeDialog';
 import WeekCalendar from './calendar/WeekCalendar';
 import EventDrawer from './calendar/EventDrawer';
 import type { CalendarEvent } from './calendar/WeekCalendar';
@@ -99,6 +100,20 @@ interface OccurrenceEntry {
   kind: 'task' | 'item';
   parentItemId?: string;
   parentItemTitle?: string;
+}
+
+interface CalendarStatusDialogState {
+  open: boolean;
+  entry: OccurrenceEntry | null;
+  context: OccurrenceContext | null;
+  statuses: StatusDialogOption[];
+  currentStatusLabel: string;
+  currentStatusKey: string | null;
+  listId: string | null;
+  scopeType: 'item' | 'action';
+  scopeId: string | null;
+  saving: boolean;
+  error: string | null;
 }
 
 interface DraftLinkedItem {
@@ -198,6 +213,19 @@ export default function Calendar({
     Record<string, Array<{ id: string; title: string; completed: boolean; kind: 'task' | 'item'; parentItemId?: string }>>
   >({});
   const [occurrenceContext, setOccurrenceContext] = useState<OccurrenceContext | null>(null);
+  const [calendarStatusDialog, setCalendarStatusDialog] = useState<CalendarStatusDialogState>({
+    open: false,
+    entry: null,
+    context: null,
+    statuses: [],
+    currentStatusLabel: '',
+    currentStatusKey: null,
+    listId: null,
+    scopeType: 'item',
+    scopeId: null,
+    saving: false,
+    error: null
+  });
   const [contentMode, setContentMode] = useState<'all' | 'weekday'>('all');
   const [contentAll, setContentAll] = useState<{ listId: string; itemIds: string[] }>({ listId: '', itemIds: [] });
   const [contentByWeekday, setContentByWeekday] = useState<
@@ -806,6 +834,8 @@ export default function Calendar({
   }, [baseVisibleEvents, eventList, itemTitleById, timeBlockContentRules, weekEnd, weekStart]);
 
   const visibleEvents = baseVisibleEvents;
+  const isPendingLikeStatus = (value: string | null | undefined): boolean =>
+    !value || /(pending|todo|to_do|not_started|needs_action|backlog|queued|inbox)/i.test(value);
   const sortOccurrenceEntries = (entries: OccurrenceEntry[]): OccurrenceEntry[] =>
     [...entries].sort((a, b) => {
       if (a.completed !== b.completed) {
@@ -1034,6 +1064,132 @@ export default function Calendar({
     }));
   };
 
+  const closeCalendarStatusDialog = (): void => {
+    setCalendarStatusDialog({
+      open: false,
+      entry: null,
+      context: null,
+      statuses: [],
+      currentStatusLabel: '',
+      currentStatusKey: null,
+      listId: null,
+      scopeType: 'item',
+      scopeId: null,
+      saving: false,
+      error: null
+    });
+  };
+
+  const handleRequestOccurrenceStatusChange = async (entry: OccurrenceEntry): Promise<void> => {
+    if (!user?.id || !occurrenceContext) return;
+    const itemId = entry.kind === 'task' ? entry.parentItemId : entry.id;
+    if (!itemId) return;
+    const listId = listIdByItemId.get(itemId);
+    if (!listId) return;
+
+    setCalendarStatusDialog((prev) => ({
+      ...prev,
+      open: true,
+      entry,
+      context: occurrenceContext,
+      statuses: [],
+      currentStatusLabel: '',
+      currentStatusKey: null,
+      listId,
+      scopeType: entry.kind === 'task' ? 'action' : 'item',
+      scopeId: entry.kind === 'task' ? entry.id : itemId,
+      saving: false,
+      error: null
+    }));
+
+    try {
+      const [itemsInList, itemStatuses, actionStatuses] = await Promise.all([
+        focalBoardService.getItemsByListId(listId),
+        focalBoardService.getLaneStatuses(listId),
+        focalBoardService.getLaneSubtaskStatuses(listId)
+      ]);
+      const parentRow = (itemsInList || []).find((row: any) => row.id === itemId) || null;
+      const actionRow =
+        entry.kind === 'task'
+          ? (parentRow?.actions || []).find((row: any) => row.id === entry.id) || null
+          : null;
+      const resolvedStatuses = (entry.kind === 'task' ? actionStatuses : itemStatuses || []).map((status: any) => ({
+        id: status.id,
+        key: status.key || (entry.kind === 'task' ? 'not_started' : 'pending'),
+        name: status.name || status.key || 'Status',
+        color: status.color || undefined
+      }));
+      const currentKey =
+        entry.kind === 'task'
+          ? actionRow?.subtask_status || actionRow?.status || null
+          : parentRow?.status || null;
+      const currentId = entry.kind === 'task' ? actionRow?.subtask_status_id || null : parentRow?.status_id || null;
+      const currentStatus =
+        resolvedStatuses.find((status: StatusDialogOption) => Boolean(status.id) && status.id === currentId) ||
+        resolvedStatuses.find((status: StatusDialogOption) => status.key === currentKey) ||
+        resolvedStatuses[0] ||
+        null;
+
+      setCalendarStatusDialog((prev) => ({
+        ...prev,
+        statuses: resolvedStatuses,
+        currentStatusLabel: currentStatus?.name || 'No status',
+        currentStatusKey: currentStatus?.key || currentKey || null
+      }));
+    } catch (error: any) {
+      setCalendarStatusDialog((prev) => ({
+        ...prev,
+        error: error?.message || 'Failed to load statuses'
+      }));
+    }
+  };
+
+  const submitCalendarStatusDialog = async (status: StatusDialogOption, note: string): Promise<void> => {
+    if (!user?.id || !calendarStatusDialog.entry || !calendarStatusDialog.context || !calendarStatusDialog.scopeId) return;
+    const { entry, context, currentStatusLabel, scopeType, scopeId } = calendarStatusDialog;
+    setCalendarStatusDialog((prev) => ({ ...prev, saving: true, error: null }));
+
+    try {
+      if (entry.kind === 'task') {
+        await focalBoardService.updateAction(entry.id, {
+          status: status.key || 'not_started',
+          subtask_status_id: status.id ?? null
+        });
+      } else {
+        await focalBoardService.updateItem(entry.id, {
+          status: status.key || 'pending',
+          status_id: status.id ?? null
+        });
+      }
+
+      const nextCompleted = !isPendingLikeStatus(status.key);
+      setResolvedItemsByOccurrence((prev) => ({
+        ...prev,
+        [context.instanceId]: sortOccurrenceEntries(
+          (prev[context.instanceId] || []).map((row) => (row.id === entry.id ? { ...row, completed: nextCompleted } : row))
+        )
+      }));
+
+      await focalBoardService.createScopedComment(
+        scopeType,
+        scopeId,
+        user.id,
+        `${entry.title} status changed: ${currentStatusLabel || 'No status'} -> ${status.name}`,
+        'system'
+      );
+      if (note.trim()) {
+        await focalBoardService.createScopedComment(scopeType, scopeId, user.id, note.trim(), 'user');
+      }
+      closeCalendarStatusDialog();
+    } catch (error: any) {
+      setCalendarStatusDialog((prev) => ({
+        ...prev,
+        saving: false,
+        error: error?.message || 'Failed to update status'
+      }));
+    }
+  };
+
   const handleOpenOccurrenceItem = (entry: OccurrenceEntry): void => {
     const itemId = entry.kind === 'task' ? entry.parentItemId : entry.id;
     if (!itemId) return;
@@ -1223,6 +1379,7 @@ export default function Calendar({
 
   const closeModal = (): void => {
     setIsModalOpen(false);
+    closeCalendarStatusDialog();
     if (closeModalTimerRef.current) {
       window.clearTimeout(closeModalTimerRef.current);
     }
@@ -2337,6 +2494,7 @@ export default function Calendar({
             occurrenceWeekday={occurrenceContext?.weekday || null}
             occurrenceItems={activeOccurrenceItems}
             onToggleOccurrenceItem={(entry, checked) => void handleToggleOccurrenceItem(entry, checked)}
+            onRequestOccurrenceStatusChange={(entry) => void handleRequestOccurrenceStatusChange(entry)}
             onOpenOccurrenceItem={handleOpenOccurrenceItem}
             parentItemTitleById={occurrenceParentItemTitleById}
             onDelete={() => void deleteEvent()}
@@ -2345,6 +2503,18 @@ export default function Calendar({
             />
           </div>
         )}
+
+        <StatusChangeDialog
+          open={calendarStatusDialog.open}
+          title={calendarStatusDialog.entry?.title || ''}
+          currentStatusLabel={calendarStatusDialog.currentStatusLabel}
+          currentStatusKey={calendarStatusDialog.currentStatusKey}
+          statuses={calendarStatusDialog.statuses}
+          saving={calendarStatusDialog.saving}
+          error={calendarStatusDialog.error}
+          onClose={closeCalendarStatusDialog}
+          onSubmit={(status, note) => void submitCalendarStatusDialog(status, note)}
+        />
       </div>
 
       {resizeConfirm && (

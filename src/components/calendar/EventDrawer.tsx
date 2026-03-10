@@ -96,6 +96,13 @@ interface EventDrawerProps {
     entry: { id: string; title: string; completed: boolean; kind: 'task' | 'item'; parentItemId?: string },
     checked: boolean
   ) => void;
+  onRequestOccurrenceStatusChange?: (entry: {
+    id: string;
+    title: string;
+    completed: boolean;
+    kind: 'task' | 'item';
+    parentItemId?: string;
+  }) => void;
   onOpenOccurrenceItem?: (entry: {
     id: string;
     title: string;
@@ -162,6 +169,7 @@ export default function EventDrawer({
   occurrenceWeekday,
   occurrenceItems,
   onToggleOccurrenceItem,
+  onRequestOccurrenceStatusChange,
   onOpenOccurrenceItem,
   parentItemTitleById,
   onCancel,
@@ -809,18 +817,20 @@ export default function EventDrawer({
                         type="checkbox"
                         className="calendar-event-attach-check"
                         checked={Boolean(row.completed)}
-                        onChange={(event) =>
-                          onToggleOccurrenceItem(
-                            {
-                              id: row.itemId,
-                              title: row.title,
-                              completed: Boolean(row.completed),
-                              kind: row.kind,
-                              parentItemId: row.parentItemId
-                            },
-                            event.target.checked
-                          )
-                        }
+                        onChange={(event) => {
+                          const entry = {
+                            id: row.itemId,
+                            title: row.title,
+                            completed: Boolean(row.completed),
+                            kind: row.kind,
+                            parentItemId: row.parentItemId
+                          };
+                          if (onRequestOccurrenceStatusChange) {
+                            onRequestOccurrenceStatusChange(entry);
+                            return;
+                          }
+                          onToggleOccurrenceItem(entry, event.target.checked);
+                        }}
                       />
                       <button
                         type="button"
@@ -1123,7 +1133,13 @@ export default function EventDrawer({
                       <input
                         type="checkbox"
                         checked={entry.completed}
-                        onChange={(event) => onToggleOccurrenceItem(entry, event.target.checked)}
+                        onChange={(event) => {
+                          if (onRequestOccurrenceStatusChange) {
+                            onRequestOccurrenceStatusChange(entry);
+                            return;
+                          }
+                          onToggleOccurrenceItem(entry, event.target.checked);
+                        }}
                       />
                       <button
                         type="button"

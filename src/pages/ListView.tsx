@@ -4,6 +4,7 @@ import { ArrowRightLeft, ChevronRight, Eye, EyeOff, GitMerge, Trash2, X as Close
 import { GearSix, PaperPlaneTilt, Plus } from '@phosphor-icons/react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import StatusSelect from '../components/FocalBoard/StatusSelect';
+import StatusChangeDialog, { type StatusDialogOption } from '../components/StatusChangeDialog';
 import ProposalReviewTable from '../components/ProposalReviewTable';
 import { useAuth } from '../context/AuthContext';
 import focalBoardService from '../services/focalBoardService';
@@ -80,7 +81,7 @@ interface RecurringListItem extends ListItem {
 
 interface ThreadComment {
   id: string;
-  author_type: 'user' | 'ai';
+  author_type: 'user' | 'ai' | 'system';
   content: string;
   created_at: string;
 }
@@ -110,6 +111,18 @@ type CommentScopeType = 'item' | 'action';
 interface CommentScope {
   type: CommentScopeType;
   scopeId: string;
+}
+
+interface ListStatusDialogState {
+  open: boolean;
+  entityType: 'item' | 'action';
+  itemId: string | null;
+  actionId: string | null;
+  title: string;
+  currentStatusLabel: string;
+  currentStatusKey: string | null;
+  scopeType: CommentScopeType;
+  scopeId: string | null;
 }
 
 interface ThreadProposalState {
@@ -350,6 +363,19 @@ export default function ListView(): JSX.Element {
   const [commentDraft, setCommentDraft] = useState('');
   const [commentSubmitting, setCommentSubmitting] = useState(false);
   const [commentError, setCommentError] = useState<string | null>(null);
+  const [statusDialog, setStatusDialog] = useState<ListStatusDialogState>({
+    open: false,
+    entityType: 'item',
+    itemId: null,
+    actionId: null,
+    title: '',
+    currentStatusLabel: '',
+    currentStatusKey: null,
+    scopeType: 'item',
+    scopeId: null
+  });
+  const [statusDialogSaving, setStatusDialogSaving] = useState(false);
+  const [statusDialogError, setStatusDialogError] = useState<string | null>(null);
   const [pushingCommentId, setPushingCommentId] = useState<string | null>(null);
   const [applyingCommentProposalId, setApplyingCommentProposalId] = useState<string | null>(null);
   const [commentProposalNotes, setCommentProposalNotes] = useState<Record<string, string>>({});
@@ -553,7 +579,7 @@ export default function ListView(): JSX.Element {
           }));
           const scopedRows: ThreadComment[] = (scopedComments || []).map((entry: any) => ({
             id: `thread-${entry.id}`,
-            author_type: entry.author_type === 'ai' ? 'ai' : 'user',
+            author_type: entry.author_type === 'ai' ? 'ai' : entry.author_type === 'system' ? 'system' : 'user',
             content: entry.content,
             created_at: entry.created_at
           }));
@@ -756,6 +782,89 @@ export default function ListView(): JSX.Element {
     setItems((prev) => prev.map((entry) => (entry.id === itemId ? { ...entry, ...patch } : entry)));
   };
 
+  const updateActionLocally = useCallback(
+    (itemId: string, actionId: string, updates: Partial<ActionItem>): void => {
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === itemId
+            ? {
+                ...item,
+                actions: (item.actions || []).map((action) => (action.id === actionId ? { ...action, ...updates } : action))
+              }
+            : item
+        )
+      );
+      setRecurringItems((prev) =>
+        prev.map((item) =>
+          item.id === itemId
+            ? {
+                ...item,
+                actions: (item.actions || []).map((action) => (action.id === actionId ? { ...action, ...updates } : action))
+              }
+            : item
+        )
+      );
+    },
+    []
+  );
+
+  const appendCommentIfActive = useCallback((scopeType: CommentScopeType, scopeId: string, comment: ThreadComment): void => {
+    if (activeCommentScope?.type === scopeType && activeCommentScope.scopeId === scopeId) {
+      setComments((prev) => [...prev, comment]);
+    }
+  }, [activeCommentScope]);
+
+  const openStatusDialogForItem = useCallback((item: ListItem): void => {
+    const current = statuses.find((status) => status.id === item.status_id || status.key === item.status) || statuses[0] || null;
+    setStatusDialog({
+      open: true,
+      entityType: 'item',
+      itemId: item.id,
+      actionId: null,
+      title: item.title,
+      currentStatusLabel: current?.name || 'No status',
+      currentStatusKey: current?.key || item.status || null,
+      scopeType: 'item',
+      scopeId: item.id
+    });
+    setStatusDialogError(null);
+  }, [statuses]);
+
+  const openStatusDialogForAction = useCallback((item: ListItem, action: ActionItem): void => {
+    const current =
+      subtaskStatuses.find((status) => status.id === action.subtask_status_id || status.key === action.status) ||
+      subtaskStatuses[0] ||
+      null;
+    setStatusDialog({
+      open: true,
+      entityType: 'action',
+      itemId: item.id,
+      actionId: action.id,
+      title: action.title,
+      currentStatusLabel: current?.name || 'No status',
+      currentStatusKey: current?.key || action.status || null,
+      scopeType: 'action',
+      scopeId: action.id
+    });
+    setStatusDialogError(null);
+  }, [subtaskStatuses]);
+
+  const closeStatusDialog = useCallback((): void => {
+    setStatusDialog({
+      open: false,
+      entityType: 'item',
+      itemId: null,
+      actionId: null,
+      title: '',
+      currentStatusLabel: '',
+      currentStatusKey: null,
+      scopeType: 'item',
+      scopeId: null
+    });
+    setStatusDialogSaving(false);
+    setStatusDialogError(null);
+  }, []);
+
   const handleDropItem = useCallback(
     async (targetItemId: string, targetStatus: LaneStatus, sourceItemId?: string): Promise<void> => {
       const activeSourceId = sourceItemId || draggingItemId;
@@ -879,56 +988,86 @@ export default function ListView(): JSX.Element {
   };
 
   const handleStatusChange = async (item: ListItem, status: LaneStatus): Promise<void> => {
-    const nextStatus = status.key || 'pending';
-    const updates = status.id ? { status_id: status.id, status: nextStatus } : { status: nextStatus, status_id: null };
-    updateItemLocally(item.id, updates);
-    try {
-      await focalBoardService.updateItem(item.id, updates);
-    } catch {
-      if (listId) {
-        const refreshed = await focalBoardService.getListDetail(listId);
-        setItems((refreshed.items || []).map((entry: any) => ({ ...entry, actions: entry.actions || [] })));
-      }
-    }
+    void status;
+    openStatusDialogForItem(item);
   };
 
   const handleActionStatusChange = async (itemId: string, actionId: string, status: LaneStatus): Promise<void> => {
-    const nextStatus = status.key || 'not_started';
-    setItems((prev) =>
-      prev.map((item) =>
-        item.id === itemId
-          ? {
-              ...item,
-              actions: (item.actions || []).map((action) =>
-                action.id === actionId ? { ...action, status: nextStatus, subtask_status_id: status.id ?? null } : action
-              )
-            }
-          : item
-      )
-    );
-
-    try {
-      await focalBoardService.updateAction(actionId, { status: nextStatus, subtask_status_id: status.id ?? null });
-      setRecurringItems((prev) =>
-        prev.map((item) =>
-          item.id === itemId
-            ? {
-                ...item,
-                actions: (item.actions || []).map((action) =>
-                  action.id === actionId ? { ...action, status: nextStatus, subtask_status_id: status.id ?? null } : action
-                )
-              }
-            : item
-        )
-      );
-    } catch (err: any) {
-      setError(err?.message || 'Failed to update action');
-      if (listId) {
-        const refreshed = await focalBoardService.getListDetail(listId);
-        setItems((refreshed.items || []).map((entry: any) => ({ ...entry, actions: entry.actions || [] })));
-      }
-    }
+    void status;
+    const item = items.find((entry) => entry.id === itemId);
+    const action = item?.actions?.find((entry) => entry.id === actionId);
+    if (!item || !action) return;
+    openStatusDialogForAction(item, action);
   };
+
+  const submitStatusDialog = useCallback(
+    async (status: StatusDialogOption, note: string): Promise<void> => {
+      if (!user?.id || !statusDialog.scopeId) return;
+      setStatusDialogSaving(true);
+      setStatusDialogError(null);
+      const currentLabel = statusDialog.currentStatusLabel || 'No status';
+
+      try {
+        if (statusDialog.entityType === 'item' && statusDialog.itemId) {
+          const updates = { status: status.key || 'pending', status_id: status.id ?? null };
+          updateItemLocally(statusDialog.itemId, updates);
+          if (selectedItem?.id === statusDialog.itemId) {
+            setModalStatusValue(status.id ?? status.key);
+          }
+          await focalBoardService.updateItem(statusDialog.itemId, updates);
+        } else if (statusDialog.entityType === 'action' && statusDialog.itemId && statusDialog.actionId) {
+          const updates = { status: status.key || 'not_started', subtask_status_id: status.id ?? null };
+          updateActionLocally(statusDialog.itemId, statusDialog.actionId, updates);
+          await focalBoardService.updateAction(statusDialog.actionId, updates);
+        } else {
+          return;
+        }
+
+        const systemSaved = await focalBoardService.createScopedComment(
+          statusDialog.scopeType,
+          statusDialog.scopeId,
+          user.id,
+          `${statusDialog.title} status changed: ${currentLabel} -> ${status.name}`,
+          'system'
+        );
+        appendCommentIfActive(statusDialog.scopeType, statusDialog.scopeId, {
+          id: systemSaved.id,
+          author_type: 'system',
+          content: systemSaved.content,
+          created_at: systemSaved.created_at
+        });
+
+        const trimmedNote = note.trim();
+        if (trimmedNote) {
+          const noteSaved = await focalBoardService.createScopedComment(
+            statusDialog.scopeType,
+            statusDialog.scopeId,
+            user.id,
+            trimmedNote,
+            'user'
+          );
+          appendCommentIfActive(statusDialog.scopeType, statusDialog.scopeId, {
+            id: noteSaved.id,
+            author_type: 'user',
+            content: noteSaved.content,
+            created_at: noteSaved.created_at
+          });
+        }
+
+        closeStatusDialog();
+      } catch (err: any) {
+        setStatusDialogError(err?.message || 'Failed to update status');
+        if (listId) {
+          const refreshed = await focalBoardService.getListDetail(listId);
+          const nextItems = (refreshed.items || []).map((entry: any) => ({ ...entry, actions: entry.actions || [] }));
+          setItems(nextItems);
+        }
+      } finally {
+        setStatusDialogSaving(false);
+      }
+    },
+    [appendCommentIfActive, closeStatusDialog, listId, selectedItem?.id, statusDialog, updateActionLocally, user?.id]
+  );
 
   const handleCreateItemInStatus = async (status: LaneStatus): Promise<void> => {
     if (!user || !list?.id) {
@@ -1142,32 +1281,6 @@ export default function ListView(): JSX.Element {
       setMovingItem(false);
     }
   };
-
-  const updateActionLocally = useCallback(
-    (itemId: string, actionId: string, updates: Partial<ActionItem>): void => {
-      setItems((prev) =>
-        prev.map((item) =>
-          item.id === itemId
-            ? {
-                ...item,
-                actions: (item.actions || []).map((action) => (action.id === actionId ? { ...action, ...updates } : action))
-              }
-            : item
-        )
-      );
-      setRecurringItems((prev) =>
-        prev.map((item) =>
-          item.id === itemId
-            ? {
-                ...item,
-                actions: (item.actions || []).map((action) => (action.id === actionId ? { ...action, ...updates } : action))
-              }
-            : item
-        )
-      );
-    },
-    []
-  );
 
   const scheduleActionAutosave = useCallback(
     (itemId: string, actionId: string, updates: Partial<ActionItem>): void => {
@@ -2655,7 +2768,7 @@ export default function ListView(): JSX.Element {
                         <StatusSelect
                           statuses={statuses}
                           value={item.status_id ?? item.status}
-                          onChange={(next: LaneStatus) => void handleStatusChange(item, next)}
+                          onChange={(_next: LaneStatus) => void handleStatusChange(item, _next)}
                           appearance="circle"
                           onManageStatuses={() => {
                             setStatusManagerScope('item');
@@ -3009,7 +3122,7 @@ export default function ListView(): JSX.Element {
                     <StatusSelect
                       statuses={statuses}
                       value={modalStatusValue}
-                      onChange={(next: LaneStatus) => setModalStatusValue(next.id ?? next.key)}
+                      onChange={() => selectedItem && openStatusDialogForItem(selectedItem)}
                       onManageStatuses={() => {
                         setStatusManagerScope('item');
                         setStatusManagerOpen(true);
@@ -3139,12 +3252,7 @@ export default function ListView(): JSX.Element {
                           <StatusSelect
                             statuses={subtaskStatuses}
                             value={action.subtask_status_id ?? action.status}
-                            onChange={(next: LaneStatus) => {
-                              handleActionDraftChange(selectedItem.id, action, {
-                                status: next.key || 'not_started',
-                                subtask_status_id: next.id ?? null
-                              });
-                            }}
+                            onChange={() => openStatusDialogForAction(selectedItem, action)}
                             appearance="circle"
                             onManageStatuses={() => {
                               setStatusManagerScope('subtask');
@@ -3231,7 +3339,9 @@ export default function ListView(): JSX.Element {
                   )}
                   {comments.map((comment) => (
                     <div
-                      className={`list-item-comment-row ${comment.author_type === 'ai' ? 'assistant' : 'user'}`.trim()}
+                      className={`list-item-comment-row ${
+                        comment.author_type === 'ai' ? 'assistant' : comment.author_type === 'system' ? 'system' : 'user'
+                      }`.trim()}
                       key={comment.id}
                     >
                       {comment.author_type === 'ai' ? (
@@ -3284,6 +3394,11 @@ export default function ListView(): JSX.Element {
                               </div>
                             ))}
                         </article>
+                      ) : comment.author_type === 'system' ? (
+                        <div className="list-item-comment-system-block">
+                          <p>{comment.content}</p>
+                          <time>{formatCommentTime(comment.created_at)}</time>
+                        </div>
                       ) : (
                         <div className="list-item-comment-user-block">
                           <article className="list-item-comment-user-bubble">
@@ -3442,6 +3557,18 @@ export default function ListView(): JSX.Element {
           </section>
         </div>
       )}
+
+      <StatusChangeDialog
+        open={statusDialog.open}
+        title={statusDialog.title}
+        currentStatusLabel={statusDialog.currentStatusLabel}
+        currentStatusKey={statusDialog.currentStatusKey}
+        statuses={statusDialog.entityType === 'item' ? statuses : subtaskStatuses}
+        saving={statusDialogSaving}
+        error={statusDialogError}
+        onClose={closeStatusDialog}
+        onSubmit={(status, note) => void submitStatusDialog(status, note)}
+      />
 
       {statusManagerOpen && (
         <div className="list-status-manager-overlay" onClick={() => setStatusManagerOpen(false)}>

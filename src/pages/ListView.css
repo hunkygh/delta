@@ -1212,6 +1212,31 @@
   display: block;
 }
 
+.list-item-comment-row.system {
+  display: flex;
+  justify-content: center;
+}
+
+.list-item-comment-system-block {
+  display: grid;
+  justify-items: center;
+  gap: 3px;
+  padding: 2px 0;
+  text-align: center;
+}
+
+.list-item-comment-system-block p {
+  margin: 0;
+  color: #8a93a0;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.list-item-comment-system-block time {
+  color: #a0a8b4;
+  font-size: 10px;
+}
+
 .list-item-comment-user-bubble {
   max-width: 100%;
   background: var(--color-surface-card);
