@@ -839,6 +839,14 @@ const resolveItemIdFromQuestion = (
 const hasMutationVerb = (userText: string): boolean =>
   /\b(set|update|put|mark|change|assign|rename|add|schedule|log|note|visit|remind|follow[- ]?up)\b/i.test(userText);
 
+const hasContactPayload = (userText: string): boolean => {
+  const lower = userText.toLowerCase();
+  const hasEmail = /\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b/i.test(userText);
+  const hasPhone = /(?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?){1}\d{3}[\s.-]?\d{4}\b/.test(userText);
+  const hasContactWords = /\b(contact|owner|person to talk to|met with|email|phone|cell|address)\b/.test(lower);
+  return hasContactWords && (hasEmail || hasPhone || /\bmet with\b/.test(lower) || /\bperson to talk to\b/.test(lower));
+};
+
 const isInquiryStyle = (text: string): boolean => {
   const q = text.toLowerCase().trim();
   return /\?$/.test(q) || /^(what|why|how|can|could|should|would|is|are|do|does|did)\b/.test(q);
@@ -848,6 +856,7 @@ const buildMessagePlan = (text: string): MessagePlan => {
   const lower = text.toLowerCase();
   const explicitInventoryAsk = isExplicitInventoryAsk(text);
   const mutationRequested = hasMutationVerb(text) ||
+    hasContactPayload(text) ||
     /\b(put it on my calendar|put on my calendar|add .* to calendar)\b/i.test(text);
   const hasAskVerb = /\b(what|why|how|can you|could you|should i|would you)\b/.test(lower);
   const inquiry = isInquiryStyle(text);
@@ -931,6 +940,35 @@ const parseOwnerCandidateFromText = (userText: string): string | null => {
   if (ownerIs?.[1]) return ownerIs[1].trim().replace(/[.?!,;:]+$/g, '');
 
   return null;
+};
+
+const parseContactDetailsFromText = (userText: string): {
+  name?: string;
+  email?: string;
+  phone?: string;
+  address?: string;
+} | null => {
+  const emailMatch = userText.match(/\b([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})\b/i);
+  const phoneMatch = userText.match(/((?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?){1}\d{3}[\s.-]?\d{4})\b/);
+  const metWith = userText.match(/\bmet with\s+([a-z][a-z' -]{1,64})\b/i);
+  const personToTalk = userText.match(/\bperson to talk to\s+(?:is|=|:)?\s*([a-z][a-z' -]{1,64})\b/i);
+  const contactIs = userText.match(/\bcontact\s+(?:is|=|:)\s*([a-z][a-z' -]{1,64})\b/i);
+  const ownerIs = userText.match(/\bowner\s+(?:is|=|:)\s*([a-z][a-z' -]{1,64})\b/i);
+  const addressMatch = userText.match(/\baddress\s+(?:is|=|:)\s*([^.;\n]{4,120})/i);
+
+  const name = (metWith?.[1] || personToTalk?.[1] || contactIs?.[1] || ownerIs?.[1] || '').trim().replace(/[.?!,;:]+$/g, '');
+  const email = (emailMatch?.[1] || '').trim();
+  const phone = (phoneMatch?.[1] || '').trim();
+  const address = (addressMatch?.[1] || '').trim();
+
+  const result = {
+    ...(name ? { name } : {}),
+    ...(email ? { email } : {}),
+    ...(phone ? { phone } : {}),
+    ...(address ? { address } : {})
+  };
+
+  return Object.keys(result).length > 0 ? result : null;
 };
 
 const simpleStableHash = (value: string): string => {
@@ -1415,6 +1453,87 @@ const runMutationTools = async (
     status: 'applied',
     summary: `Loaded ${fieldsForList.length} field(s) for list`
   });
+
+  const contactPayload = parseContactDetailsFromText(content);
+  const hasSchedulingLanguage = /\b(calendar|schedule|visit|meeting|appointment|follow[- ]?up|add task|add action|block)\b/i.test(content);
+  if (contactPayload && !hasSchedulingLanguage) {
+    const explicitContactField =
+      fieldsForList.find((field) => normalize(field.type || '') === 'contact') || null;
+    const contactField = explicitContactField || resolveFieldFromAlias(fieldsForList, 'contact');
+    if (contactField) {
+      const currentField = extractCurrentCustomFieldValue(snapshot, item.id, contactField.id);
+      const rawCurrent = String(currentField?.value_text || '').trim();
+      let existingContacts: Array<Record<string, string>> = [];
+      if (rawCurrent) {
+        try {
+          const parsed = JSON.parse(rawCurrent);
+          if (Array.isArray(parsed)) {
+            existingContacts = parsed.filter((entry) => entry && typeof entry === 'object');
+          } else if (parsed && typeof parsed === 'object') {
+            existingContacts = [parsed as Record<string, string>];
+          }
+        } catch {
+          existingContacts = [];
+        }
+      }
+
+      const contact = Object.fromEntries(
+        Object.entries(contactPayload).filter(([, value]) => Boolean(String(value || '').trim()))
+      ) as Record<string, string>;
+
+      const findMatchIndex = existingContacts.findIndex((entry) =>
+        (contact.email && normalize(entry.email || '') === normalize(contact.email)) ||
+        (contact.phone && normalize(entry.phone || '') === normalize(contact.phone)) ||
+        (contact.name && normalize(entry.name || '') === normalize(contact.name))
+      );
+
+      if (findMatchIndex >= 0) {
+        existingContacts[findMatchIndex] = { ...existingContacts[findMatchIndex], ...contact };
+      } else {
+        existingContacts.push(contact);
+      }
+
+      const payloadValue = existingContacts.length <= 1
+        ? JSON.stringify(existingContacts[0] || contact)
+        : JSON.stringify(existingContacts);
+
+      const upsertRow = {
+        user_id: userId,
+        item_id: item.id,
+        field_id: contactField.id,
+        option_id: null,
+        value_text: payloadValue,
+        value_number: null,
+        value_date: null,
+        value_boolean: null
+      };
+
+      const { error } = await client
+        .from('item_field_values')
+        .upsert(upsertRow, { onConflict: 'item_id,field_id' });
+      if (error) {
+        tools.push({ name: 'update_record', status: 'error', summary: error.message });
+        return {
+          handled: true,
+          text: `I found ${item.title}, but couldn't save contact details (${error.message}).`,
+          route: 'update_contact_error',
+          tools,
+          scopeLabels: { focal: itemList?.focalName || undefined, list: itemList?.name || undefined },
+          confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
+        };
+      }
+
+      tools.push({ name: 'update_record', status: 'applied', summary: `Updated contact field: ${contactField.name}` });
+      return {
+        handled: true,
+        text: `Saved. Added contact details on ${item.title} in ${contactField.name}.`,
+        route: 'update_contact_field',
+        tools,
+        scopeLabels: { focal: itemList?.focalName || undefined, list: itemList?.name || undefined },
+        confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
+      };
+    }
+  }
 
   const wantsSchedulingAction =
     /\b(visit|follow[- ]?up|schedule|remind|add task|add action|task|meeting|appointment|calendar|put it on my calendar|put on my calendar)\b/i.test(

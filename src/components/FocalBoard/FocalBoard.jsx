@@ -107,6 +107,7 @@ const FocalBoard = ({ userId, selectedFocalFromNav, selectedFocalIdFromNav }) =>
           key: status.key,
           name: status.name,
           color: status.color || '#94a3b8',
+          show_in_overview: status.show_in_overview !== false,
           count: laneItems.filter((item) => item.status_id === status.id || (!item.status_id && item.status === status.key)).length
         }));
 
@@ -123,6 +124,7 @@ const FocalBoard = ({ userId, selectedFocalFromNav, selectedFocalIdFromNav }) =>
           key,
           name: key.replace(/_/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase()),
           color: key === 'completed' ? '#22c55e' : key === 'in_progress' ? '#f59e0b' : '#94a3b8',
+          show_in_overview: true,
           count
         }));
       }
@@ -141,7 +143,7 @@ const FocalBoard = ({ userId, selectedFocalFromNav, selectedFocalIdFromNav }) =>
   const statusColumns = useMemo(() => {
     const byKey = new Map();
     for (const row of laneStats) {
-      for (const status of row.statuses || []) {
+      for (const status of (row.statuses || []).filter((entry) => entry.show_in_overview !== false)) {
         if (!byKey.has(status.key)) {
           byKey.set(status.key, {
             key: status.key,
@@ -286,7 +288,6 @@ const FocalBoard = ({ userId, selectedFocalFromNav, selectedFocalIdFromNav }) =>
                 {statusColumns.map((status) => (
                   <span key={`head-${status.key}`} className="lists-status-head">
                     <span className="lists-status-head-dot" style={{ backgroundColor: status.color }} aria-hidden="true" />
-                    {status.name}
                   </span>
                 ))}
               </div>

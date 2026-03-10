@@ -25,6 +25,7 @@ interface LaneStatus {
   name: string;
   color: string;
   order_num?: number;
+  show_in_overview?: boolean;
 }
 
 interface ActionItem {
@@ -218,6 +219,19 @@ const fromDateTimeLocalValue = (value: string): string | null => {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return null;
   return date.toISOString();
+};
+
+const formatContactValue = (raw: string | null | undefined): string => {
+  const text = String(raw || '').trim();
+  if (!text) return '—';
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== 'object') return text;
+    const parts = [parsed.name, parsed.phone, parsed.email, parsed.address].filter(Boolean);
+    return parts.length > 0 ? parts.join(' • ') : text;
+  } catch {
+    return text;
+  }
 };
 
 const normalizeItemsForStatuses = (rows: ListItem[], laneStatuses: LaneStatus[]): ListItem[] => {
@@ -691,6 +705,7 @@ export default function ListView(): JSX.Element {
         return getOptionById(field, value.option_id)?.label || '—';
       }
       if (field.type === 'text') return value.value_text || '—';
+      if (field.type === 'contact') return formatContactValue(value.value_text);
       if (field.type === 'number') return value.value_number != null ? String(value.value_number) : '—';
       if (field.type === 'date') return value.value_date ? new Date(value.value_date).toLocaleDateString() : '—';
       if (field.type === 'boolean') return value.value_boolean ? 'Yes' : 'No';
@@ -1921,7 +1936,8 @@ export default function ListView(): JSX.Element {
         color: statusColorDraft,
         group_key: key,
         order_num: statuses.length,
-        is_default: false
+        is_default: false,
+        show_in_overview: true
       });
       setStatuses((prev) => [...prev, created]);
       setStatusNameDraft('');
@@ -2217,6 +2233,17 @@ export default function ListView(): JSX.Element {
           />
         );
       }
+      if (field.type === 'contact') {
+        return (
+          <input
+            className="list-field-cell-input"
+            defaultValue={value?.value_text || ''}
+            placeholder="Name • phone • email"
+            onBlur={(event) => void upsertFieldValue(item.id, field, { value_text: event.target.value.trim() || '' })}
+            autoFocus
+          />
+        );
+      }
       if (field.type === 'number') {
         return (
           <input
@@ -2271,7 +2298,7 @@ export default function ListView(): JSX.Element {
       );
     }
 
-    const cellClassName = field.type === 'text'
+    const cellClassName = field.type === 'text' || field.type === 'contact'
       ? 'list-field-cell-value list-field-cell-text'
       : 'list-field-cell-value';
 
@@ -2507,6 +2534,7 @@ export default function ListView(): JSX.Element {
                             <option value="status">Status</option>
                             <option value="select">Select</option>
                             <option value="text">Text</option>
+                            <option value="contact">Contact</option>
                             <option value="number">Number</option>
                             <option value="date">Date</option>
                             <option value="boolean">Boolean</option>
@@ -3404,6 +3432,7 @@ export default function ListView(): JSX.Element {
                 <option value="status">Status</option>
                 <option value="select">Select</option>
                 <option value="text">Text</option>
+                <option value="contact">Contact</option>
                 <option value="number">Number</option>
                 <option value="date">Date</option>
                 <option value="boolean">Boolean</option>
@@ -3494,6 +3523,19 @@ export default function ListView(): JSX.Element {
                     }
                     disabled={!status.id}
                   />
+                  {!managerIsSubtask && (
+                    <label className="list-status-overview-toggle" title="Show in Spaces overview">
+                      <input
+                        type="checkbox"
+                        checked={status.show_in_overview !== false}
+                        onChange={(event) =>
+                          void handlePatchStatus(status.id || '', { show_in_overview: event.target.checked })
+                        }
+                        disabled={!status.id}
+                      />
+                      <span>Show</span>
+                    </label>
+                  )}
                   <button
                     type="button"
                     className="list-status-delete-btn"

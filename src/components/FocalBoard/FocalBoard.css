@@ -299,12 +299,13 @@
 .lists-status-head {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
+  width: 100%;
 }
 
 .lists-status-head-dot {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
   border-radius: 999px;
 }
 

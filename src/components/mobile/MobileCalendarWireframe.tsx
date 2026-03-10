@@ -39,6 +39,7 @@ import type { ChatMessage, ChatProposal } from '../../types/chat';
 type MobileBlockItem = {
   id: string;
   name: string;
+  description?: string;
   subItems?: Array<{ id: string; name: string }>;
   focalId?: string;
   listId?: string;
@@ -87,7 +88,10 @@ type MobileList = {
 type MobileItem = {
   id: string;
   title: string;
-  actions?: Array<{ id: string; title: string }>;
+  description?: string | null;
+  status?: string | null;
+  status_id?: string | null;
+  actions?: Array<{ id: string; title: string; subtask_status?: string | null; subtask_status_id?: string | null }>;
 };
 
 type AttachMode = 'node_only' | 'with_children';
@@ -206,7 +210,6 @@ export default function MobileCalendarWireframe(): JSX.Element {
   } | null>(null);
   const [blocks, setBlocks] = useState<MobileBlock[]>([]);
   const [completed, setCompleted] = useState<Record<string, boolean>>({});
-  const [showCompletedInDrawer, setShowCompletedInDrawer] = useState(false);
   const [expandedTasksByBlock, setExpandedTasksByBlock] = useState<Record<string, boolean>>({});
   const [expandedItemsInList, setExpandedItemsInList] = useState<Record<string, boolean>>({});
   const [subtaskComposerByItem, setSubtaskComposerByItem] = useState<Record<string, boolean>>({});
@@ -263,6 +266,12 @@ export default function MobileCalendarWireframe(): JSX.Element {
   const [focals, setFocals] = useState<MobileFocal[]>([]);
   const [listsByFocal, setListsByFocal] = useState<Record<string, MobileList[]>>({});
   const [itemsByList, setItemsByList] = useState<Record<string, MobileItem[]>>({});
+  const [listStatusesByList, setListStatusesByList] = useState<
+    Record<string, Array<{ id?: string; key: string; name: string; color?: string; is_default?: boolean }>>
+  >({});
+  const [subtaskStatusesByList, setSubtaskStatusesByList] = useState<
+    Record<string, Array<{ id?: string; key: string; name: string; color?: string; is_default?: boolean }>>
+  >({});
   const [focalsLoading, setFocalsLoading] = useState(false);
   const [focalsError, setFocalsError] = useState<string>('');
   const [mobileDraggingFocalId, setMobileDraggingFocalId] = useState<string | null>(null);
@@ -345,6 +354,18 @@ export default function MobileCalendarWireframe(): JSX.Element {
     () => (activeDrawerBlock && drawer.itemId ? activeDrawerBlock.items.find((item) => item.id === drawer.itemId) || null : null),
     [activeDrawerBlock, drawer.itemId]
   );
+  const activeDrawerScopedListItem = useMemo(() => {
+    if (!drawer.itemId || !mobileScope.listId) return null;
+    const item = (itemsByList[mobileScope.listId] || []).find((entry) => entry.id === drawer.itemId) || null;
+    if (!item) return null;
+    return {
+      id: item.id,
+      name: item.title,
+      listId: mobileScope.listId,
+      description: item.description || ''
+    };
+  }, [drawer.itemId, itemsByList, mobileScope.listId]);
+  const resolvedDrawerItem = activeDrawerItem || activeDrawerScopedListItem;
 
   const selectedFocal = useMemo(
     () => focals.find((focal) => focal.id === mobileScope.focalId) || null,
@@ -480,14 +501,18 @@ export default function MobileCalendarWireframe(): JSX.Element {
 
   const navOrder: Array<'docs' | 'focals' | 'calendar'> = ['docs', 'focals', 'calendar'];
   const activeNavIndex = navOrder.indexOf(activeNav);
-  const addSheetListOptions = useMemo(() => {
-    if (!addSheet.focalId) return [];
-    return listsByFocal[addSheet.focalId] || [];
-  }, [addSheet.focalId, listsByFocal]);
-  const addSheetItemOptions = useMemo(() => {
-    if (!addSheet.listId) return [];
-    return itemsByList[addSheet.listId] || [];
-  }, [addSheet.listId, itemsByList]);
+  const addSubitemParentOptions = useMemo(() => {
+    return indexedLists.flatMap((list) =>
+      list.items.map((item) => ({
+        listId: list.id,
+        listName: list.name,
+        itemId: item.id,
+        itemTitle: item.title
+      }))
+    );
+  }, [indexedLists]);
+  const addSubitemParentValue =
+    addSheet.type === 'subitem' && addSheet.listId && addSheet.itemId ? `${addSheet.listId}:${addSheet.itemId}` : '';
   const addEventAttachRows = useMemo(() => {
     const query = addEventAttachSearch.trim().toLowerCase();
     const rows = (calendarAttachTree || []).map((focal: any) => ({
@@ -719,11 +744,53 @@ export default function MobileCalendarWireframe(): JSX.Element {
       const mapped: MobileItem[] = (rows || []).map((entry: any) => ({
         id: entry.id,
         title: entry.title,
-        actions: (entry.actions || []).map((action: any) => ({ id: action.id, title: action.title }))
+        description: entry.description || '',
+        status: entry.status || null,
+        status_id: entry.status_id || null,
+        actions: (entry.actions || []).map((action: any) => ({
+          id: action.id,
+          title: action.title,
+          subtask_status: action.subtask_status || null,
+          subtask_status_id: action.subtask_status_id || null
+        }))
       }));
       setItemsByList((prev) => ({ ...prev, [listId]: mapped }));
     } catch {
       setItemsByList((prev) => ({ ...prev, [listId]: [] }));
+    }
+  };
+
+  const loadStatusesForList = async (listId: string): Promise<void> => {
+    if (!listId) return;
+    try {
+      const [itemStatuses, actionStatuses] = await Promise.all([
+        focalBoardService.getLaneStatuses(listId),
+        focalBoardService.getLaneSubtaskStatuses(listId)
+      ]);
+      setListStatusesByList((prev) => ({
+        ...prev,
+        [listId]: (itemStatuses || []).map((entry: any) => ({
+          id: entry.id,
+          key: entry.key || 'pending',
+          name: entry.name || entry.key || 'To do',
+          color: entry.color || undefined,
+          is_default: Boolean(entry.is_default)
+        }))
+      }));
+      setSubtaskStatusesByList((prev) => ({
+        ...prev,
+        [listId]: (actionStatuses || []).map((entry: any) => ({
+          id: entry.id,
+          key: entry.key || 'not_started',
+          name: entry.name || entry.key || 'Not started',
+          color: entry.color || undefined,
+          is_default: Boolean(entry.is_default)
+        }))
+      }));
+    } catch (error) {
+      console.error('Failed to load list statuses for mobile list view:', error);
+      setListStatusesByList((prev) => ({ ...prev, [listId]: [] }));
+      setSubtaskStatusesByList((prev) => ({ ...prev, [listId]: [] }));
     }
   };
 
@@ -781,6 +848,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
     if (activeNav !== 'focals') return;
     if (mobileScope.level === 'list' && mobileScope.listId) {
       void loadListItems(mobileScope.listId);
+      void loadStatusesForList(mobileScope.listId);
     }
   }, [activeNav, mobileScope.level, mobileScope.listId]);
 
@@ -828,7 +896,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
   }, [addSheet.open, addSheet.type, addSheet.listId]);
 
   useEffect(() => {
-    if (!addSheet.open || (addSheet.type !== 'item' && addSheet.type !== 'event')) return;
+    if (!addSheet.open || (addSheet.type !== 'item' && addSheet.type !== 'event' && addSheet.type !== 'subitem')) return;
     const timer = window.setTimeout(() => addSheetNameRef.current?.focus(), 40);
     return () => window.clearTimeout(timer);
   }, [addSheet.open, addSheet.type]);
@@ -845,14 +913,14 @@ export default function MobileCalendarWireframe(): JSX.Element {
 
   useEffect(() => {
     const loadItemDrawerData = async (): Promise<void> => {
-      if (!drawer.open || drawer.mode !== 'item' || !activeDrawerItem?.id) {
+      if (!drawer.open || drawer.mode !== 'item' || !resolvedDrawerItem?.id) {
         setItemDrawerFields([]);
         setItemDrawerFieldValues({});
         setItemDrawerComments([]);
         return;
       }
 
-      const listId = activeDrawerItem.listId || null;
+      const listId = resolvedDrawerItem.listId || null;
       if (listId) {
         try {
           const [fields, valuesMap] = await Promise.all([
@@ -860,7 +928,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
             itemFieldValueService.bulkFetchForList(listId)
           ]);
           setItemDrawerFields((fields || []).filter((field: any) => field.is_pinned));
-          setItemDrawerFieldValues(valuesMap?.[activeDrawerItem.id] || {});
+          setItemDrawerFieldValues(valuesMap?.[resolvedDrawerItem.id] || {});
         } catch (error) {
           console.error('Failed loading item drawer fields:', error);
           setItemDrawerFields([]);
@@ -873,7 +941,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
 
       setItemDrawerCommentsLoading(true);
       try {
-        const rows = await commentsService.getItemComments(activeDrawerItem.id, 80);
+        const rows = await commentsService.getItemComments(resolvedDrawerItem.id, 80);
         setItemDrawerComments(rows || []);
       } catch (error) {
         console.error('Failed loading item drawer comments:', error);
@@ -884,7 +952,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
     };
 
     void loadItemDrawerData();
-  }, [drawer.open, drawer.mode, activeDrawerItem?.id, activeDrawerItem?.listId]);
+  }, [drawer.open, drawer.mode, resolvedDrawerItem?.id, resolvedDrawerItem?.listId]);
 
   useEffect(() => {
     if (view !== 'calendar' || activeNav !== 'calendar' || !isTodayView) return;
@@ -1247,12 +1315,10 @@ export default function MobileCalendarWireframe(): JSX.Element {
 
   const openPeekDrawer = (blockId: string): void => {
     setDrawerClosing(false);
-    setShowCompletedInDrawer(false);
     setDrawer({ open: true, mode: 'peek', blockId });
   };
   const openFullDrawer = (blockId: string): void => {
     setDrawerClosing(false);
-    setShowCompletedInDrawer(false);
     setDrawer({ open: true, mode: 'full', blockId });
   };
   const openEditDrawer = (blockId: string): void => {
@@ -1309,7 +1375,6 @@ export default function MobileCalendarWireframe(): JSX.Element {
     window.setTimeout(() => {
       setDrawer({ open: false, mode: 'peek', blockId: null });
       setDrawerClosing(false);
-      setShowCompletedInDrawer(false);
       setEditDrawerSaving(false);
     }, 220);
   };
@@ -1616,6 +1681,18 @@ export default function MobileCalendarWireframe(): JSX.Element {
       return option?.label || '--';
     }
     if (field.type === 'text') return value.value_text || '--';
+    if (field.type === 'contact') {
+      const raw = String(value.value_text || '').trim();
+      if (!raw) return '--';
+      try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') return raw;
+        const parts = [parsed.name, parsed.phone, parsed.email, parsed.address].filter(Boolean);
+        return parts.length > 0 ? parts.join(' • ') : raw;
+      } catch {
+        return raw;
+      }
+    }
     if (field.type === 'number') return value.value_number != null ? String(value.value_number) : '--';
     if (field.type === 'date') return value.value_date ? new Date(value.value_date).toLocaleDateString() : '--';
     if (field.type === 'boolean') return value.value_boolean ? 'Yes' : 'No';
@@ -1863,15 +1940,91 @@ export default function MobileCalendarWireframe(): JSX.Element {
     });
   };
 
-  const handleStatusToggle = (itemId: string): void => {
-    // Toggle completion status for the item
-    setCompleted((prev) => ({ ...prev, [itemId]: !prev[itemId] }));
+  const handleStatusToggle = async (itemId: string, entityType: 'item' | 'action' = 'item'): Promise<void> => {
+    if (!mobileScope.listId) {
+      setCompleted((prev) => ({ ...prev, [itemId]: !prev[itemId] }));
+      return;
+    }
+    const listId = mobileScope.listId;
+    const statusSet = entityType === 'item' ? (listStatusesByList[listId] || []) : (subtaskStatusesByList[listId] || []);
+    if (statusSet.length === 0) {
+      setCompleted((prev) => ({ ...prev, [itemId]: !prev[itemId] }));
+      return;
+    }
+
+    const getCurrentKey = (): string | null => {
+      const listItems = itemsByList[listId] || [];
+      if (entityType === 'item') {
+        const row = listItems.find((entry) => entry.id === itemId);
+        if (!row) return null;
+        const byId = row.status_id ? statusSet.find((entry) => entry.id === row.status_id) : null;
+        return byId?.key || row.status || null;
+      }
+      for (const row of listItems) {
+        const action = (row.actions || []).find((entry) => entry.id === itemId);
+        if (!action) continue;
+        const byId = action.subtask_status_id ? statusSet.find((entry) => entry.id === action.subtask_status_id) : null;
+        return byId?.key || action.subtask_status || null;
+      }
+      return null;
+    };
+
+    const currentKey = getCurrentKey();
+    const currentIndex = Math.max(0, statusSet.findIndex((entry) => entry.key === currentKey));
+    const nextStatus = statusSet[(currentIndex + 1) % statusSet.length] || statusSet[0];
+
+    setItemsByList((prev) => {
+      const listItems = prev[listId] || [];
+      const nextItems = listItems.map((row) => {
+        if (entityType === 'item' && row.id === itemId) {
+          return {
+            ...row,
+            status: nextStatus.key,
+            status_id: nextStatus.id || null
+          };
+        }
+        if (entityType === 'action' && (row.actions || []).some((entry) => entry.id === itemId)) {
+          return {
+            ...row,
+            actions: (row.actions || []).map((entry) =>
+              entry.id === itemId
+                ? {
+                    ...entry,
+                    subtask_status: nextStatus.key,
+                    subtask_status_id: nextStatus.id || null
+                  }
+                : entry
+            )
+          };
+        }
+        return row;
+      });
+      return { ...prev, [listId]: nextItems };
+    });
+
+    try {
+      if (entityType === 'item') {
+        await focalBoardService.updateItem(itemId, {
+          status: nextStatus.key,
+          status_id: nextStatus.id || null
+        });
+      } else {
+        await focalBoardService.updateAction(itemId, {
+          subtask_status: nextStatus.key,
+          subtask_status_id: nextStatus.id || null
+        });
+      }
+    } catch (error) {
+      console.error('Failed updating status from mobile list view:', error);
+      await loadListItems(listId, true);
+    }
   };
 
   const openItemDrawerForItem = (itemId: string): void => {
-    // Open item drawer for the specific item
-    // This would need to be implemented based on your drawer logic
-    console.log('Open item drawer for:', itemId);
+    setItemDrawerPanel('details');
+    setItemDrawerCommentDraft('');
+    setDrawerClosing(false);
+    setDrawer({ open: true, mode: 'item', blockId: null, itemId });
   };
 
   const toggleItemExpansion = (itemId: string): void => {
@@ -1903,7 +2056,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
           for (const field of addItemColumnFields) {
             const raw = (addItemFieldDrafts[field.id] || '').trim();
             if (!raw) continue;
-            if (field.type === 'text') {
+            if (field.type === 'text' || field.type === 'contact') {
               await itemFieldValueService.upsertValue(user.id, created.id, field.id, { value_text: raw });
               continue;
             }
@@ -2637,9 +2790,48 @@ export default function MobileCalendarWireframe(): JSX.Element {
 
     if (mobileScope.level === 'list' && mobileScope.listId) {
       const items = itemsByList[mobileScope.listId] || [];
+      const itemStatuses = listStatusesByList[mobileScope.listId] || [];
+      const subtaskStatuses = subtaskStatusesByList[mobileScope.listId] || [];
+      const statusById = new Map(itemStatuses.filter((entry) => Boolean(entry.id)).map((entry) => [entry.id as string, entry]));
+      const subtaskStatusById = new Map(subtaskStatuses.filter((entry) => Boolean(entry.id)).map((entry) => [entry.id as string, entry]));
+      const defaultItemStatus = itemStatuses.find((entry) => entry.is_default) || itemStatuses[0] || null;
+      const defaultSubtaskStatus = subtaskStatuses.find((entry) => entry.is_default) || subtaskStatuses[0] || null;
+      const getItemStatusEntry = (item: MobileItem) => {
+        if (item.status_id && statusById.has(item.status_id)) return statusById.get(item.status_id) || null;
+        if (item.status) return itemStatuses.find((entry) => entry.key === item.status) || null;
+        return defaultItemStatus;
+      };
+      const getActionStatusEntry = (action: { subtask_status?: string | null; subtask_status_id?: string | null }) => {
+        if (action.subtask_status_id && subtaskStatusById.has(action.subtask_status_id)) {
+          return subtaskStatusById.get(action.subtask_status_id) || null;
+        }
+        if (action.subtask_status) return subtaskStatuses.find((entry) => entry.key === action.subtask_status) || null;
+        return defaultSubtaskStatus;
+      };
+      const isDashedStatus = (status: { key?: string | null } | null): boolean =>
+        !status || /(pending|todo|not_started|needs_action)/i.test(status.key || '');
+      const itemSections =
+        itemStatuses.length > 0
+          ? [
+              ...itemStatuses.map((status) => ({
+                id: status.id || status.key,
+                label: status.name || status.key,
+                items: items.filter((item) => (getItemStatusEntry(item)?.key || '') === status.key)
+              })),
+              {
+                id: '__no_status__',
+                label: 'No status',
+                items: items.filter((item) => !getItemStatusEntry(item))
+              }
+            ].filter((section) => section.items.length > 0)
+          : [{ id: '__all__', label: '', items }];
       return (
         <div className="mobile-focals-surface list-level">
-          {items.map((item) => {
+          {itemSections.map((section) => (
+            <div key={section.id} className="mobile-list-status-section">
+              {section.label && <h4 className="mobile-list-status-heading">{section.label}</h4>}
+              {section.items.map((item) => {
+            const itemStatusEntry = getItemStatusEntry(item);
             const hasSubitems = (item.actions || []).length > 0;
             const isExpanded = expandedItemsInList[item.id];
             
@@ -2660,11 +2852,15 @@ export default function MobileCalendarWireframe(): JSX.Element {
                   )}
                   <button
                     type="button"
-                    className="mobile-item-check todo"
-                    onClick={() => void handleStatusToggle(item.id)}
+                    className={`mobile-item-check ${isDashedStatus(itemStatusEntry) ? 'todo' : 'done'}`.trim()}
+                    onClick={() => void handleStatusToggle(item.id, 'item')}
                     aria-label="Change status"
                   >
-                    <span className="mobile-status-ring" />
+                    {isDashedStatus(itemStatusEntry) ? (
+                      <span className="mobile-status-ring" style={{ color: itemStatusEntry?.color || undefined }} />
+                    ) : (
+                      <Circle size={18} fill={itemStatusEntry?.color || 'currentColor'} stroke={itemStatusEntry?.color || 'currentColor'} />
+                    )}
                   </button>
                   <button
                     type="button"
@@ -2677,7 +2873,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                   </button>
                   <button
                     type="button"
-                    className="mobile-item-subtask-toggle"
+                    className="mobile-item-subtask-toggle plain-text"
                     aria-label="Add subtask"
                     onClick={() => void handleAddSubItem(item.id)}
                   >
@@ -2690,14 +2886,24 @@ export default function MobileCalendarWireframe(): JSX.Element {
                     {(item.actions || []).map((action) => (
                       <article key={action.id} className="mobile-item-row subitem">
                         <span className="mobile-item-expand-placeholder" aria-hidden="true" />
+                        {(() => {
+                          const actionStatusEntry = getActionStatusEntry(action);
+                          const actionDashed = isDashedStatus(actionStatusEntry);
+                          return (
                         <button
                           type="button"
-                          className="mobile-item-check sub todo"
-                          onClick={() => void handleStatusToggle(action.id)}
+                          className={`mobile-item-check sub ${actionDashed ? 'todo' : 'done'}`.trim()}
+                          onClick={() => void handleStatusToggle(action.id, 'action')}
                           aria-label="Change status"
                         >
-                          <span className="mobile-status-ring small" />
+                          {actionDashed ? (
+                            <span className="mobile-status-ring small" style={{ color: actionStatusEntry?.color || undefined }} />
+                          ) : (
+                            <Circle size={15} fill={actionStatusEntry?.color || 'currentColor'} stroke={actionStatusEntry?.color || 'currentColor'} />
+                          )}
                         </button>
+                          );
+                        })()}
                         <button
                           type="button"
                           className="mobile-item-text"
@@ -2715,6 +2921,8 @@ export default function MobileCalendarWireframe(): JSX.Element {
               </div>
             );
           })}
+            </div>
+          ))}
           {items.length === 0 && <article className="mobile-focal-card muted"><p>No items yet. Tap + to add one.</p></article>}
         </div>
       );
@@ -3413,7 +3621,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
               onPointerCancel={onAddSheetPointerEnd}
             />
             <div className="mobile-add-sheet-head">
-              {addSheet.type === 'item' || addSheet.type === 'event' ? (
+              {addSheet.type === 'item' || addSheet.type === 'event' || addSheet.type === 'subitem' ? (
                 <input
                   ref={addSheetNameRef}
                   className="mobile-add-sheet-title-input"
@@ -3425,7 +3633,6 @@ export default function MobileCalendarWireframe(): JSX.Element {
                 <strong>
                   {addSheet.type === 'space' && 'Add Space'}
                   {addSheet.type === 'list' && 'Add List'}
-                  {addSheet.type === 'subitem' && 'Add Sub-item'}
                   {addSheet.type === 'doc' && 'Add Note'}
                 </strong>
               )}
@@ -3444,7 +3651,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
               </button>
             </div>
             <div className={`mobile-add-sheet-body ${addSheet.type === 'event' ? 'event-editor' : ''} ${addSheet.type === 'item' ? 'item-editor' : ''}`.trim()}>
-              {(addSheet.type === 'list' || addSheet.type === 'subitem') && (
+              {(addSheet.type === 'list') && (
                 <label className="mobile-add-field">
                   <span>Space</span>
                   <select
@@ -3471,45 +3678,30 @@ export default function MobileCalendarWireframe(): JSX.Element {
 
               {addSheet.type === 'subitem' && (
                 <label className="mobile-add-field">
-                  <span>List</span>
+                  <span>Parent</span>
                   <select
-                    value={addSheet.listId || ''}
+                    value={addSubitemParentValue}
                     onChange={(event) => {
-                      const nextList = event.target.value || null;
-                      setAddSheet((prev) => ({ ...prev, listId: nextList, itemId: null }));
+                      const value = event.target.value || '';
+                      if (!value) {
+                        setAddSheet((prev) => ({ ...prev, listId: null, itemId: null }));
+                        return;
+                      }
+                      const [listId, itemId] = value.split(':');
+                      setAddSheet((prev) => ({ ...prev, listId: listId || null, itemId: itemId || null }));
                     }}
                   >
-                    <option value="">Select list</option>
-                    {addSheetListOptions.map((list) => (
-                      <option key={list.id} value={list.id}>
-                        {list.name}
+                    <option value="">Select parent item</option>
+                    {addSubitemParentOptions.map((option) => (
+                      <option key={`${option.listId}:${option.itemId}`} value={`${option.listId}:${option.itemId}`}>
+                        {option.listName} / {option.itemTitle}
                       </option>
                     ))}
                   </select>
                 </label>
               )}
 
-              {addSheet.type === 'subitem' && (
-                <label className="mobile-add-field">
-                  <span>Item</span>
-                  <select
-                    value={addSheet.itemId || ''}
-                    onChange={(event) => {
-                      const nextItem = event.target.value || null;
-                      setAddSheet((prev) => ({ ...prev, itemId: nextItem }));
-                    }}
-                  >
-                    <option value="">Select item</option>
-                    {addSheetItemOptions.map((item) => (
-                      <option key={item.id} value={item.id}>
-                        {item.title}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              )}
-
-              {addSheet.type !== 'item' && addSheet.type !== 'event' && (
+              {addSheet.type !== 'item' && addSheet.type !== 'event' && addSheet.type !== 'subitem' && (
                 <label className="mobile-add-field">
                   <span>{addSheet.type === 'doc' ? 'Title' : 'Name'}</span>
                   <input
@@ -3565,7 +3757,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                           ))}
                         </select>
                       )}
-                      {(field.type === 'text' || field.type === 'number') && (
+                      {(field.type === 'text' || field.type === 'number' || field.type === 'contact') && (
                         <input
                           type="text"
                           value={addItemFieldDrafts[field.id] || ''}
@@ -3575,7 +3767,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                               [field.id]: event.target.value
                             }))
                           }
-                          placeholder={field.type === 'number' ? 'Enter number' : 'Enter text'}
+                          placeholder={field.type === 'number' ? 'Enter number' : field.type === 'contact' ? 'Name • phone • email' : 'Enter text'}
                         />
                       )}
                       {field.type === 'date' && (
@@ -3831,11 +4023,11 @@ export default function MobileCalendarWireframe(): JSX.Element {
             />
             <div className="mobile-drawer-head">
               <Clock3 size={15} />
-              <strong>
+                <strong>
                 {drawer.mode === 'addTask'
                   ? 'Add Task'
                   : drawer.mode === 'item'
-                    ? activeDrawerItem?.name || 'Item Details'
+                    ? resolvedDrawerItem?.name || 'Item Details'
                     : activeDrawerBlock?.name || 'Time Block'}
               </strong>
               {drawer.mode !== 'addTask' && drawer.mode !== 'item' && drawer.blockId && (
@@ -3958,9 +4150,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                   <h4>Attached items</h4>
                   {activeDrawerBlock?.items?.length ? (
                     <div className="mobile-drawer-linked-list">
-                      {activeDrawerBlock.items
-                        .filter((item) => showCompletedInDrawer || !completed[item.id])
-                        .map((item) => (
+                      {activeDrawerBlock.items.map((item) => (
                         <div key={item.id} className="mobile-drawer-linked-item">
                           <div className="mobile-drawer-linked-title">{item.name}</div>
                           {!!item.subItems?.length && (
@@ -3974,20 +4164,6 @@ export default function MobileCalendarWireframe(): JSX.Element {
                           )}
                         </div>
                       ))}
-                      {!!activeDrawerBlock.items.filter((item) => completed[item.id]).length && (
-                        <button
-                          type="button"
-                          className="mobile-drawer-show-completed"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            setShowCompletedInDrawer((prev) => !prev);
-                          }}
-                        >
-                          {showCompletedInDrawer
-                            ? 'Hide completed'
-                            : `Show completed (${activeDrawerBlock.items.filter((item) => completed[item.id]).length})`}
-                        </button>
-                      )}
                     </div>
                   ) : (
                     <div className="mobile-drawer-empty">No attached items yet.</div>
@@ -4078,9 +4254,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                   </div>
                   {activeDrawerBlock?.items?.length ? (
                     <div className="mobile-drawer-edit-linked-list">
-                      {activeDrawerBlock.items
-                        .filter((item) => showCompletedInDrawer || !completed[item.id])
-                        .map((item) => (
+                      {activeDrawerBlock.items.map((item) => (
                           <div key={item.id} className="mobile-item-row">
                             <button
                               type="button"
@@ -4169,20 +4343,6 @@ export default function MobileCalendarWireframe(): JSX.Element {
                             )}
                           </div>
                         ))}
-                      {!!activeDrawerBlock.items.filter((item) => completed[item.id]).length && (
-                        <button
-                          type="button"
-                          className="mobile-drawer-show-completed"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            setShowCompletedInDrawer((prev) => !prev);
-                          }}
-                        >
-                          {showCompletedInDrawer
-                            ? 'Hide completed'
-                            : `Show completed (${activeDrawerBlock.items.filter((item) => completed[item.id]).length})`}
-                        </button>
-                      )}
                     </div>
                   ) : (
                     <div className="mobile-drawer-empty">No attached items yet.</div>
@@ -4201,7 +4361,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                 </div>
               </div>
             )}
-            {drawer.mode === 'item' && activeDrawerItem && (
+            {drawer.mode === 'item' && resolvedDrawerItem && (
               <div
                 className={`mobile-item-drawer-panel ${itemDrawerPanel}`.trim()}
                 onTouchStart={onItemDrawerPanelTouchStart}
@@ -4218,8 +4378,8 @@ export default function MobileCalendarWireframe(): JSX.Element {
 
                 {itemDrawerPanel === 'details' ? (
                   <div className="mobile-item-drawer-details">
-                    <h4>{activeDrawerItem.name}</h4>
-                    <p>{activeDrawerBlock?.description?.trim() || 'No description on the parent time block.'}</p>
+                    <h4>{resolvedDrawerItem.name}</h4>
+                    <p>{resolvedDrawerItem.description?.trim() || activeDrawerBlock?.description?.trim() || 'No description yet.'}</p>
                     <div className="mobile-item-drawer-fields">
                       <h5>Column values</h5>
                       {itemDrawerFields.length === 0 && <div className="mobile-item-drawer-empty">No column values on this task yet.</div>}

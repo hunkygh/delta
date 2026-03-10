@@ -687,7 +687,8 @@ export const focalBoardService = {
         color: payload.color,
         group_key: payload.group_key ?? 'todo',
         order_num: payload.order_num ?? 0,
-        is_default: Boolean(payload.is_default)
+        is_default: Boolean(payload.is_default),
+        show_in_overview: payload.show_in_overview !== false
       }])
       .select()
       .single();

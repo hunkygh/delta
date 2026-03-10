@@ -341,7 +341,18 @@ export default function EventDrawer({
         ? { listId: contentAll.listId, itemIds: contentAll.itemIds || [] }
         : contentByWeekday[activeWeekday] || { listId: '', itemIds: [] };
 
-    if (!currentSelection.listId || !currentSelection.itemIds?.length) return [];
+    if (!currentSelection.listId || !currentSelection.itemIds?.length) {
+      const fallbackRows = (occurrenceItems || [])
+        .filter((entry) => entry.kind === 'item')
+        .map((entry) => ({
+          itemId: entry.id,
+          listId: '',
+          listName: 'Attached',
+          title: entry.title,
+          removable: false
+        }));
+      return fallbackRows;
+    }
     const listId = currentSelection.listId;
     const listName = byListId.get(listId) || 'List';
     const source = contentItemOptionsByList[listId] || [];
@@ -351,9 +362,10 @@ export default function EventDrawer({
       itemId,
       listId,
       listName,
-      title: itemById.get(itemId) || 'Item'
+      title: itemById.get(itemId) || 'Item',
+      removable: true
     }));
-  }, [activeWeekday, contentAll.itemIds, contentAll.listId, contentByWeekday, contentItemOptionsByList, contentListOptions, contentMode]);
+  }, [activeWeekday, contentAll.itemIds, contentAll.listId, contentByWeekday, contentItemOptionsByList, contentListOptions, contentMode, occurrenceItems]);
 
   const closeSlashAttach = (): void => {
     setSlashAttachOpen(false);
@@ -719,8 +731,8 @@ export default function EventDrawer({
               {attachedItemsRows.length === 0 ? (
                 <span className="calendar-event-attach-empty">no items attached</span>
               ) : (
-                attachedItemsRows.map((row) => (
-                  <div key={`${row.listId}:${row.itemId}`} className="calendar-event-attach-row-wrap">
+                attachedItemsRows.map((row, index) => (
+                  <div key={`${row.listId || 'attached'}:${row.itemId}:${index}`} className="calendar-event-attach-row-wrap">
                     <div className="calendar-event-attach-row">
                       <span className="calendar-event-attach-caret placeholder" aria-hidden="true" />
                       <span className="calendar-event-attach-status todo" aria-hidden="true" />
@@ -742,22 +754,24 @@ export default function EventDrawer({
                       <button type="button" className="calendar-event-attach-title">
                         {row.title}
                       </button>
-                      <button
-                        type="button"
-                        className="calendar-event-attach-remove"
-                        onClick={() => {
-                          if (contentMode === 'all') {
-                            onContentAllItemsChange((contentAll.itemIds || []).filter((entry) => entry !== row.itemId));
-                            return;
-                          }
-                          const weekdayRow = contentByWeekday[activeWeekday];
-                          const next = (weekdayRow?.itemIds || []).filter((entry) => entry !== row.itemId);
-                          onContentWeekdayItemsChange(activeWeekday, next);
-                        }}
-                        aria-label="Remove item"
-                      >
-                        −
-                      </button>
+                      {row.removable !== false && (
+                        <button
+                          type="button"
+                          className="calendar-event-attach-remove"
+                          onClick={() => {
+                            if (contentMode === 'all') {
+                              onContentAllItemsChange((contentAll.itemIds || []).filter((entry) => entry !== row.itemId));
+                              return;
+                            }
+                            const weekdayRow = contentByWeekday[activeWeekday];
+                            const next = (weekdayRow?.itemIds || []).filter((entry) => entry !== row.itemId);
+                            onContentWeekdayItemsChange(activeWeekday, next);
+                          }}
+                          aria-label="Remove item"
+                        >
+                          −
+                        </button>
+                      )}
                       {recurrenceEnabled && includeRecurringTasks && (
                         <button
                           type="button"

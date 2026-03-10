@@ -1,4 +1,4 @@
-export type ListFieldType = 'status' | 'select' | 'text' | 'number' | 'date' | 'boolean';
+export type ListFieldType = 'status' | 'select' | 'text' | 'number' | 'date' | 'boolean' | 'contact';
 
 export interface FieldOption {
   id: string;
