@@ -214,6 +214,7 @@ export default function Calendar({
   const [includeRecurringTasks, setIncludeRecurringTasks] = useState(true);
   const [repeatTasksByItemId, setRepeatTasksByItemId] = useState<Record<string, boolean>>({});
   const [draftLinkedItems, setDraftLinkedItems] = useState<DraftLinkedItem[]>([]);
+  const [createdContentItemsByList, setCreatedContentItemsByList] = useState<Record<string, ListItemOption[]>>({});
   const [formState, setFormState] = useState<{
     title: string;
     description: string;
@@ -510,10 +511,11 @@ export default function Calendar({
   const contentItemOptionsByList = useMemo(
     () =>
       listOptions.reduce<Record<string, ListItemOption[]>>((acc, option) => {
-        acc[option.id] = option.items;
+        const appended = createdContentItemsByList[option.id] || [];
+        acc[option.id] = [...option.items, ...appended.filter((entry) => !option.items.some((item) => item.id === entry.id))];
         return acc;
       }, {}),
-    [listOptions]
+    [createdContentItemsByList, listOptions]
   );
 
   const contentFocalTree = useMemo<FocalListTree[]>(() => {
@@ -2032,6 +2034,62 @@ export default function Calendar({
     });
   };
 
+  const handleCreateAndAttachSearchItem = async (
+    title: string,
+    options: { listId: string; weekday: 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun' | null }
+  ): Promise<void> => {
+    if (!user?.id || !title.trim() || !options.listId) return;
+    const created = await focalBoardService.createItem(options.listId, user.id, title.trim(), null);
+    if (!created?.id) return;
+
+    setCreatedContentItemsByList((prev) => ({
+      ...prev,
+      [options.listId]: [
+        ...(prev[options.listId] || []),
+        { id: created.id, title: created.title || title.trim() }
+      ]
+    }));
+
+    if (options.weekday) {
+      const currentRow = contentByWeekday[options.weekday] || { listId: '', itemIds: [] };
+      const nextItemIds = [...new Set([...(currentRow.itemIds || []), created.id])];
+      setContentByWeekday((prev) => ({
+        ...prev,
+        [options.weekday as keyof typeof prev]: {
+          listId: options.listId,
+          itemIds: nextItemIds
+        }
+      }));
+      setRepeatTasksByItemId((prev) => ({
+        ...prev,
+        [created.id]: true
+      }));
+      await persistContentRule({
+        selectorType: 'weekday',
+        selectorValue: options.weekday,
+        listId: options.listId,
+        itemIds: nextItemIds
+      });
+      return;
+    }
+
+    const nextItemIds = [...new Set([...(contentAll.listId === options.listId ? contentAll.itemIds : []), created.id])];
+    setContentAll({
+      listId: options.listId,
+      itemIds: nextItemIds
+    });
+    setRepeatTasksByItemId((prev) => ({
+      ...prev,
+      [created.id]: true
+    }));
+    await persistContentRule({
+      selectorType: 'all',
+      selectorValue: null,
+      listId: options.listId,
+      itemIds: nextItemIds
+    });
+  };
+
   return (
     <section className="calendar-week-view">
       <div className="calendar-toolbar">
@@ -2275,6 +2333,7 @@ export default function Calendar({
             onContentAllItemsChange={(itemIds) => void handleAllItemsChange(itemIds)}
             onContentWeekdayListChange={(weekday, listId) => void handleWeekdayListChange(weekday, listId)}
             onContentWeekdayItemsChange={(weekday, itemIds) => void handleWeekdayItemsChange(weekday, itemIds)}
+            onCreateAndAttachSearchItem={(title, options) => void handleCreateAndAttachSearchItem(title, options)}
             occurrenceWeekday={occurrenceContext?.weekday || null}
             occurrenceItems={activeOccurrenceItems}
             onToggleOccurrenceItem={(entry, checked) => void handleToggleOccurrenceItem(entry, checked)}

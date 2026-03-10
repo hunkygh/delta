@@ -96,7 +96,19 @@ export default function AppShell(): JSX.Element {
 
   // Conditional rendering logic - moved outside of hooks
   if (loading) {
-    return <div className="loading-screen">Loading...</div>;
+    return (
+      <div className="loading-screen">
+        <div className="loading-screen-mark" aria-label="Delta loading">
+          <img className="loading-screen-logo" src="/in-app-logo.png" alt="" aria-hidden="true" />
+          <div className="loading-screen-wordmark">
+            <span className="loading-screen-text">THE CLARITY OS</span>
+            <span className="loading-screen-cursor" aria-hidden="true">
+              _
+            </span>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   if (!user) {

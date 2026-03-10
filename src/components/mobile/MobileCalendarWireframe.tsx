@@ -36,11 +36,22 @@ import commentsService from '../../services/commentsService';
 import docsService, { type DocNote } from '../../services/docsService';
 import type { ChatMessage, ChatProposal } from '../../types/chat';
 
+type MobileBlockSubItem = {
+  id: string;
+  name: string;
+  listId?: string;
+  parentItemId?: string;
+  subtask_status?: string | null;
+  subtask_status_id?: string | null;
+};
+
 type MobileBlockItem = {
   id: string;
   name: string;
   description?: string;
-  subItems?: Array<{ id: string; name: string }>;
+  status?: string | null;
+  status_id?: string | null;
+  subItems?: MobileBlockSubItem[];
   focalId?: string;
   listId?: string;
 };
@@ -114,9 +125,34 @@ type MobileChatSourceOption = {
   context: Record<string, string>;
 };
 
+type MobileStatusOption = {
+  id?: string;
+  key: string;
+  name: string;
+  color?: string;
+  is_default?: boolean;
+};
+
+type StatusSheetState = {
+  open: boolean;
+  step: 'select' | 'note';
+  entityType: 'item' | 'action';
+  listId: string | null;
+  targetId: string | null;
+  parentItemId: string | null;
+  title: string;
+  currentStatusLabel: string;
+  currentStatusKey: string | null;
+  selectedStatus: MobileStatusOption | null;
+  loading: boolean;
+  saving: boolean;
+  error: string;
+};
+
 const DAY_START_MIN = 6 * 60;
 const DAY_END_MIN = 22 * 60;
 const PX_PER_MIN = 2.2;
+const MIN_TIME_BLOCK_MINUTES = 15;
 
 const FALLBACK_FOCAL_OPTIONS = [
   { id: 'health', name: 'Health', lists: [{ id: 'workouts', name: 'Workouts' }, { id: 'meals', name: 'Meals' }] },
@@ -148,13 +184,15 @@ const toInputTime = (minute: number): string => {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 };
 
+const isPendingLikeStatusKey = (value: string | null | undefined): boolean =>
+  !value || /(pending|todo|to_do|not_started|needs_action|backlog|queued|inbox)/i.test(value);
+
 const sortMobileBlockItems = (
-  items: MobileBlockItem[],
-  completedMap: Record<string, boolean>
+  items: MobileBlockItem[]
 ): MobileBlockItem[] =>
   [...items].sort((a, b) => {
-    const aDone = completedMap[a.id] === true;
-    const bDone = completedMap[b.id] === true;
+    const aDone = !isPendingLikeStatusKey(a.status);
+    const bDone = !isPendingLikeStatusKey(b.status);
     if (aDone !== bDone) {
       return aDone ? 1 : -1;
     }
@@ -178,6 +216,14 @@ const normalizeLinkedEntityId = (value: string | null | undefined): string => {
   if (value.startsWith('focal|')) return value.slice(6);
   return value;
 };
+
+const mapThreadComment = (entry: any) => ({
+  id: entry.id,
+  body: entry.content || entry.body || '',
+  created_at: entry.created_at,
+  author_type: entry.author_type || entry.source || 'user',
+  user_id: entry.user_id || null
+});
 
 export default function MobileCalendarWireframe(): JSX.Element {
   const { user } = useAuth();
@@ -225,7 +271,6 @@ export default function MobileCalendarWireframe(): JSX.Element {
     heightPx: number;
   } | null>(null);
   const [blocks, setBlocks] = useState<MobileBlock[]>([]);
-  const [completed, setCompleted] = useState<Record<string, boolean>>({});
   const [expandedTasksByBlock, setExpandedTasksByBlock] = useState<Record<string, boolean>>({});
   const [expandedItemsInList, setExpandedItemsInList] = useState<Record<string, boolean>>({});
   const [subtaskComposerByItem, setSubtaskComposerByItem] = useState<Record<string, boolean>>({});
@@ -233,10 +278,28 @@ export default function MobileCalendarWireframe(): JSX.Element {
   const [itemDrawerPanel, setItemDrawerPanel] = useState<'details' | 'comments'>('details');
   const [itemDrawerFields, setItemDrawerFields] = useState<any[]>([]);
   const [itemDrawerFieldValues, setItemDrawerFieldValues] = useState<Record<string, any>>({});
-  const [itemDrawerComments, setItemDrawerComments] = useState<Array<{ id: string; body: string; created_at: string; author_type?: string }>>([]);
+  const [itemDrawerComments, setItemDrawerComments] = useState<
+    Array<{ id: string; body: string; created_at: string; author_type?: string; user_id?: string | null }>
+  >([]);
   const [itemDrawerCommentsLoading, setItemDrawerCommentsLoading] = useState(false);
   const [itemDrawerCommentDraft, setItemDrawerCommentDraft] = useState('');
   const [itemDrawerCommentSubmitting, setItemDrawerCommentSubmitting] = useState(false);
+  const [statusSheet, setStatusSheet] = useState<StatusSheetState>({
+    open: false,
+    step: 'select',
+    entityType: 'item',
+    listId: null,
+    targetId: null,
+    parentItemId: null,
+    title: '',
+    currentStatusLabel: '',
+    currentStatusKey: null,
+    selectedStatus: null,
+    loading: false,
+    saving: false,
+    error: ''
+  });
+  const [statusNoteDraft, setStatusNoteDraft] = useState('');
   const [taskDrawerSearch, setTaskDrawerSearch] = useState('');
   const [taskDrawerListId, setTaskDrawerListId] = useState<string | null>(null);
   const [taskDrawerPendingKey, setTaskDrawerPendingKey] = useState<string | null>(null);
@@ -383,6 +446,51 @@ export default function MobileCalendarWireframe(): JSX.Element {
     };
   }, [drawer.itemId, itemsByList, mobileScope.listId]);
   const resolvedDrawerItem = activeDrawerItem || activeDrawerScopedListItem;
+  const getItemStatusEntry = (item: { listId?: string; status?: string | null; status_id?: string | null }) => {
+    const listId = item.listId || '';
+    const statusSet = listStatusesByList[listId] || [];
+    if (item.status_id) {
+      const byId = statusSet.find((entry) => entry.id === item.status_id);
+      if (byId) return byId;
+    }
+    if (item.status) {
+      const byKey = statusSet.find((entry) => entry.key === item.status);
+      if (byKey) return byKey;
+    }
+    return statusSet.find((entry) => entry.is_default) || null;
+  };
+  const getSubtaskStatusEntry = (subItem: MobileBlockSubItem) => {
+    const listId = subItem.listId || '';
+    const statusSet = subtaskStatusesByList[listId] || [];
+    if (subItem.subtask_status_id) {
+      const byId = statusSet.find((entry) => entry.id === subItem.subtask_status_id);
+      if (byId) return byId;
+    }
+    if (subItem.subtask_status) {
+      const byKey = statusSet.find((entry) => entry.key === subItem.subtask_status);
+      if (byKey) return byKey;
+    }
+    return statusSet.find((entry) => entry.is_default) || null;
+  };
+  const isStatusIncomplete = (statusKey: string | null | undefined) => isPendingLikeStatusKey(statusKey);
+  const closeStatusSheet = (): void => {
+    setStatusSheet({
+      open: false,
+      step: 'select',
+      entityType: 'item',
+      listId: null,
+      targetId: null,
+      parentItemId: null,
+      title: '',
+      currentStatusLabel: '',
+      currentStatusKey: null,
+      selectedStatus: null,
+      loading: false,
+      saving: false,
+      error: ''
+    });
+    setStatusNoteDraft('');
+  };
 
   const selectedFocal = useMemo(
     () => focals.find((focal) => focal.id === mobileScope.focalId) || null,
@@ -673,57 +781,71 @@ export default function MobileCalendarWireframe(): JSX.Element {
           const start = new Date(event.start);
           const end = new Date(event.end || event.start);
           if (Number.isNaN(start.getTime())) return false;
-          const safeEnd = Number.isNaN(end.getTime()) ? new Date(start.getTime() + 30 * 60 * 1000) : end;
+          const safeEnd = Number.isNaN(end.getTime())
+            ? new Date(start.getTime() + MIN_TIME_BLOCK_MINUTES * 60 * 1000)
+            : end;
           return start < dayEnd && safeEnd > dayStart;
         })
-        .map((event: any) => ({
-          id: event.id,
-          name: event.title || 'Untitled',
-          description: event.description || '',
-          startMin: minutesFromDate(event.start),
-          endMin: Math.max(minutesFromDate(event.end), minutesFromDate(event.start) + 30),
-          recurrence:
-            event.recurrence === 'daily' || event.recurrence === 'weekly' || event.recurrence === 'monthly'
-              ? event.recurrence
-              : 'none',
-          items: (() => {
-            const rules = (contentRulesByEventId[event.id] || []).filter(
-              (rule: any) =>
-                rule?.selector_type === 'all' ||
-                (rule?.selector_type === 'weekday' && rule?.selector_value === viewedDateWeekdayKey)
-            );
-            const hydratedItems: MobileBlockItem[] = [];
-            const seenItemIds = new Set<string>();
-            for (const rule of rules) {
-              const listId = rule?.list_id;
-              const rows = listId ? (itemsByListId.get(listId) || []) : [];
-              const rowById = new Map(rows.map((row: any) => [normalizeLinkedEntityId(row.id), row]));
-              for (const itemId of rule?.item_ids || []) {
-                const normalizedItemId = normalizeLinkedEntityId(itemId);
-                if (!normalizedItemId || seenItemIds.has(normalizedItemId)) continue;
-                seenItemIds.add(normalizedItemId);
-                const indexedList = indexedLists.find((list) => list.id === listId);
-                const row = rowById.get(normalizedItemId);
-                hydratedItems.push({
-                  id: normalizedItemId,
-                  name:
-                    row?.title ||
-                    itemTitleById.get(normalizedItemId) ||
-                    indexedList?.items.find((item) => normalizeLinkedEntityId(item.id) === normalizedItemId)?.title ||
-                    'Untitled',
-                  description: row?.description || '',
-                  focalId: indexedList?.focalId,
-                  listId: listId || undefined,
-                  subItems: (row?.actions || []).map((action: any) => ({
-                    id: action.id,
-                    name: action.title || 'Untitled subtask'
-                  }))
-                });
+        .map((event: any) => {
+          const rawEnd = new Date(event.end || event.start);
+          const safeEnd = Number.isNaN(rawEnd.getTime())
+            ? new Date(new Date(event.start).getTime() + MIN_TIME_BLOCK_MINUTES * 60 * 1000)
+            : rawEnd;
+          return {
+            id: event.id,
+            name: event.title || 'Untitled',
+            description: event.description || '',
+            startMin: minutesFromDate(event.start),
+            endMin: Math.max(minutesFromDate(safeEnd.toISOString()), minutesFromDate(event.start) + MIN_TIME_BLOCK_MINUTES),
+            recurrence:
+              event.recurrence === 'daily' || event.recurrence === 'weekly' || event.recurrence === 'monthly'
+                ? event.recurrence
+                : 'none',
+            items: (() => {
+              const rules = (contentRulesByEventId[event.id] || []).filter(
+                (rule: any) =>
+                  rule?.selector_type === 'all' ||
+                  (rule?.selector_type === 'weekday' && rule?.selector_value === viewedDateWeekdayKey)
+              );
+              const hydratedItems: MobileBlockItem[] = [];
+              const seenItemIds = new Set<string>();
+              for (const rule of rules) {
+                const listId = rule?.list_id;
+                const rows = listId ? (itemsByListId.get(listId) || []) : [];
+                const rowById = new Map(rows.map((row: any) => [normalizeLinkedEntityId(row.id), row]));
+                for (const itemId of rule?.item_ids || []) {
+                  const normalizedItemId = normalizeLinkedEntityId(itemId);
+                  if (!normalizedItemId || seenItemIds.has(normalizedItemId)) continue;
+                  seenItemIds.add(normalizedItemId);
+                  const indexedList = indexedLists.find((list) => list.id === listId);
+                  const row = rowById.get(normalizedItemId);
+                  hydratedItems.push({
+                    id: normalizedItemId,
+                    name:
+                      row?.title ||
+                      itemTitleById.get(normalizedItemId) ||
+                      indexedList?.items.find((item) => normalizeLinkedEntityId(item.id) === normalizedItemId)?.title ||
+                      'Untitled',
+                    description: row?.description || '',
+                    status: row?.status || null,
+                    status_id: row?.status_id || null,
+                    focalId: indexedList?.focalId,
+                    listId: listId || undefined,
+                    subItems: (row?.actions || []).map((action: any) => ({
+                      id: action.id,
+                      name: action.title || 'Untitled subtask',
+                      listId: listId || undefined,
+                      parentItemId: normalizedItemId,
+                      subtask_status: action.subtask_status || action.status || null,
+                      subtask_status_id: action.subtask_status_id || null
+                    }))
+                  });
+                }
               }
-            }
-            return hydratedItems;
-          })()
-        }))
+              return hydratedItems;
+            })()
+          };
+        })
         .sort((a: MobileBlock, b: MobileBlock) => a.startMin - b.startMin);
       setBlocks(mapped);
     } catch (error) {
@@ -755,37 +877,43 @@ export default function MobileCalendarWireframe(): JSX.Element {
     }
   };
 
-  const loadStatusesForList = async (listId: string): Promise<void> => {
-    if (!listId) return;
+  const loadStatusesForList = async (
+    listId: string
+  ): Promise<{ itemStatuses: MobileStatusOption[]; actionStatuses: MobileStatusOption[] }> => {
+    if (!listId) return { itemStatuses: [], actionStatuses: [] };
     try {
       const [itemStatuses, actionStatuses] = await Promise.all([
         focalBoardService.getLaneStatuses(listId),
         focalBoardService.getLaneSubtaskStatuses(listId)
       ]);
+      const nextItemStatuses = (itemStatuses || []).map((entry: any) => ({
+        id: entry.id,
+        key: entry.key || 'pending',
+        name: entry.name || entry.key || 'To do',
+        color: entry.color || undefined,
+        is_default: Boolean(entry.is_default)
+      }));
+      const nextActionStatuses = (actionStatuses || []).map((entry: any) => ({
+        id: entry.id,
+        key: entry.key || 'not_started',
+        name: entry.name || entry.key || 'Not started',
+        color: entry.color || undefined,
+        is_default: Boolean(entry.is_default)
+      }));
       setListStatusesByList((prev) => ({
         ...prev,
-        [listId]: (itemStatuses || []).map((entry: any) => ({
-          id: entry.id,
-          key: entry.key || 'pending',
-          name: entry.name || entry.key || 'To do',
-          color: entry.color || undefined,
-          is_default: Boolean(entry.is_default)
-        }))
+        [listId]: nextItemStatuses
       }));
       setSubtaskStatusesByList((prev) => ({
         ...prev,
-        [listId]: (actionStatuses || []).map((entry: any) => ({
-          id: entry.id,
-          key: entry.key || 'not_started',
-          name: entry.name || entry.key || 'Not started',
-          color: entry.color || undefined,
-          is_default: Boolean(entry.is_default)
-        }))
+        [listId]: nextActionStatuses
       }));
+      return { itemStatuses: nextItemStatuses, actionStatuses: nextActionStatuses };
     } catch (error) {
       console.error('Failed to load list statuses for mobile list view:', error);
       setListStatusesByList((prev) => ({ ...prev, [listId]: [] }));
       setSubtaskStatusesByList((prev) => ({ ...prev, [listId]: [] }));
+      return { itemStatuses: [], actionStatuses: [] };
     }
   };
 
@@ -931,8 +1059,27 @@ export default function MobileCalendarWireframe(): JSX.Element {
 
       setItemDrawerCommentsLoading(true);
       try {
-        const rows = await commentsService.getItemComments(resolvedDrawerItem.id, 80);
-        setItemDrawerComments(rows || []);
+        const [legacyRows, scopedRows] = await Promise.all([
+          commentsService.getItemComments(resolvedDrawerItem.id, 80),
+          user?.id ? focalBoardService.getScopedComments('item', resolvedDrawerItem.id, user.id) : Promise.resolve([])
+        ]);
+        const merged = [
+          ...(legacyRows || []).map((entry: any) => ({
+            id: `item-${entry.id}`,
+            body: entry.body,
+            created_at: entry.created_at,
+            author_type: 'user',
+            user_id: entry.user_id || null
+          })),
+          ...(scopedRows || []).map((entry: any) => ({
+            id: `thread-${entry.id}`,
+            body: entry.content || '',
+            created_at: entry.created_at,
+            author_type: entry.author_type || entry.source || 'user',
+            user_id: entry.user_id || null
+          }))
+        ].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+        setItemDrawerComments(merged);
       } catch (error) {
         console.error('Failed loading item drawer comments:', error);
         setItemDrawerComments([]);
@@ -942,7 +1089,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
     };
 
     void loadItemDrawerData();
-  }, [drawer.open, drawer.mode, resolvedDrawerItem?.id, resolvedDrawerItem?.listId]);
+  }, [drawer.open, drawer.mode, resolvedDrawerItem?.id, resolvedDrawerItem?.listId, user?.id]);
 
   useEffect(() => {
     if (view !== 'calendar' || activeNav !== 'calendar' || !isTodayView) return;
@@ -1100,7 +1247,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
     if (!draft) return;
     const startMin = Math.floor(Math.min(draft.startMin, draft.endMin) / 15) * 15;
     const rawEnd = Math.ceil(Math.max(draft.startMin, draft.endMin) / 15) * 15;
-    const endMin = Math.max(startMin + 30, Math.min(DAY_END_MIN, rawEnd));
+    const endMin = Math.max(startMin + MIN_TIME_BLOCK_MINUTES, Math.min(DAY_END_MIN, rawEnd));
     openAddSheet({ open: true, type: 'event' });
     setAddSheetStart(toInputTime(startMin));
     setAddSheetEnd(toInputTime(endMin));
@@ -1129,9 +1276,9 @@ export default function MobileCalendarWireframe(): JSX.Element {
       timelineDraftGestureRef.current.active = true;
       setTimelineDraft({
         startMin,
-        endMin: startMin + 30,
+        endMin: startMin + MIN_TIME_BLOCK_MINUTES,
         topPx: px,
-        heightPx: Math.max(30 * PX_PER_MIN, 24)
+        heightPx: Math.max(MIN_TIME_BLOCK_MINUTES * PX_PER_MIN, 24)
       });
     }, 320);
   };
@@ -1513,8 +1660,6 @@ export default function MobileCalendarWireframe(): JSX.Element {
     }
   };
 
-  const toggleComplete = (itemId: string): void => setCompleted((prev) => ({ ...prev, [itemId]: !prev[itemId] }));
-
   const minutesToClock = (minutes: number): string => {
     const safe = Math.max(0, Math.min(24 * 60 - 1, Number.isFinite(minutes) ? minutes : 0));
     const hh = Math.floor(safe / 60)
@@ -1558,7 +1703,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
     if (!title) return;
     let startMin = clockToMinutes(editDrawerStart);
     let endMin = clockToMinutes(editDrawerEnd);
-    if (endMin <= startMin) endMin = Math.min(startMin + 30, 24 * 60 - 1);
+    if (endMin <= startMin) endMin = Math.min(startMin + MIN_TIME_BLOCK_MINUTES, 24 * 60 - 1);
 
     const patch = {
       title,
@@ -1628,7 +1773,17 @@ export default function MobileCalendarWireframe(): JSX.Element {
               item.id === itemId
                 ? {
                     ...item,
-                    subItems: [...(item.subItems || []), { id: created.id, name: created.title || title }]
+                    subItems: [
+                      ...(item.subItems || []),
+                      {
+                        id: created.id,
+                        name: created.title || title,
+                        listId: item.listId,
+                        parentItemId: item.id,
+                        subtask_status: created.subtask_status || created.status || null,
+                        subtask_status_id: created.subtask_status_id || null
+                      }
+                    ]
                   }
                 : item
             )
@@ -1643,18 +1798,189 @@ export default function MobileCalendarWireframe(): JSX.Element {
   };
 
   const submitItemDrawerComment = async (): Promise<void> => {
-    if (!user?.id || !activeDrawerItem?.id) return;
+    if (!user?.id || !resolvedDrawerItem?.id) return;
     const body = itemDrawerCommentDraft.trim();
     if (!body) return;
     setItemDrawerCommentSubmitting(true);
     try {
-      const created = await commentsService.createComment(activeDrawerItem.id, user.id, body);
-      setItemDrawerComments((prev) => [...prev, created]);
+      const created = await focalBoardService.createScopedComment('item', resolvedDrawerItem.id, user.id, body, 'user');
+      setItemDrawerComments((prev) => [...prev, { ...mapThreadComment(created), id: `thread-${created.id}` }]);
       setItemDrawerCommentDraft('');
     } catch (error) {
       console.error('Failed to add item comment from mobile drawer:', error);
     } finally {
       setItemDrawerCommentSubmitting(false);
+    }
+  };
+
+  const applyStatusUpdateLocally = (
+    listId: string,
+    entityType: 'item' | 'action',
+    targetId: string,
+    nextStatus: MobileStatusOption
+  ): void => {
+    setItemsByList((prev) => {
+      const listItems = prev[listId] || [];
+      return {
+        ...prev,
+        [listId]: listItems.map((row) => {
+          if (entityType === 'item' && row.id === targetId) {
+            return {
+              ...row,
+              status: nextStatus.key,
+              status_id: nextStatus.id || null
+            };
+          }
+          if (entityType === 'action' && (row.actions || []).some((entry) => entry.id === targetId)) {
+            return {
+              ...row,
+              actions: (row.actions || []).map((entry) =>
+                entry.id === targetId
+                  ? {
+                      ...entry,
+                      subtask_status: nextStatus.key,
+                      subtask_status_id: nextStatus.id || null
+                    }
+                  : entry
+              )
+            };
+          }
+          return row;
+        })
+      };
+    });
+    setBlocks((prev) =>
+      prev.map((block) => ({
+        ...block,
+        items: block.items.map((item) => {
+          if (entityType === 'item' && item.id === targetId) {
+            return {
+              ...item,
+              status: nextStatus.key,
+              status_id: nextStatus.id || null
+            };
+          }
+          if (entityType === 'action') {
+            return {
+              ...item,
+              subItems: (item.subItems || []).map((subItem) =>
+                subItem.id === targetId
+                  ? {
+                      ...subItem,
+                      subtask_status: nextStatus.key,
+                      subtask_status_id: nextStatus.id || null
+                    }
+                  : subItem
+              )
+            };
+          }
+          return item;
+        })
+      }))
+    );
+  };
+
+  const openStatusChangeFlow = async (params: {
+    entityType: 'item' | 'action';
+    listId?: string | null;
+    targetId: string;
+    parentItemId?: string | null;
+    title: string;
+    currentStatusKey?: string | null;
+    currentStatusLabel?: string;
+  }): Promise<void> => {
+    const listId = params.listId || null;
+    if (!listId) return;
+    setStatusSheet((prev) => ({
+      ...prev,
+      open: true,
+      step: 'select',
+      entityType: params.entityType,
+      listId,
+      targetId: params.targetId,
+      parentItemId: params.parentItemId || (params.entityType === 'item' ? params.targetId : null),
+      title: params.title,
+      currentStatusLabel: params.currentStatusLabel || '',
+      currentStatusKey: params.currentStatusKey || null,
+      selectedStatus: null,
+      loading: true,
+      saving: false,
+      error: ''
+    }));
+    setStatusNoteDraft('');
+    const needsLoad =
+      params.entityType === 'item' ? !listStatusesByList[listId] : !subtaskStatusesByList[listId];
+    const loaded = needsLoad ? await loadStatusesForList(listId) : null;
+    const options =
+      params.entityType === 'item'
+        ? (loaded?.itemStatuses || listStatusesByList[listId] || [])
+        : (loaded?.actionStatuses || subtaskStatusesByList[listId] || []);
+    if (!options.length) {
+      setStatusSheet((prev) => ({
+        ...prev,
+        loading: false,
+        error: 'No statuses are configured for this list yet.'
+      }));
+      return;
+    }
+    setStatusSheet((prev) => ({
+      ...prev,
+      loading: false,
+      currentStatusLabel:
+        prev.currentStatusLabel || options.find((entry) => entry.key === params.currentStatusKey)?.name || 'No status'
+    }));
+  };
+
+  const submitStatusChange = async (): Promise<void> => {
+    if (!user?.id || !statusSheet.listId || !statusSheet.targetId || !statusSheet.selectedStatus) return;
+    const {
+      listId,
+      targetId,
+      entityType,
+      selectedStatus,
+      parentItemId,
+      currentStatusLabel,
+      title
+    } = statusSheet;
+    const scopeItemId = parentItemId || (entityType === 'item' ? targetId : null);
+    if (!scopeItemId) return;
+
+    setStatusSheet((prev) => ({ ...prev, saving: true, error: '' }));
+    applyStatusUpdateLocally(listId, entityType, targetId, selectedStatus);
+
+    try {
+      if (entityType === 'item') {
+        await focalBoardService.updateItem(targetId, {
+          status: selectedStatus.key,
+          status_id: selectedStatus.id || null
+        });
+      } else {
+        await focalBoardService.updateAction(targetId, {
+          subtask_status: selectedStatus.key,
+          subtask_status_id: selectedStatus.id || null
+        });
+      }
+      const systemBody = `${title} status changed: ${currentStatusLabel || 'No status'} -> ${selectedStatus.name}`;
+      const createdSystem = await focalBoardService.createScopedComment('item', scopeItemId, user.id, systemBody, 'system');
+      const nextComments = [{ ...mapThreadComment(createdSystem), id: `thread-${createdSystem.id}` }];
+      const note = statusNoteDraft.trim();
+      if (note) {
+        const createdUser = await focalBoardService.createScopedComment('item', scopeItemId, user.id, note, 'user');
+        nextComments.push({ ...mapThreadComment(createdUser), id: `thread-${createdUser.id}` });
+      }
+      if (drawer.mode === 'item' && resolvedDrawerItem?.id === scopeItemId) {
+        setItemDrawerComments((prev) => [...prev, ...nextComments]);
+      }
+      await loadCalendarBlocks();
+      closeStatusSheet();
+    } catch (error: any) {
+      console.error('Failed to update mobile time-block status:', error);
+      await Promise.all([loadListItems(listId, true), loadCalendarBlocks()]);
+      setStatusSheet((prev) => ({
+        ...prev,
+        saving: false,
+        error: error?.message || 'Failed to update status'
+      }));
     }
   };
 
@@ -1930,7 +2256,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
   };
 
   const renderBlockItemRows = (blockId: string, items: MobileBlockItem[], emptyLabel = 'No attached items yet.') => {
-    const orderedItems = dedupeMobileBlockItems(sortMobileBlockItems(items, completed));
+    const orderedItems = dedupeMobileBlockItems(sortMobileBlockItems(items));
     if (!orderedItems.length) {
       return <div className="mobile-drawer-empty">{emptyLabel}</div>;
     }
@@ -1939,94 +2265,130 @@ export default function MobileCalendarWireframe(): JSX.Element {
       <div className="mobile-drawer-linked-list actionable">
         {orderedItems.map((item) => (
           <div key={item.id} className="mobile-item-row">
-            <button
-              type="button"
-              className={`mobile-item-check ${completed[item.id] ? 'done' : 'todo'}`.trim()}
-              onClick={(event) => {
-                event.stopPropagation();
-                toggleComplete(item.id);
-              }}
-              aria-label={completed[item.id] ? 'Mark not done' : 'Mark done'}
-            >
-              {completed[item.id] ? <CheckCircle2 size={20} /> : <span className="mobile-status-ring" />}
-            </button>
-            <button
-              type="button"
-              className="mobile-item-text"
-              onClick={(event) => {
-                event.stopPropagation();
-                openItemDrawer(blockId, item.id);
-              }}
-            >
-              <div className="mobile-item-main">
-                <span className="mobile-item-label">{item.name}</span>
-              </div>
-            </button>
-            <button
-              type="button"
-              className="mobile-item-subtask-toggle"
-              aria-label="Add subtask"
-              onClick={(event) => {
-                event.stopPropagation();
-                toggleSubtaskComposer(item.id);
-              }}
-            >
-              +
-            </button>
-            {item.subItems && item.subItems.length > 0 && (
-              <div className="mobile-subitems">
-                {item.subItems.map((subItem) => (
-                  <div key={subItem.id} className="mobile-item-subrow">
-                    <button
-                      type="button"
-                      className={`mobile-item-check sub ${completed[subItem.id] ? 'done' : 'todo'}`.trim()}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        toggleComplete(subItem.id);
-                      }}
-                      aria-label={completed[subItem.id] ? 'Mark subtask not done' : 'Mark subtask done'}
-                    >
-                      {completed[subItem.id] ? <CheckCircle2 size={17} /> : <span className="mobile-status-ring small" />}
-                    </button>
-                    <button
-                      type="button"
-                      className="mobile-item-subtext"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        openItemDrawer(blockId, item.id);
-                      }}
-                    >
-                      <div className="mobile-item-sub">↳ {subItem.name}</div>
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-            {subtaskComposerByItem[item.id] && (
-              <div className="mobile-item-subtask-composer">
-                <input
-                  type="text"
-                  value={subtaskDraftByItem[item.id] || ''}
-                  onClick={(event) => event.stopPropagation()}
-                  onChange={(event) =>
-                    setSubtaskDraftByItem((prev) => ({
-                      ...prev,
-                      [item.id]: event.target.value
-                    }))
-                  }
-                  placeholder="Add subtask"
-                />
-                <button
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void createSubtaskFromBlock(blockId, item.id);
-                  }}
-                >
-                  Add
-                </button>
-              </div>
-            )}
+            {(() => {
+              const itemStatusEntry = getItemStatusEntry(item);
+              const itemIsPending = isStatusIncomplete(itemStatusEntry?.key || item.status);
+              return (
+                <>
+                  <button
+                    type="button"
+                    className={`mobile-item-check ${itemIsPending ? 'todo' : 'done'}`.trim()}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void openStatusChangeFlow({
+                        entityType: 'item',
+                        listId: item.listId,
+                        targetId: item.id,
+                        parentItemId: item.id,
+                        title: item.name,
+                        currentStatusKey: itemStatusEntry?.key || item.status || null,
+                        currentStatusLabel: itemStatusEntry?.name || 'No status'
+                      });
+                    }}
+                    aria-label="Change status"
+                  >
+                    {itemIsPending ? (
+                      <span className="mobile-status-ring" style={{ color: itemStatusEntry?.color || undefined }} />
+                    ) : (
+                      <Circle size={18} fill={itemStatusEntry?.color || 'currentColor'} stroke={itemStatusEntry?.color || 'currentColor'} />
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    className="mobile-item-text"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      openItemDrawer(blockId, item.id);
+                    }}
+                  >
+                    <div className="mobile-item-main">
+                      <span className="mobile-item-label">{item.name}</span>
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    className="mobile-item-subtask-toggle"
+                    aria-label="Add subtask"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      toggleSubtaskComposer(item.id);
+                    }}
+                  >
+                    +
+                  </button>
+                  {item.subItems && item.subItems.length > 0 && (
+                    <div className="mobile-subitems">
+                      {item.subItems.map((subItem) => {
+                        const subStatusEntry = getSubtaskStatusEntry(subItem);
+                        const subIsPending = isStatusIncomplete(subStatusEntry?.key || subItem.subtask_status);
+                        return (
+                          <div key={subItem.id} className="mobile-item-subrow">
+                            <button
+                              type="button"
+                              className={`mobile-item-check sub ${subIsPending ? 'todo' : 'done'}`.trim()}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void openStatusChangeFlow({
+                                  entityType: 'action',
+                                  listId: subItem.listId || item.listId,
+                                  targetId: subItem.id,
+                                  parentItemId: subItem.parentItemId || item.id,
+                                  title: subItem.name,
+                                  currentStatusKey: subStatusEntry?.key || subItem.subtask_status || null,
+                                  currentStatusLabel: subStatusEntry?.name || 'No status'
+                                });
+                              }}
+                              aria-label="Change subtask status"
+                            >
+                              {subIsPending ? (
+                                <span className="mobile-status-ring small" style={{ color: subStatusEntry?.color || undefined }} />
+                              ) : (
+                                <Circle size={15} fill={subStatusEntry?.color || 'currentColor'} stroke={subStatusEntry?.color || 'currentColor'} />
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              className="mobile-item-subtext"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                openItemDrawer(blockId, item.id);
+                              }}
+                            >
+                              <div className="mobile-item-sub">↳ {subItem.name}</div>
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {subtaskComposerByItem[item.id] && (
+                    <div className="mobile-item-subtask-composer">
+                      <input
+                        type="text"
+                        value={subtaskDraftByItem[item.id] || ''}
+                        onClick={(event) => event.stopPropagation()}
+                        onChange={(event) =>
+                          setSubtaskDraftByItem((prev) => ({
+                            ...prev,
+                            [item.id]: event.target.value
+                          }))
+                        }
+                        placeholder="Add subtask"
+                      />
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void createSubtaskFromBlock(blockId, item.id);
+                        }}
+                      >
+                        Add
+                      </button>
+                    </div>
+                  )}
+                </>
+              );
+            })()}
           </div>
         ))}
       </div>
@@ -2107,14 +2469,10 @@ export default function MobileCalendarWireframe(): JSX.Element {
   };
 
   const handleStatusToggle = async (itemId: string, entityType: 'item' | 'action' = 'item'): Promise<void> => {
-    if (!mobileScope.listId) {
-      setCompleted((prev) => ({ ...prev, [itemId]: !prev[itemId] }));
-      return;
-    }
+    if (!mobileScope.listId) return;
     const listId = mobileScope.listId;
     const statusSet = entityType === 'item' ? (listStatusesByList[listId] || []) : (subtaskStatusesByList[listId] || []);
     if (statusSet.length === 0) {
-      setCompleted((prev) => ({ ...prev, [itemId]: !prev[itemId] }));
       return;
     }
 
@@ -2305,7 +2663,9 @@ export default function MobileCalendarWireframe(): JSX.Element {
         dayEnd.setDate(dayEnd.getDate() + 1);
         const createdStart = new Date(createdEvent.start);
         const createdEnd = new Date(createdEvent.end || createdEvent.start);
-        const safeCreatedEnd = Number.isNaN(createdEnd.getTime()) ? new Date(createdStart.getTime() + 30 * 60 * 1000) : createdEnd;
+        const safeCreatedEnd = Number.isNaN(createdEnd.getTime())
+          ? new Date(createdStart.getTime() + MIN_TIME_BLOCK_MINUTES * 60 * 1000)
+          : createdEnd;
 
         if (!Number.isNaN(createdStart.getTime()) && createdStart < dayEnd && safeCreatedEnd > dayStart) {
           setBlocks((prev) =>
@@ -2313,7 +2673,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
               id: createdEvent.id,
               name: createdEvent.title || 'Untitled',
               startMin: minutesFromDate(createdEvent.start),
-              endMin: Math.max(minutesFromDate(createdEvent.end), minutesFromDate(createdEvent.start) + 30),
+              endMin: Math.max(minutesFromDate(safeCreatedEnd.toISOString()), minutesFromDate(createdEvent.start) + MIN_TIME_BLOCK_MINUTES),
               recurrence:
                 createdEvent.recurrence === 'daily' ||
                 createdEvent.recurrence === 'weekly' ||
@@ -3177,12 +3537,12 @@ export default function MobileCalendarWireframe(): JSX.Element {
                   {blocks.map((block) => {
                     const blockGap = 8;
                     const rawTop = (block.startMin - DAY_START_MIN) * PX_PER_MIN;
-                    const rawHeight = Math.max((block.endMin - block.startMin) * PX_PER_MIN, 74);
+                    const rawHeight = Math.max((block.endMin - block.startMin) * PX_PER_MIN, 24);
                     const top = rawTop + blockGap / 2;
                     const height = Math.max(rawHeight - blockGap, 24);
                     const isCurrent = block.id === currentBlockId;
-                    const orderedBlockItems = sortMobileBlockItems(block.items, completed);
-                    const visibleItems = orderedBlockItems.filter((item) => !completed[item.id]);
+                    const orderedBlockItems = sortMobileBlockItems(block.items);
+                    const visibleItems = orderedBlockItems;
                     const expandedInline = isCurrent || expandedTasksByBlock[block.id];
                     const canToggleTasks = !isCurrent && visibleItems.length > 0;
                     const reservedHeight = 42 + (canToggleTasks ? 24 : 0);
@@ -3226,7 +3586,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                             }}
                           >
                             <ChevronDown size={14} className={expandedTasksByBlock[block.id] ? 'open' : ''} />
-                            {expandedTasksByBlock[block.id] ? 'Hide tasks' : 'Show tasks'}
+                            {expandedTasksByBlock[block.id] ? 'Hide items' : `View items (${visibleItems.length})`}
                           </button>
                         )}
 
@@ -3234,18 +3594,40 @@ export default function MobileCalendarWireframe(): JSX.Element {
                           <div className="mobile-time-block-items">
                             {renderedItems.map((item) => (
                               <div key={item.id} className="mobile-item-row">
-                                <button
-                                  type="button"
-                                  className={`mobile-item-check ${completed[item.id] ? 'done' : 'todo'}`.trim()}
-                                  onPointerDown={(event) => event.stopPropagation()}
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    toggleComplete(item.id);
-                                  }}
-                                  aria-label={completed[item.id] ? 'Mark not done' : 'Mark done'}
-                                >
-                                  {completed[item.id] ? <CheckCircle2 size={20} /> : <span className="mobile-status-ring" />}
-                                </button>
+                                {(() => {
+                                  const itemStatusEntry = getItemStatusEntry(item);
+                                  const itemIsPending = isStatusIncomplete(itemStatusEntry?.key || item.status);
+                                  return (
+                                    <button
+                                      type="button"
+                                      className={`mobile-item-check ${itemIsPending ? 'todo' : 'done'}`.trim()}
+                                      onPointerDown={(event) => event.stopPropagation()}
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        void openStatusChangeFlow({
+                                          entityType: 'item',
+                                          listId: item.listId,
+                                          targetId: item.id,
+                                          parentItemId: item.id,
+                                          title: item.name,
+                                          currentStatusKey: itemStatusEntry?.key || item.status || null,
+                                          currentStatusLabel: itemStatusEntry?.name || 'No status'
+                                        });
+                                      }}
+                                      aria-label="Change status"
+                                    >
+                                      {itemIsPending ? (
+                                        <span className="mobile-status-ring" style={{ color: itemStatusEntry?.color || undefined }} />
+                                      ) : (
+                                        <Circle
+                                          size={18}
+                                          fill={itemStatusEntry?.color || 'currentColor'}
+                                          stroke={itemStatusEntry?.color || 'currentColor'}
+                                        />
+                                      )}
+                                    </button>
+                                  );
+                                })()}
                                 <button
                                   type="button"
                                   className="mobile-item-text"
@@ -3275,18 +3657,43 @@ export default function MobileCalendarWireframe(): JSX.Element {
                                   <div className="mobile-subitems">
                                     {item.subItems.map((subItem) => (
                                       <div key={subItem.id} className="mobile-item-subrow">
-                                        <button
-                                          type="button"
-                                          className={`mobile-item-check sub ${completed[subItem.id] ? 'done' : 'todo'}`.trim()}
-                                          onPointerDown={(event) => event.stopPropagation()}
-                                          onClick={(event) => {
-                                            event.stopPropagation();
-                                            toggleComplete(subItem.id);
-                                          }}
-                                          aria-label={completed[subItem.id] ? 'Mark subtask not done' : 'Mark subtask done'}
-                                        >
-                                          {completed[subItem.id] ? <CheckCircle2 size={17} /> : <span className="mobile-status-ring small" />}
-                                        </button>
+                                        {(() => {
+                                          const subStatusEntry = getSubtaskStatusEntry(subItem);
+                                          const subIsPending = isStatusIncomplete(subStatusEntry?.key || subItem.subtask_status);
+                                          return (
+                                            <button
+                                              type="button"
+                                              className={`mobile-item-check sub ${subIsPending ? 'todo' : 'done'}`.trim()}
+                                              onPointerDown={(event) => event.stopPropagation()}
+                                              onClick={(event) => {
+                                                event.stopPropagation();
+                                                void openStatusChangeFlow({
+                                                  entityType: 'action',
+                                                  listId: subItem.listId || item.listId,
+                                                  targetId: subItem.id,
+                                                  parentItemId: subItem.parentItemId || item.id,
+                                                  title: subItem.name,
+                                                  currentStatusKey: subStatusEntry?.key || subItem.subtask_status || null,
+                                                  currentStatusLabel: subStatusEntry?.name || 'No status'
+                                                });
+                                              }}
+                                              aria-label="Change subtask status"
+                                            >
+                                              {subIsPending ? (
+                                                <span
+                                                  className="mobile-status-ring small"
+                                                  style={{ color: subStatusEntry?.color || undefined }}
+                                                />
+                                              ) : (
+                                                <Circle
+                                                  size={15}
+                                                  fill={subStatusEntry?.color || 'currentColor'}
+                                                  stroke={subStatusEntry?.color || 'currentColor'}
+                                                />
+                                              )}
+                                            </button>
+                                          );
+                                        })()}
                                         <button
                                           type="button"
                                           className="mobile-item-subtext"
@@ -4348,12 +4755,22 @@ export default function MobileCalendarWireframe(): JSX.Element {
                     )}
                     {!itemDrawerCommentsLoading && itemDrawerComments.length > 0 && (
                       <div className="mobile-item-drawer-comment-list">
-                        {itemDrawerComments.map((comment) => (
-                          <article key={comment.id} className="mobile-item-drawer-comment">
-                            <p>{comment.body}</p>
-                            <time>{new Date(comment.created_at).toLocaleString()}</time>
-                          </article>
-                        ))}
+                        {itemDrawerComments.map((comment) => {
+                          const variant =
+                            comment.author_type === 'system'
+                              ? 'system'
+                              : comment.author_type === 'ai'
+                                ? 'ai'
+                                : comment.user_id && comment.user_id === user?.id
+                                  ? 'user'
+                                  : 'other';
+                          return (
+                            <article key={comment.id} className={`mobile-item-drawer-comment ${variant}`.trim()}>
+                              <p>{comment.body}</p>
+                              <time>{new Date(comment.created_at).toLocaleString()}</time>
+                            </article>
+                          );
+                        })}
                       </div>
                     )}
                     <form
@@ -4377,6 +4794,86 @@ export default function MobileCalendarWireframe(): JSX.Element {
                 )}
               </div>
             )}
+            </div>
+          </div>
+        </div>
+      )}
+      {statusSheet.open && (
+        <div className="mobile-status-sheet-overlay" onClick={statusSheet.saving ? undefined : closeStatusSheet}>
+          <div className="mobile-status-sheet" onClick={(event) => event.stopPropagation()}>
+            <div className="mobile-status-sheet-grab" />
+            <div className="mobile-status-sheet-head">
+              <strong>{statusSheet.step === 'select' ? 'Change status' : 'Add a note'}</strong>
+              <button type="button" onClick={closeStatusSheet} disabled={statusSheet.saving}>
+                <X size={16} />
+              </button>
+            </div>
+            <div className="mobile-status-sheet-body">
+              <h4>{statusSheet.title}</h4>
+              {statusSheet.error && <div className="mobile-task-drawer-empty error">{statusSheet.error}</div>}
+              {statusSheet.loading ? (
+                <div className="mobile-drawer-empty">Loading statuses…</div>
+              ) : statusSheet.step === 'select' ? (
+                <div className="mobile-status-sheet-options">
+                  {(
+                    statusSheet.entityType === 'item'
+                      ? listStatusesByList[statusSheet.listId || ''] || []
+                      : subtaskStatusesByList[statusSheet.listId || ''] || []
+                  ).map((status) => (
+                    <button
+                      key={status.id || status.key}
+                      type="button"
+                      className={`mobile-status-sheet-option ${
+                        (statusSheet.currentStatusKey || '') === status.key ? 'current' : ''
+                      }`.trim()}
+                      onClick={() =>
+                        setStatusSheet((prev) => ({
+                          ...prev,
+                          step: 'note',
+                          selectedStatus: status,
+                          error: ''
+                        }))
+                      }
+                    >
+                      <span className="mobile-status-sheet-option-label">
+                        <Circle size={12} fill={status.color || 'currentColor'} stroke={status.color || 'currentColor'} />
+                        {status.name}
+                      </span>
+                      {(statusSheet.currentStatusKey || '') === status.key && <span>Current</span>}
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="mobile-status-sheet-note">
+                  <div className="mobile-status-sheet-summary">
+                    <span>{statusSheet.currentStatusLabel || 'No status'}</span>
+                    <ChevronRight size={14} />
+                    <strong>{statusSheet.selectedStatus?.name}</strong>
+                  </div>
+                  <label className="mobile-status-sheet-note-field">
+                    <span>Completion note</span>
+                    <textarea
+                      value={statusNoteDraft}
+                      onChange={(event) => setStatusNoteDraft(event.target.value)}
+                      placeholder="Add context for the update"
+                      rows={4}
+                    />
+                  </label>
+                  <div className="mobile-status-sheet-actions">
+                    <button
+                      type="button"
+                      className="ghost"
+                      onClick={() => setStatusSheet((prev) => ({ ...prev, step: 'select', error: '' }))}
+                      disabled={statusSheet.saving}
+                    >
+                      Back
+                    </button>
+                    <button type="button" className="primary" onClick={() => void submitStatusChange()} disabled={statusSheet.saving}>
+                      {statusSheet.saving ? 'Saving…' : 'Save update'}
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>

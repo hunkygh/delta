@@ -299,8 +299,8 @@
 .lists-status-head {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  width: 100%;
+  justify-content: flex-start;
+  width: auto;
 }
 
 .lists-status-head-dot {

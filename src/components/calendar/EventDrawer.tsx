@@ -80,6 +80,10 @@ interface EventDrawerProps {
     weekday: 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun',
     itemIds: string[]
   ) => void;
+  onCreateAndAttachSearchItem?: (
+    title: string,
+    options: { listId: string; weekday: 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun' | null }
+  ) => Promise<void> | void;
   occurrenceWeekday: 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun' | null;
   occurrenceItems: Array<{
     id: string;
@@ -154,6 +158,7 @@ export default function EventDrawer({
   onContentAllItemsChange,
   onContentWeekdayListChange,
   onContentWeekdayItemsChange,
+  onCreateAndAttachSearchItem,
   occurrenceWeekday,
   occurrenceItems,
   onToggleOccurrenceItem,
@@ -232,6 +237,7 @@ export default function EventDrawer({
   };
 
   type SlashAttachOption = {
+    kind: 'existing' | 'create';
     listId: string;
     listName: string;
     itemId: string;
@@ -310,12 +316,19 @@ export default function EventDrawer({
       .sort((a, b) => fuzzyScore(query, b.title) - fuzzyScore(query, a.title));
   };
 
+  const activeAttachListId =
+    (contentMode === 'all' ? contentAll.listId : contentByWeekday[activeWeekday]?.listId) ||
+    contentListOptions[0]?.id ||
+    '';
+  const activeAttachListName = listNameById.get(activeAttachListId) || contentListOptions[0]?.name || 'List';
+
   const slashAttachOptions = useMemo<SlashAttachOption[]>(() => {
     const rows: SlashAttachOption[] = [];
     for (const list of contentListOptions) {
       const items = contentItemOptionsByList[list.id] || [];
       for (const item of items) {
         rows.push({
+          kind: 'existing',
           listId: list.id,
           listName: list.name,
           itemId: item.id,
@@ -325,7 +338,8 @@ export default function EventDrawer({
     }
     const query = slashAttachQuery.trim();
     if (!query) return rows.slice(0, 12);
-    return rows
+    const normalizedQuery = normalizeSearchText(query);
+    const filtered = rows
       .filter((row) => fuzzyTokenMatch(query, row.itemTitle) || fuzzyTokenMatch(query, row.listName))
       .sort(
         (a, b) =>
@@ -333,7 +347,29 @@ export default function EventDrawer({
           Math.max(fuzzyScore(query, a.itemTitle), fuzzyScore(query, a.listName))
       )
       .slice(0, 20);
-  }, [contentItemOptionsByList, contentListOptions, slashAttachQuery]);
+
+    const exactMatch =
+      filtered.find((row) => normalizeSearchText(row.itemTitle) === normalizedQuery) ||
+      rows.find((row) => normalizeSearchText(row.itemTitle) === normalizedQuery) ||
+      null;
+
+    const topRow: SlashAttachOption =
+      exactMatch
+        ? exactMatch
+        : {
+            kind: 'create',
+            listId: activeAttachListId,
+            listName: activeAttachListName,
+            itemId: `create:${normalizedQuery}`,
+            itemTitle: query
+          };
+
+    const deduped = [
+      topRow,
+      ...filtered.filter((row) => !(row.listId === topRow.listId && row.itemId === topRow.itemId))
+    ];
+    return deduped.slice(0, 20);
+  }, [activeAttachListId, activeAttachListName, contentItemOptionsByList, contentListOptions, slashAttachQuery]);
 
   const attachedItemsRows = useMemo(() => {
     if ((occurrenceItems || []).length > 0) {
@@ -399,7 +435,16 @@ export default function EventDrawer({
     setSlashTokenStart(null);
   };
 
-  const applySlashAttach = (row: SlashAttachOption): void => {
+  const applySlashAttach = async (row: SlashAttachOption): Promise<void> => {
+    if (row.kind === 'create') {
+      if (!row.itemTitle.trim() || !row.listId) return;
+      await onCreateAndAttachSearchItem?.(row.itemTitle.trim(), {
+        listId: row.listId,
+        weekday: contentMode === 'weekday' ? activeWeekday : null
+      });
+      closeSlashAttach();
+      return;
+    }
     if (contentMode === 'all') {
       if (contentAll.listId !== row.listId) {
         onContentAllListChange(row.listId);
@@ -559,7 +604,7 @@ export default function EventDrawer({
               if (event.key === 'Enter' && !event.shiftKey) {
                 if (slashAttachOptions[slashAttachIndex]) {
                   event.preventDefault();
-                  applySlashAttach(slashAttachOptions[slashAttachIndex]);
+                  void applySlashAttach(slashAttachOptions[slashAttachIndex]);
                 }
               }
             }}
@@ -575,17 +620,17 @@ export default function EventDrawer({
                     <button
                       key={`${row.listId}:${row.itemId}`}
                       type="button"
-                      className={`calendar-event-slash-result ${index === slashAttachIndex ? 'active' : ''}`.trim()}
+                      className={`calendar-event-slash-result ${index === slashAttachIndex ? 'active' : ''} ${index === 0 ? 'enter-target' : ''}`.trim()}
                       onMouseEnter={() => setSlashAttachIndex(index)}
                       onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => applySlashAttach(row)}
+                      onClick={() => void applySlashAttach(row)}
                     >
                       <span className="calendar-event-slash-result-copy">
-                        <strong>{row.itemTitle}</strong>
-                        <small>{row.listName}</small>
+                        <strong>{row.kind === 'create' ? `Create "${row.itemTitle}"` : row.itemTitle}</strong>
+                        <small>{row.kind === 'create' ? `Attach to ${row.listName}` : row.listName}</small>
                       </span>
                       <span className="calendar-event-slash-add" aria-hidden="true">
-                        +
+                        {index === 0 ? '↵' : '+'}
                       </span>
                     </button>
                   ))

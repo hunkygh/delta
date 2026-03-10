@@ -865,12 +865,21 @@
     /* Don't override padding - inherit column layout from .mobile-wireframe-root .mobile-item-row */
   }
 
-  .mobile-time-block.current .mobile-time-block-items .mobile-item-main,
-  .mobile-time-block.current .mobile-time-block-items .mobile-item-sub,
-  .mobile-time-block.current .mobile-time-block-items .mobile-item-check,
-  .mobile-time-block.current .mobile-time-block-items .mobile-item-subtask-toggle {
-    color: #202020;
-  }
+.mobile-time-block.current .mobile-time-block-items .mobile-item-main,
+.mobile-time-block.current .mobile-time-block-items .mobile-item-label,
+.mobile-time-block.current .mobile-time-block-items .mobile-item-sub,
+.mobile-time-block.current .mobile-time-block-items .mobile-item-text,
+.mobile-time-block.current .mobile-time-block-items .mobile-item-check,
+.mobile-time-block.current .mobile-time-block-items .mobile-item-subtask-toggle {
+  color: #ffffff;
+}
+
+.mobile-time-block.current .mobile-time-block-items .mobile-item-check:hover,
+.mobile-time-block.current .mobile-time-block-items .mobile-item-check:focus-visible,
+.mobile-time-block.current .mobile-time-block-items .mobile-item-subtask-toggle:hover,
+.mobile-time-block.current .mobile-time-block-items .mobile-item-subtask-toggle:focus-visible {
+  background: rgba(255, 255, 255, 0.16);
+}
 
   .mobile-block-show-tasks {
     width: fit-content;
@@ -3298,6 +3307,8 @@
     border-radius: 10px;
     background: #ffffff;
     padding: 8px 10px;
+    justify-self: start;
+    max-width: min(88%, 320px);
   }
 
   .mobile-item-drawer-comment p {
@@ -3311,6 +3322,44 @@
   .mobile-item-drawer-comment time {
     color: var(--color-text-muted);
     font-size: 11px;
+  }
+
+  .mobile-item-drawer-comment.user {
+    justify-self: end;
+    background: #111111;
+    border-color: #111111;
+  }
+
+  .mobile-item-drawer-comment.user p,
+  .mobile-item-drawer-comment.user time {
+    color: #ffffff;
+  }
+
+  .mobile-item-drawer-comment.system {
+    justify-self: stretch;
+    max-width: none;
+    border: none;
+    background: transparent;
+    padding: 2px 0;
+    text-align: center;
+  }
+
+  .mobile-item-drawer-comment.system p {
+    margin: 0;
+    color: rgba(75, 85, 99, 0.78);
+    font-size: 11px;
+    letter-spacing: 0.02em;
+  }
+
+  .mobile-item-drawer-comment.system time {
+    display: block;
+    margin-top: 3px;
+    color: rgba(107, 114, 128, 0.8);
+  }
+
+  .mobile-item-drawer-comment.ai {
+    background: rgba(234, 239, 255, 0.92);
+    border-color: rgba(166, 180, 220, 0.6);
   }
 
   .mobile-item-drawer-comment-form {
@@ -3339,6 +3388,170 @@
     height: 34px;
     font-size: 12px;
     font-weight: 500;
+  }
+
+  .mobile-status-sheet-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 90;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    background: rgba(10, 12, 18, 0.24);
+    backdrop-filter: blur(12px);
+    padding: 16px 12px max(18px, env(safe-area-inset-bottom));
+  }
+
+  .mobile-status-sheet {
+    width: min(100%, 480px);
+    border-radius: 22px;
+    background: rgba(255, 255, 255, 0.96);
+    border: 1px solid rgba(214, 220, 228, 0.9);
+    box-shadow: 0 26px 60px rgba(15, 23, 42, 0.18);
+    padding: 10px 14px 16px;
+  }
+
+  .mobile-status-sheet-grab {
+    width: 42px;
+    height: 4px;
+    border-radius: 999px;
+    background: rgba(148, 163, 184, 0.7);
+    margin: 0 auto 10px;
+  }
+
+  .mobile-status-sheet-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 10px;
+  }
+
+  .mobile-status-sheet-head strong {
+    color: var(--color-text-primary);
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .mobile-status-sheet-head button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    border: none;
+    border-radius: 999px;
+    background: rgba(15, 23, 42, 0.06);
+    color: var(--color-text-primary);
+  }
+
+  .mobile-status-sheet-body {
+    display: grid;
+    gap: 12px;
+  }
+
+  .mobile-status-sheet-body h4 {
+    margin: 0;
+    color: var(--color-text-primary);
+    font-size: 15px;
+    font-weight: 600;
+  }
+
+  .mobile-status-sheet-options {
+    display: grid;
+    gap: 8px;
+  }
+
+  .mobile-status-sheet-option {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    width: 100%;
+    border: 1px solid var(--color-border-default);
+    border-radius: 12px;
+    background: #ffffff;
+    color: var(--color-text-primary);
+    padding: 11px 12px;
+    font-size: 13px;
+  }
+
+  .mobile-status-sheet-option.current {
+    border-color: rgba(59, 130, 246, 0.5);
+    background: rgba(239, 246, 255, 0.9);
+  }
+
+  .mobile-status-sheet-option-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    font-weight: 500;
+  }
+
+  .mobile-status-sheet-note {
+    display: grid;
+    gap: 12px;
+  }
+
+  .mobile-status-sheet-summary {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--color-text-secondary);
+    font-size: 13px;
+  }
+
+  .mobile-status-sheet-summary strong {
+    color: var(--color-text-primary);
+  }
+
+  .mobile-status-sheet-note-field {
+    display: grid;
+    gap: 6px;
+  }
+
+  .mobile-status-sheet-note-field span {
+    color: var(--color-text-secondary);
+    font-size: 12px;
+    font-weight: 500;
+  }
+
+  .mobile-status-sheet-note-field textarea {
+    width: 100%;
+    border: 1px solid var(--color-border-default);
+    border-radius: 12px;
+    background: #ffffff;
+    color: var(--color-text-primary);
+    font-size: 13px;
+    font-family: var(--font-body);
+    line-height: 1.45;
+    padding: 10px 12px;
+    resize: vertical;
+  }
+
+  .mobile-status-sheet-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .mobile-status-sheet-actions button {
+    height: 38px;
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .mobile-status-sheet-actions .ghost {
+    border: 1px solid var(--color-border-default);
+    background: #ffffff;
+    color: var(--color-text-primary);
+  }
+
+  .mobile-status-sheet-actions .primary {
+    border: none;
+    background: #111111;
+    color: #ffffff;
   }
 
   .mobile-drawer-expand {
