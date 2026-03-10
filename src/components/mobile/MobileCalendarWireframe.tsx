@@ -158,6 +158,19 @@ const toInputTime = (minute: number): string => {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 };
 
+const sortMobileBlockItems = (
+  items: MobileBlockItem[],
+  completedMap: Record<string, boolean>
+): MobileBlockItem[] =>
+  [...items].sort((a, b) => {
+    const aDone = completedMap[a.id] === true;
+    const bDone = completedMap[b.id] === true;
+    if (aDone !== bDone) {
+      return aDone ? 1 : -1;
+    }
+    return a.name.localeCompare(b.name);
+  });
+
 export default function MobileCalendarWireframe(): JSX.Element {
   const { user } = useAuth();
   const [view, setView] = useState<'calendar' | 'ai'>('calendar');
@@ -710,6 +723,11 @@ export default function MobileCalendarWireframe(): JSX.Element {
       dayStart.setHours(0, 0, 0, 0);
       const dayEnd = new Date(dayStart);
       dayEnd.setDate(dayEnd.getDate() + 1);
+      const viewedDateWeekdayKey =
+        calendarService.getWeekdayKeyForOccurrence(
+          new Date(viewedDate.getFullYear(), viewedDate.getMonth(), viewedDate.getDate(), 12, 0, 0, 0).toISOString(),
+          Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/Denver'
+        ) || 'mon';
       const mapped = visibleEvents
         .filter((event: any) => {
           const start = new Date(event.start);
@@ -729,7 +747,11 @@ export default function MobileCalendarWireframe(): JSX.Element {
               ? event.recurrence
               : 'none',
           items: (() => {
-            const rules = contentRulesByEventId[event.id] || [];
+            const rules = (contentRulesByEventId[event.id] || []).filter(
+              (rule: any) =>
+                rule?.selector_type === 'all' ||
+                (rule?.selector_type === 'weekday' && rule?.selector_value === viewedDateWeekdayKey)
+            );
             const hydratedItems: MobileBlockItem[] = [];
             const seenItemIds = new Set<string>();
             for (const rule of rules) {
@@ -739,12 +761,13 @@ export default function MobileCalendarWireframe(): JSX.Element {
               for (const itemId of rule?.item_ids || []) {
                 if (!itemId || seenItemIds.has(itemId)) continue;
                 seenItemIds.add(itemId);
+                const indexedList = indexedLists.find((list) => list.id === listId);
                 const row = rowById.get(itemId);
                 hydratedItems.push({
                   id: itemId,
-                  name: row?.title || indexedLists.find((list) => list.id === listId)?.items.find((item) => item.id === itemId)?.title || 'Untitled',
+                  name: row?.title || indexedList?.items.find((item) => item.id === itemId)?.title || 'Untitled',
                   description: row?.description || '',
-                  focalId: listId ? indexedLists.find((list) => list.id === listId)?.focalId : undefined,
+                  focalId: indexedList?.focalId,
                   listId: listId || undefined,
                   subItems: (row?.actions || []).map((action: any) => ({
                     id: action.id,
@@ -1767,15 +1790,32 @@ export default function MobileCalendarWireframe(): JSX.Element {
   const upsertBlockContentItems = async (blockId: string, listId: string, itemIds: string[]): Promise<void> => {
     if (!blockId || !listId || itemIds.length === 0) return;
     const existing = await calendarService.getTimeBlockContentRules(blockId);
-    const target = (existing || []).find(
+    const viewedDateWeekdayKey =
+      calendarService.getWeekdayKeyForOccurrence(
+        new Date(viewedDate.getFullYear(), viewedDate.getMonth(), viewedDate.getDate(), 12, 0, 0, 0).toISOString(),
+        Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/Denver'
+      ) || 'mon';
+    const matchingWeekdayRule = (existing || []).find(
+      (rule: any) =>
+        rule.selector_type === 'weekday' &&
+        rule.selector_value === viewedDateWeekdayKey &&
+        rule.list_id === listId
+    );
+    const matchingAllRule = (existing || []).find(
       (rule: any) => rule.selector_type === 'all' && !rule.selector_value && rule.list_id === listId
     );
+    const target =
+      matchingWeekdayRule ||
+      matchingAllRule ||
+      ((existing || []).some((rule: any) => rule.selector_type === 'weekday')
+        ? { selector_type: 'weekday', selector_value: viewedDateWeekdayKey, list_id: listId }
+        : { selector_type: 'all', selector_value: null, list_id: listId });
     const mergedItemIds = [...new Set([...(target?.item_ids || []), ...itemIds])];
     await calendarService.upsertTimeBlockContentRule({
       id: target?.id,
       time_block_id: blockId,
-      selector_type: 'all',
-      selector_value: null,
+      selector_type: target?.selector_type || 'all',
+      selector_value: target?.selector_type === 'weekday' ? target?.selector_value || viewedDateWeekdayKey : null,
       list_id: listId,
       item_ids: mergedItemIds
     });
@@ -1869,6 +1909,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
           [item.listId]: [...(prev[item.listId] || []), { id: item.id, title: item.title, actions: [] }]
         };
       });
+      void loadCalendarBlocks();
     } finally {
       setTaskDrawerPendingKey(null);
     }
@@ -1908,6 +1949,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
         ]
       }));
       setTaskDrawerSearch('');
+      void loadCalendarBlocks();
     } finally {
       setTaskDrawerPendingKey(null);
     }
@@ -3074,7 +3116,8 @@ export default function MobileCalendarWireframe(): JSX.Element {
                     const top = rawTop + blockGap / 2;
                     const height = Math.max(rawHeight - blockGap, 24);
                     const isCurrent = block.id === currentBlockId;
-                    const visibleItems = block.items.filter((item) => !completed[item.id]);
+                    const orderedBlockItems = sortMobileBlockItems(block.items, completed);
+                    const visibleItems = orderedBlockItems.filter((item) => !completed[item.id]);
                     const expandedInline = isCurrent || expandedTasksByBlock[block.id];
                     const canToggleTasks = !isCurrent && visibleItems.length > 0;
                     const reservedHeight = 42 + (canToggleTasks ? 24 : 0);
@@ -4228,7 +4271,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                   <h4>Attached items</h4>
                   {activeDrawerBlock?.items?.length ? (
                     <div className="mobile-drawer-linked-list">
-                      {activeDrawerBlock.items.map((item) => (
+                      {sortMobileBlockItems(activeDrawerBlock.items, completed).map((item) => (
                         <div key={item.id} className="mobile-drawer-linked-item">
                           <div className="mobile-drawer-linked-title">{item.name}</div>
                           {!!item.subItems?.length && (
@@ -4332,7 +4375,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                   </div>
                   {activeDrawerBlock?.items?.length ? (
                     <div className="mobile-drawer-edit-linked-list">
-                      {activeDrawerBlock.items.map((item) => (
+                      {sortMobileBlockItems(activeDrawerBlock.items, completed).map((item) => (
                           <div key={item.id} className="mobile-item-row">
                             <button
                               type="button"
