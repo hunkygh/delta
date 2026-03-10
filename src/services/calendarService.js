@@ -508,11 +508,29 @@ export const calendarService = {
       updated_at: new Date().toISOString()
     };
 
-    const { data, error } = await supabase
-      .from('time_block_content_rules')
-      .upsert(row, { onConflict: 'time_block_id,selector_type,selector_value,list_id' })
-      .select('*')
-      .single();
+    let data;
+    let error;
+
+    if (rule.id) {
+      const updatePayload = { ...row };
+      delete updatePayload.id;
+      const result = await supabase
+        .from('time_block_content_rules')
+        .update(updatePayload)
+        .eq('id', rule.id)
+        .select('*')
+        .single();
+      data = result.data;
+      error = result.error;
+    } else {
+      const result = await supabase
+        .from('time_block_content_rules')
+        .upsert(row, { onConflict: 'time_block_id,selector_type,selector_value,list_id' })
+        .select('*')
+        .single();
+      data = result.data;
+      error = result.error;
+    }
 
     if (error) {
       if (isMissingTimeBlockContentRulesTableError(error)) {

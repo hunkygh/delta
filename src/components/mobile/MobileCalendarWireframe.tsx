@@ -170,6 +170,15 @@ const dedupeMobileBlockItems = (items: MobileBlockItem[]): MobileBlockItem[] => 
   });
 };
 
+const normalizeLinkedEntityId = (value: string | null | undefined): string => {
+  if (!value) return '';
+  if (value.startsWith('item|')) return value.slice(5);
+  if (value.startsWith('action|')) return value.slice(7);
+  if (value.startsWith('lane|')) return value.slice(5);
+  if (value.startsWith('focal|')) return value.slice(6);
+  return value;
+};
+
 export default function MobileCalendarWireframe(): JSX.Element {
   const { user } = useAuth();
   const [view, setView] = useState<'calendar' | 'ai'>('calendar');
@@ -234,6 +243,8 @@ export default function MobileCalendarWireframe(): JSX.Element {
   const [taskDrawerLoading, setTaskDrawerLoading] = useState(false);
   const [taskDrawerExpandedFocals, setTaskDrawerExpandedFocals] = useState<Record<string, boolean>>({});
   const [taskDrawerExpandedLists, setTaskDrawerExpandedLists] = useState<Record<string, boolean>>({});
+  const [taskDrawerError, setTaskDrawerError] = useState('');
+  const [optimisticAttachedByBlock, setOptimisticAttachedByBlock] = useState<Record<string, string[]>>({});
 
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatDraft, setChatDraft] = useState('');
@@ -639,6 +650,14 @@ export default function MobileCalendarWireframe(): JSX.Element {
         listIdsToHydrate.map(async (listId) => [listId, await focalBoardService.getItemsByListId(listId)] as const)
       );
       const itemsByListId = new Map<string, any[]>(listRows);
+      const itemTitleById = new Map<string, string>();
+      listRows.forEach(([, rows]) => {
+        (rows || []).forEach((row: any) => {
+          const normalizedId = normalizeLinkedEntityId(row?.id);
+          if (!normalizedId) return;
+          if (row?.title) itemTitleById.set(normalizedId, row.title);
+        });
+      });
 
       const dayStart = new Date(viewedDate);
       dayStart.setHours(0, 0, 0, 0);
@@ -678,15 +697,20 @@ export default function MobileCalendarWireframe(): JSX.Element {
             for (const rule of rules) {
               const listId = rule?.list_id;
               const rows = listId ? (itemsByListId.get(listId) || []) : [];
-              const rowById = new Map(rows.map((row: any) => [row.id, row]));
+              const rowById = new Map(rows.map((row: any) => [normalizeLinkedEntityId(row.id), row]));
               for (const itemId of rule?.item_ids || []) {
-                if (!itemId || seenItemIds.has(itemId)) continue;
-                seenItemIds.add(itemId);
+                const normalizedItemId = normalizeLinkedEntityId(itemId);
+                if (!normalizedItemId || seenItemIds.has(normalizedItemId)) continue;
+                seenItemIds.add(normalizedItemId);
                 const indexedList = indexedLists.find((list) => list.id === listId);
-                const row = rowById.get(itemId);
+                const row = rowById.get(normalizedItemId);
                 hydratedItems.push({
-                  id: itemId,
-                  name: row?.title || indexedList?.items.find((item) => item.id === itemId)?.title || 'Untitled',
+                  id: normalizedItemId,
+                  name:
+                    row?.title ||
+                    itemTitleById.get(normalizedItemId) ||
+                    indexedList?.items.find((item) => normalizeLinkedEntityId(item.id) === normalizedItemId)?.title ||
+                    'Untitled',
                   description: row?.description || '',
                   focalId: indexedList?.focalId,
                   listId: listId || undefined,
@@ -1685,7 +1709,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
   };
 
   const upsertBlockContentItems = async (blockId: string, listId: string, itemIds: string[]): Promise<void> => {
-    if (!blockId || !listId || itemIds.length === 0) return;
+    if (!blockId || !listId || itemIds.length === 0 || !user?.id) return;
     const existing = await calendarService.getTimeBlockContentRules(blockId);
     const viewedDateWeekdayKey =
       calendarService.getWeekdayKeyForOccurrence(
@@ -1710,6 +1734,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
     const mergedItemIds = [...new Set([...(target?.item_ids || []), ...itemIds])];
     await calendarService.upsertTimeBlockContentRule({
       id: target?.id,
+      user_id: user.id,
       time_block_id: blockId,
       selector_type: target?.selector_type || 'all',
       selector_value: target?.selector_type === 'weekday' ? target?.selector_value || viewedDateWeekdayKey : null,
@@ -1739,7 +1764,17 @@ export default function MobileCalendarWireframe(): JSX.Element {
     if (!user?.id) return;
     setTaskDrawerLoading(true);
     try {
-      const lists = await focalBoardService.getListsForUser(user.id);
+      const [focalRows, lists] = await Promise.all([
+        focalBoardService.getFocals(user.id),
+        focalBoardService.getListsForUser(user.id)
+      ]);
+      if ((focalRows || []).length > 0) {
+        setFocals((focalRows || []).map((entry: any) => ({
+          id: entry.id,
+          name: entry.name,
+          order_num: entry.order_num ?? 0
+        })));
+      }
       const grouped = (lists || []).reduce((acc: Record<string, MobileList[]>, list: any) => {
         const focalId = list?.focal_id;
         if (!focalId) return acc;
@@ -1787,6 +1822,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
     setDrawerClosing(false);
     setTaskDrawerSearch('');
     setTaskDrawerPendingKey(null);
+    setTaskDrawerError('');
     setTaskDrawerListId(inferListForBlock(blockId));
     setTaskDrawerExpandedFocals({});
     setTaskDrawerExpandedLists({});
@@ -1796,17 +1832,34 @@ export default function MobileCalendarWireframe(): JSX.Element {
 
   const attachExistingItemToBlock = async (blockId: string, item: { id: string; title: string; listId: string }): Promise<void> => {
     setTaskDrawerPendingKey(`item:${item.id}`);
+    setTaskDrawerError('');
+    const normalizedItemId = normalizeLinkedEntityId(item.id);
+    setOptimisticAttachedByBlock((prev) => ({
+      ...prev,
+      [blockId]: [...new Set([...(prev[blockId] || []), normalizedItemId])]
+    }));
     try {
-      await upsertBlockContentItems(blockId, item.listId, [item.id]);
-      addItemsIntoBlockState(blockId, [{ id: item.id, title: item.title, listId: item.listId }]);
+      await upsertBlockContentItems(blockId, item.listId, [normalizedItemId]);
+      addItemsIntoBlockState(blockId, [{ id: normalizedItemId, title: item.title, listId: item.listId }]);
       setItemsByList((prev) => {
-        if ((prev[item.listId] || []).some((entry) => entry.id === item.id)) return prev;
+        if ((prev[item.listId] || []).some((entry) => normalizeLinkedEntityId(entry.id) === normalizedItemId)) return prev;
         return {
           ...prev,
-          [item.listId]: [...(prev[item.listId] || []), { id: item.id, title: item.title, actions: [] }]
+          [item.listId]: [...(prev[item.listId] || []), { id: normalizedItemId, title: item.title, actions: [] }]
         };
       });
       void loadCalendarBlocks();
+    } catch (error) {
+      console.error('Failed to attach existing item to mobile time block:', error);
+      const nextMessage =
+        typeof error === 'object' && error && 'message' in error && typeof (error as any).message === 'string'
+          ? (error as any).message
+          : 'Could not attach item to time block.';
+      setTaskDrawerError(nextMessage);
+      setOptimisticAttachedByBlock((prev) => ({
+        ...prev,
+        [blockId]: (prev[blockId] || []).filter((entry) => entry !== normalizedItemId)
+      }));
     } finally {
       setTaskDrawerPendingKey(null);
     }
@@ -1816,6 +1869,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
     const title = taskDrawerSearch.trim();
     if (!title || !user?.id) return;
     setTaskDrawerPendingKey('create');
+    setTaskDrawerError('');
     let chosenListId = taskDrawerListId;
     try {
       if (!chosenListId) {
@@ -1830,16 +1884,21 @@ export default function MobileCalendarWireframe(): JSX.Element {
       let created: any = null;
       created = await focalBoardService.createItem(chosenListId, user.id, title);
       if (!created?.id) return;
+      const normalizedCreatedId = normalizeLinkedEntityId(created.id);
+      setOptimisticAttachedByBlock((prev) => ({
+        ...prev,
+        [blockId]: [...new Set([...(prev[blockId] || []), normalizedCreatedId])]
+      }));
       if (chosenListId) {
-        await upsertBlockContentItems(blockId, chosenListId, [created.id]);
+        await upsertBlockContentItems(blockId, chosenListId, [normalizedCreatedId]);
       }
-      addItemsIntoBlockState(blockId, [{ id: created.id, title: created.title || title, listId: chosenListId || null }]);
+      addItemsIntoBlockState(blockId, [{ id: normalizedCreatedId, title: created.title || title, listId: chosenListId || null }]);
       setItemsByList((prev) => ({
         ...prev,
         [chosenListId as string]: [
           ...(prev[chosenListId as string] || []),
           {
-            id: created.id,
+            id: normalizedCreatedId,
             title: created.title || title,
             actions: []
           }
@@ -1847,6 +1906,13 @@ export default function MobileCalendarWireframe(): JSX.Element {
       }));
       setTaskDrawerSearch('');
       void loadCalendarBlocks();
+    } catch (error) {
+      console.error('Failed to create and attach item from mobile drawer:', error);
+      const nextMessage =
+        typeof error === 'object' && error && 'message' in error && typeof (error as any).message === 'string'
+          ? (error as any).message
+          : 'Could not create and attach item.';
+      setTaskDrawerError(nextMessage);
     } finally {
       setTaskDrawerPendingKey(null);
     }
@@ -4050,6 +4116,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                   />
                 </label>
                 <div className="mobile-task-drawer-results">
+                  {!!taskDrawerError && <div className="mobile-task-drawer-empty error">{taskDrawerError}</div>}
                   {taskDrawerLoading && <div className="mobile-task-drawer-empty">Loading lists and items…</div>}
                   {!taskDrawerLoading && taskTreeRows.length === 0 && (
                     <div className="mobile-task-drawer-empty">No matching lists</div>
@@ -4086,7 +4153,12 @@ export default function MobileCalendarWireframe(): JSX.Element {
                               {listExpanded && (
                                 <div className="mobile-task-drawer-items">
                                   {list.items.map((item) => {
-                                    const isAdded = !!activeDrawerBlock?.items.some((entry) => entry.id === item.id);
+                                    const normalizedItemId = normalizeLinkedEntityId(item.id);
+                                    const isAdded =
+                                      !!activeDrawerBlock?.items.some(
+                                        (entry) => normalizeLinkedEntityId(entry.id) === normalizedItemId
+                                      ) ||
+                                      !!optimisticAttachedByBlock[drawer.blockId as string]?.includes(normalizedItemId);
                                     return (
                                       <div key={item.id} className="mobile-task-drawer-result-row">
                                         <div className="mobile-task-drawer-result-copy">

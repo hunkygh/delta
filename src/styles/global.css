@@ -3529,8 +3529,8 @@ p {
 
 .calendar-event-attach-row {
   display: grid;
-  grid-template-columns: 16px 16px 24px minmax(0, 1fr) 16px auto;
-  align-items: center;
+  grid-template-columns: 16px 16px minmax(0, 1fr) auto auto auto;
+  align-items: start;
   gap: 8px;
 }
 
@@ -3577,9 +3577,11 @@ p {
   font-size: 0.82rem;
   padding: 0;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow: visible;
+  text-overflow: unset;
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.35;
 }
 
 .calendar-event-attach-title.completed {
@@ -3595,6 +3597,7 @@ p {
   font-size: 0.7rem;
   color: #7b8495;
   white-space: nowrap;
+  align-self: start;
 }
 
 .calendar-event-attach-row:hover {
@@ -7094,14 +7097,21 @@ body.sidebar-resizing {
 }
 
 .calendar-event-delete-btn {
-  border: 1px solid #f0c9c9 !important;
-  background: #fff6f6 !important;
+  margin-right: auto;
+  width: 34px;
+  height: 34px;
+  border: none !important;
+  border-radius: 999px !important;
+  background: transparent !important;
   color: #b42318 !important;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 !important;
 }
 
 .calendar-event-delete-btn:hover,
 .calendar-event-delete-btn:focus-visible {
-  border-color: #e8a7a7 !important;
   background: #ffecec !important;
 }
 

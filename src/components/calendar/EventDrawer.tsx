@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { X } from 'lucide-react';
+import { Trash2, X } from 'lucide-react';
 import type { CustomRecurrenceConfig, RecurrenceRule } from '../../types/Event';
 import Button from '../Button';
 import ProposalReviewTable, { type ProposalReviewRow } from '../ProposalReviewTable';
@@ -1114,9 +1114,9 @@ export default function EventDrawer({
 
       <footer className="calendar-event-drawer-side-footer">
         {!isCreateFlow && onDelete && (
-          <Button variant="secondary" className="calendar-event-delete-btn" onClick={onDelete}>
-            Delete
-          </Button>
+          <button type="button" className="calendar-event-delete-btn" onClick={onDelete} aria-label="Delete event">
+            <Trash2 size={16} />
+          </button>
         )}
         <Button variant="secondary" className="calendar-event-secondary-btn" onClick={onCancel}>
           Cancel

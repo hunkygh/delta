@@ -834,9 +834,9 @@
     border: 1px solid #d6d6d6;
     border-radius: 22px;
     background: #ffffff;
-    padding: 10px 12px 10px;
+    padding: 8px 12px 10px;
     display: grid;
-    gap: 8px;
+    gap: 4px;
     grid-template-rows: auto auto;
     align-content: start;
     overflow: hidden;
@@ -1124,7 +1124,9 @@
     gap: 6px;
     align-content: start;
     justify-items: start;
-    margin-top: 2px;
+    align-self: start;
+    justify-self: stretch;
+    margin-top: 0;
     overflow: hidden;
   }
 
@@ -3109,6 +3111,10 @@
     font-size: 12px;
   }
 
+  .mobile-task-drawer-empty.error {
+    color: var(--color-status-danger);
+  }
+
   .mobile-drawer-description {
     margin: 0 0 12px;
     color: var(--color-text-secondary);
@@ -3412,16 +3418,18 @@
 
   .mobile-wireframe-root .mobile-time-block {
     border-radius: 18px;
-    padding: 10px 12px 10px;
-    gap: 7px;
+    padding: 8px 12px 10px;
+    gap: 4px;
     grid-template-rows: auto 1fr;
     align-content: start;
+    align-items: start;
+    justify-items: stretch;
   }
 
   .mobile-wireframe-root .mobile-time-block-head {
     align-items: flex-start;
     gap: 8px;
-    padding-top: 1px;
+    padding-top: 0;
   }
 
   .mobile-wireframe-root .mobile-time-block-head h3 {
@@ -3436,6 +3444,44 @@
 
   .mobile-wireframe-root .mobile-time-block-items {
     gap: 6px;
+    align-self: start;
+    justify-self: stretch;
+    margin-top: 0;
+  }
+
+  .mobile-wireframe-root .mobile-time-block-items .mobile-item-row,
+  .mobile-wireframe-root .mobile-drawer-linked-list.actionable .mobile-item-row {
+    grid-template-columns: 26px minmax(0, 1fr) 26px;
+    align-items: center;
+    padding: 2px 0;
+  }
+
+  .mobile-wireframe-root .mobile-time-block-items .mobile-item-check,
+  .mobile-wireframe-root .mobile-drawer-linked-list.actionable .mobile-item-check {
+    grid-column: 1;
+    align-self: center;
+    justify-self: center;
+  }
+
+  .mobile-wireframe-root .mobile-time-block-items .mobile-item-text,
+  .mobile-wireframe-root .mobile-drawer-linked-list.actionable .mobile-item-text {
+    grid-column: 2;
+    align-self: center;
+  }
+
+  .mobile-wireframe-root .mobile-time-block-items .mobile-item-main,
+  .mobile-wireframe-root .mobile-drawer-linked-list.actionable .mobile-item-main,
+  .mobile-wireframe-root .mobile-time-block-items .mobile-item-label,
+  .mobile-wireframe-root .mobile-drawer-linked-list.actionable .mobile-item-label {
+    align-items: center;
+    min-height: 26px;
+  }
+
+  .mobile-wireframe-root .mobile-time-block-items .mobile-item-subtask-toggle,
+  .mobile-wireframe-root .mobile-drawer-linked-list.actionable .mobile-item-subtask-toggle {
+    grid-column: 3;
+    align-self: center;
+    justify-self: center;
   }
 
   .mobile-wireframe-root .mobile-item-row {
