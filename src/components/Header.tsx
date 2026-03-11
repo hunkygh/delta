@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { Calendar, Search, X, ArrowDown, ChevronDown } from 'lucide-react';
-import { Microphone, PaperPlaneTilt } from '@phosphor-icons/react';
+import { Microphone, PaperPlaneTilt, Plus } from '@phosphor-icons/react';
 import type { User } from '@supabase/supabase-js';
 import type { ChatContext, ChatDebugMeta, ChatMessage, ChatProposal } from '../types/chat';
 import chatPersistence from '../services/chatPersistence';
 import chatService from '../services/chatService';
 import focalBoardService from '../services/focalBoardService';
 import docsService from '../services/docsService';
+import { calendarService } from '../services/calendarService';
 
 interface HeaderProps {
   user: User | null;
@@ -25,6 +26,8 @@ interface SourceOption {
   label: string;
   context: ChatContext;
 }
+
+type HeaderCreateType = 'item' | 'task' | 'time_block' | 'note';
 
 export default function Header({
   user,
@@ -52,8 +55,24 @@ export default function Header({
   const [dismissedProposalIds, setDismissedProposalIds] = useState<Record<string, boolean>>({});
   const [proposalNotes, setProposalNotes] = useState<Record<string, string>>({});
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
+  const [createPanelOpen, setCreatePanelOpen] = useState(false);
+  const [createType, setCreateType] = useState<HeaderCreateType>('item');
+  const [createTitle, setCreateTitle] = useState('');
+  const [createDescription, setCreateDescription] = useState('');
+  const [createListId, setCreateListId] = useState<string>('');
+  const [createItemId, setCreateItemId] = useState<string>('');
+  const [createStart, setCreateStart] = useState('');
+  const [createEnd, setCreateEnd] = useState('');
+  const [createFocals, setCreateFocals] = useState<Array<{ id: string; name: string }>>([]);
+  const [createLists, setCreateLists] = useState<Array<{ id: string; focal_id: string; name: string; item_label?: string | null; action_label?: string | null }>>([]);
+  const [createItems, setCreateItems] = useState<Array<{ id: string; lane_id: string; title: string }>>([]);
+  const [createLoading, setCreateLoading] = useState(false);
+  const [createSubmitting, setCreateSubmitting] = useState(false);
+  const [createFeedback, setCreateFeedback] = useState<string>('');
+  const [createError, setCreateError] = useState<string>('');
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const sourceMenuRef = useRef<HTMLDivElement | null>(null);
+  const createPanelRef = useRef<HTMLDivElement | null>(null);
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const previousContextSignatureRef = useRef<string>('unset');
   const streamTimerRef = useRef<number | null>(null);
@@ -133,6 +152,18 @@ export default function Header({
   }, [sourceMenuOpen]);
 
   useEffect(() => {
+    if (!createPanelOpen) return;
+    const onPointerDown = (event: MouseEvent): void => {
+      if (!createPanelRef.current) return;
+      if (!createPanelRef.current.contains(event.target as Node)) {
+        setCreatePanelOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    return () => document.removeEventListener('mousedown', onPointerDown);
+  }, [createPanelOpen]);
+
+  useEffect(() => {
     if (!sourceMenuOpen || !user?.id) return;
     let cancelled = false;
     const loadSourceOptions = async (): Promise<void> => {
@@ -189,6 +220,86 @@ export default function Header({
     setSelectedSourceId('current');
     setSelectedSourceContext(null);
   }, [contextSignature]);
+
+  useEffect(() => {
+    if (!createPanelOpen || !user?.id) return;
+    let cancelled = false;
+    const loadCreateContext = async (): Promise<void> => {
+      setCreateLoading(true);
+      try {
+        const [focalRows, listRows] = await Promise.all([
+          focalBoardService.getFocals(user.id),
+          focalBoardService.getListsForUser(user.id)
+        ]);
+        if (cancelled) return;
+        setCreateFocals((focalRows || []).map((row: any) => ({ id: row.id, name: row.name })));
+        const normalizedLists = (listRows || []).map((row: any) => ({
+          id: row.id,
+          focal_id: row.focal_id,
+          name: row.name,
+          item_label: row.item_label,
+          action_label: row.action_label
+        }));
+        setCreateLists(normalizedLists);
+
+        const inferredListId =
+          chatContext.list_id ||
+          (chatContext.item_id
+            ? normalizedLists.find((list: { id: string }) => list.id === chatContext.list_id)?.id || ''
+            : normalizedLists[0]?.id || '');
+        setCreateListId((prev) => prev || inferredListId);
+
+        if (chatContext.item_id) {
+          setCreateItemId((prev) => prev || chatContext.item_id || '');
+        }
+      } catch (error: any) {
+        if (!cancelled) {
+          setCreateError(error?.message || 'Failed to load create options');
+        }
+      } finally {
+        if (!cancelled) {
+          setCreateLoading(false);
+        }
+      }
+    };
+    void loadCreateContext();
+    return () => {
+      cancelled = true;
+    };
+  }, [createPanelOpen, user?.id, chatContext.item_id, chatContext.list_id]);
+
+  useEffect(() => {
+    if (!createPanelOpen || !user?.id) return;
+    if (createType !== 'task') return;
+    const targetListId =
+      createListId ||
+      (chatContext.list_id && createLists.some((list) => list.id === chatContext.list_id) ? chatContext.list_id : '');
+    if (!targetListId) return;
+    let cancelled = false;
+    const loadItems = async (): Promise<void> => {
+      try {
+        const rows = await focalBoardService.getItemsByListId(targetListId);
+        if (cancelled) return;
+        const mapped = (rows || []).map((row: any) => ({
+          id: row.id,
+          lane_id: row.lane_id,
+          title: row.title
+        }));
+        setCreateItems(mapped);
+        if (!createItemId) {
+          setCreateItemId(chatContext.item_id && mapped.some((item: { id: string }) => item.id === chatContext.item_id) ? chatContext.item_id : mapped[0]?.id || '');
+        }
+      } catch {
+        if (!cancelled) {
+          setCreateItems([]);
+        }
+      }
+    };
+    void loadItems();
+    return () => {
+      cancelled = true;
+    };
+  }, [createPanelOpen, createType, createListId, createItemId, createLists, chatContext.item_id, chatContext.list_id, user?.id]);
 
   useEffect(() => {
     return () => {
@@ -363,6 +474,109 @@ export default function Header({
     }
   };
 
+  const roundToQuarterHour = (date: Date): Date => {
+    const next = new Date(date);
+    const minutes = next.getMinutes();
+    const roundedMinutes = Math.ceil(minutes / 15) * 15;
+    next.setMinutes(roundedMinutes, 0, 0);
+    return next;
+  };
+
+  const toLocalDateTimeValue = (date: Date): string => {
+    const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+    return local.toISOString().slice(0, 16);
+  };
+
+  const resetCreateDraft = (type: HeaderCreateType = 'item'): void => {
+    const start = roundToQuarterHour(new Date());
+    const end = new Date(start.getTime() + 60 * 60 * 1000);
+    setCreateType(type);
+    setCreateTitle('');
+    setCreateDescription('');
+    setCreateFeedback('');
+    setCreateError('');
+    setCreateStart(toLocalDateTimeValue(start));
+    setCreateEnd(toLocalDateTimeValue(end));
+    setCreateListId(chatContext.list_id || '');
+    setCreateItemId(chatContext.item_id || '');
+  };
+
+  const openCreatePanel = (): void => {
+    resetCreateDraft('item');
+    setCreatePanelOpen(true);
+  };
+
+  const handleCreateSubmit = async (): Promise<void> => {
+    if (!user?.id || createSubmitting) return;
+    const title = createTitle.trim();
+    setCreateError('');
+    setCreateFeedback('');
+    if (!title) {
+      setCreateError('Title is required');
+      return;
+    }
+
+    setCreateSubmitting(true);
+    try {
+      if (createType === 'item') {
+        if (!createListId) throw new Error('Choose a target list');
+        await focalBoardService.createItem(createListId, user.id, title, createDescription.trim() || null);
+        setCreateFeedback('Item created');
+      } else if (createType === 'task') {
+        if (!createItemId) throw new Error('Choose a parent item');
+        await focalBoardService.createAction(createItemId, user.id, title, createDescription.trim() || null, null);
+        setCreateFeedback('Task created');
+      } else if (createType === 'time_block') {
+        const parsedStart = new Date(createStart);
+        const parsedEnd = new Date(createEnd);
+        const safeStart = Number.isNaN(parsedStart.getTime()) ? roundToQuarterHour(new Date()) : parsedStart;
+        const safeEnd = Number.isNaN(parsedEnd.getTime()) || parsedEnd <= parsedStart
+          ? new Date(safeStart.getTime() + 60 * 60 * 1000)
+          : parsedEnd;
+        await calendarService.upsertTimeBlock(user.id, {
+          id: crypto.randomUUID(),
+          title,
+          description: createDescription.trim(),
+          start: safeStart.toISOString(),
+          end: safeEnd.toISOString(),
+          recurrence: 'none',
+          recurrenceConfig: undefined,
+          includeWeekends: true,
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/Denver',
+          tasks: [],
+          tags: []
+        });
+        setCreateFeedback('Time block created');
+      } else if (createType === 'note') {
+        const body = createDescription.trim() || title;
+        await docsService.createNote({
+          userId: user.id,
+          title,
+          body,
+          source: 'quick_text',
+          originContext: { ...chatContext }
+        });
+        setCreateFeedback('Note created');
+      }
+
+      const nextType = createType;
+      resetCreateDraft(nextType);
+      setCreateFeedback(
+        createType === 'item'
+          ? 'Item created'
+          : createType === 'task'
+            ? 'Task created'
+            : createType === 'time_block'
+              ? 'Time block created'
+              : 'Note created'
+      );
+    } catch (error: any) {
+      setCreateError(error?.message || 'Could not create item');
+    } finally {
+      setCreateSubmitting(false);
+    }
+  };
+
   const handleApproveProposal = async (proposal: ChatProposal): Promise<void> => {
     if (!user?.id) return;
     try {
@@ -424,6 +638,151 @@ export default function Header({
             placeholder="Search"
             className="search-input"
           />
+        </div>
+
+        <div className="header-create-wrap" ref={createPanelRef}>
+          <button
+            type="button"
+            className={`header-create-trigger ${createPanelOpen ? 'open' : ''}`.trim()}
+            aria-label="Create"
+            aria-expanded={createPanelOpen}
+            onClick={() => {
+              if (createPanelOpen) {
+                setCreatePanelOpen(false);
+                return;
+              }
+              openCreatePanel();
+            }}
+          >
+            <Plus size={16} weight="bold" />
+          </button>
+
+          {createPanelOpen && (
+            <div className="header-create-panel">
+              <div className="header-create-type-row" role="tablist" aria-label="Create type">
+                {[
+                  { key: 'item', label: 'Item' },
+                  { key: 'task', label: 'Task' },
+                  { key: 'time_block', label: 'Time Block' },
+                  { key: 'note', label: 'Note' }
+                ].map((option) => (
+                  <button
+                    key={option.key}
+                    type="button"
+                    className={createType === option.key ? 'active' : ''}
+                    onClick={() => {
+                      setCreateType(option.key as HeaderCreateType);
+                      setCreateFeedback('');
+                      setCreateError('');
+                    }}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="header-create-panel-body">
+                {(createType === 'item' || createType === 'task') && (
+                  <label className="header-create-field">
+                    <span>List</span>
+                    <select
+                      value={createListId}
+                      onChange={(event) => {
+                        setCreateListId(event.target.value);
+                        if (createType === 'task') {
+                          setCreateItemId('');
+                        }
+                      }}
+                    >
+                      <option value="">Select list</option>
+                      {createLists.map((list) => {
+                        const focalName = createFocals.find((focal) => focal.id === list.focal_id)?.name || 'Space';
+                        return (
+                          <option key={list.id} value={list.id}>
+                            {focalName} / {list.name}
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </label>
+                )}
+
+                {createType === 'task' && (
+                  <label className="header-create-field">
+                    <span>Parent item</span>
+                    <select value={createItemId} onChange={(event) => setCreateItemId(event.target.value)}>
+                      <option value="">Select item</option>
+                      {createItems.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.title}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+
+                {createType === 'time_block' && (
+                  <div className="header-create-time-grid">
+                    <label className="header-create-field">
+                      <span>Start</span>
+                      <input type="datetime-local" value={createStart} onChange={(event) => setCreateStart(event.target.value)} />
+                    </label>
+                    <label className="header-create-field">
+                      <span>End</span>
+                      <input type="datetime-local" value={createEnd} onChange={(event) => setCreateEnd(event.target.value)} />
+                    </label>
+                  </div>
+                )}
+
+                <label className="header-create-field">
+                  <span>{createType === 'time_block' ? 'Title' : 'Name'}</span>
+                  <input
+                    type="text"
+                    value={createTitle}
+                    onChange={(event) => setCreateTitle(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault();
+                        void handleCreateSubmit();
+                      }
+                    }}
+                    placeholder={
+                      createType === 'item'
+                        ? 'New item'
+                        : createType === 'task'
+                          ? 'New task'
+                          : createType === 'time_block'
+                            ? 'New time block'
+                            : 'New note'
+                    }
+                  />
+                </label>
+
+                <label className="header-create-field">
+                  <span>Description</span>
+                  <textarea
+                    rows={3}
+                    value={createDescription}
+                    onChange={(event) => setCreateDescription(event.target.value)}
+                    placeholder="Optional description"
+                  />
+                </label>
+
+                {createLoading && <div className="header-create-meta">Loading destinations…</div>}
+                {createError && <div className="header-create-meta error">{createError}</div>}
+                {!createError && createFeedback && <div className="header-create-meta success">{createFeedback}</div>}
+
+                <div className="header-create-actions">
+                  <button type="button" className="secondary" onClick={() => setCreatePanelOpen(false)}>
+                    Close
+                  </button>
+                  <button type="button" className="primary" onClick={() => void handleCreateSubmit()} disabled={createSubmitting}>
+                    {createSubmitting ? 'Creating…' : 'Create'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
         
       </div>

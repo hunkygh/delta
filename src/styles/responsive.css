@@ -1334,6 +1334,10 @@
     color: #687281;
     line-height: 1.28;
     padding-left: 0;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .mobile-subitems {
@@ -1360,6 +1364,7 @@
     width: 100%;
     text-align: left;
     min-width: 0;
+    overflow: hidden;
   }
 
   .mobile-item-subtask-composer {
@@ -3739,6 +3744,12 @@
     align-items: start;
     justify-items: stretch;
     background: rgba(255, 255, 255, 0.7);
+  }
+
+  .mobile-wireframe-root .mobile-time-block.current {
+    background:
+      linear-gradient(180deg, rgba(0, 199, 255, 0.32), rgba(0, 199, 255, 0.24)),
+      rgba(0, 199, 255, 0.28);
   }
 
   .mobile-wireframe-root .mobile-time-block-head {
