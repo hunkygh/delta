@@ -6,7 +6,6 @@ import {
   X,
   Send,
   Mic,
-  Type,
   CalendarPlus,
   Clock3,
   Plus,
@@ -73,6 +72,21 @@ type DrawerState = {
   mode: 'peek' | 'full' | 'edit' | 'item' | 'addTask';
   blockId: string | null;
   itemId?: string | null;
+};
+
+type MobileEditScopeMode = 'this_event' | 'all_future' | 'next_window';
+
+type MobileEditScopeConfirmState = {
+  open: boolean;
+  kind: 'save' | 'delete';
+  patch?: {
+    title: string;
+    description: string;
+    start: string;
+    end: string;
+    recurrence: AddSheetRecurrence;
+    recurrenceConfig: { unit: 'day' | 'week' | 'month'; interval: number; limitType: 'indefinite' } | null;
+  };
 };
 
 type AddSheetState = {
@@ -248,6 +262,10 @@ export default function MobileCalendarWireframe(): JSX.Element {
   const [editDrawerRecurrence, setEditDrawerRecurrence] = useState<AddSheetRecurrence>('none');
   const [editDrawerRecurrenceExpanded, setEditDrawerRecurrenceExpanded] = useState(false);
   const [editDrawerSaving, setEditDrawerSaving] = useState(false);
+  const [mobileEditScopeConfirm, setMobileEditScopeConfirm] = useState<MobileEditScopeConfirmState>({ open: false, kind: 'save' });
+  const [mobileEditScopeMode, setMobileEditScopeMode] = useState<MobileEditScopeMode>('this_event');
+  const [mobileEditScopeCount, setMobileEditScopeCount] = useState('4');
+  const [mobileEditScopeCadence, setMobileEditScopeCadence] = useState<'days' | 'weeks' | 'months'>('weeks');
   const [isDrawerDragging, setIsDrawerDragging] = useState(false);
   const [drawerDragY, setDrawerDragY] = useState(0);
   const [drawerClosing, setDrawerClosing] = useState(false);
@@ -257,8 +275,6 @@ export default function MobileCalendarWireframe(): JSX.Element {
   const [viewDragX, setViewDragX] = useState(0);
   const [activeNav, setActiveNav] = useState<'docs' | 'focals' | 'calendar'>('calendar');
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [quickPanelOpen, setQuickPanelOpen] = useState(false);
-  const [quickPanelMounted, setQuickPanelMounted] = useState(false);
   const [captureMode, setCaptureMode] = useState<'none' | 'text'>('none');
   const [captureInputMode, setCaptureInputMode] = useState<'text' | 'voice'>('text');
   const [addSheet, setAddSheet] = useState<AddSheetState>({ open: false, type: 'item' });
@@ -1133,13 +1149,6 @@ export default function MobileCalendarWireframe(): JSX.Element {
   }, []);
 
   useEffect(() => {
-    if (quickPanelOpen) return;
-    if (!quickPanelMounted) return;
-    const timer = window.setTimeout(() => setQuickPanelMounted(false), 430);
-    return () => window.clearTimeout(timer);
-  }, [quickPanelOpen, quickPanelMounted]);
-
-  useEffect(() => {
     return () => {
       if (timelineDraftPressTimerRef.current) {
         window.clearTimeout(timelineDraftPressTimerRef.current);
@@ -1487,6 +1496,14 @@ export default function MobileCalendarWireframe(): JSX.Element {
     setDrawer({ open: true, mode: 'item', blockId, itemId });
   };
 
+  const returnToParentBlockDrawer = (): void => {
+    if (!drawer.blockId) return;
+    setItemDrawerPanel('details');
+    setItemDrawerCommentDraft('');
+    setDrawerClosing(false);
+    setDrawer({ open: true, mode: 'full', blockId: drawer.blockId });
+  };
+
   const openAddSheet = (next: AddSheetState): void => {
     setAddSheetClosing(false);
     setAddSheetName('');
@@ -1504,7 +1521,6 @@ export default function MobileCalendarWireframe(): JSX.Element {
       focalId: next.focalId ?? mobileScope.focalId ?? focals[0]?.id ?? null,
       listId: next.listId ?? mobileScope.listId ?? null
     });
-    setQuickPanelOpen(false);
     setCaptureMode('none');
   };
 
@@ -1727,8 +1743,51 @@ export default function MobileCalendarWireframe(): JSX.Element {
     return next.toISOString();
   };
 
+  const applyMobileEditScope = async (confirmState: MobileEditScopeConfirmState): Promise<void> => {
+    if (!user?.id || !drawer.blockId) return;
+    setEditDrawerSaving(true);
+    try {
+      const occurrenceStartUtc = confirmState.patch?.start || buildIsoFromViewedDate(minutesToClock(activeDrawerBlock?.startMin ?? 0));
+      const occurrenceEndUtc =
+        confirmState.patch?.end ||
+        buildIsoFromViewedDate(minutesToClock(activeDrawerBlock?.endMin ?? MIN_TIME_BLOCK_MINUTES));
+      await calendarService.applyScopedTimeBlockEdit({
+        userId: user.id,
+        sourceEventId: drawer.blockId,
+        occurrenceStartUtc,
+        occurrenceEndUtc,
+        scope: mobileEditScopeMode,
+        windowCount: Number.parseInt(mobileEditScopeCount || '4', 10) || 4,
+        windowCadence: mobileEditScopeCadence,
+        updates: confirmState.patch
+          ? {
+              title: confirmState.patch.title,
+              description: confirmState.patch.description,
+              start: confirmState.patch.start,
+              end: confirmState.patch.end,
+              recurrence: confirmState.patch.recurrence,
+              recurrenceConfig: confirmState.patch.recurrenceConfig
+            }
+          : {},
+        deleteOnly: confirmState.kind === 'delete'
+      });
+      setMobileEditScopeConfirm({ open: false, kind: 'save' });
+      closeDrawer();
+      await loadCalendarBlocks();
+    } catch (error) {
+      console.error('Failed to apply mobile scoped time block edit:', error);
+      await loadCalendarBlocks();
+    } finally {
+      setEditDrawerSaving(false);
+    }
+  };
+
   const deleteDrawerBlock = async (): Promise<void> => {
     if (!user?.id || !drawer.blockId) return;
+    if ((activeDrawerBlock?.recurrence || 'none') !== 'none') {
+      setMobileEditScopeConfirm({ open: true, kind: 'delete' });
+      return;
+    }
     const targetId = drawer.blockId;
     setBlocks((prev) => prev.filter((entry) => entry.id !== targetId));
     closeDrawer();
@@ -1748,26 +1807,33 @@ export default function MobileCalendarWireframe(): JSX.Element {
     let endMin = clockToMinutes(editDrawerEnd);
     if (endMin <= startMin) endMin = Math.min(startMin + MIN_TIME_BLOCK_MINUTES, 24 * 60 - 1);
 
+    const recurrenceConfig =
+      editDrawerRecurrence === 'none'
+        ? null
+        : ({
+            unit:
+              editDrawerRecurrence === 'daily'
+                ? 'day'
+                : editDrawerRecurrence === 'weekly'
+                  ? 'week'
+                  : 'month',
+            interval: 1,
+            limitType: 'indefinite'
+          } as const);
+
     const patch = {
       title,
       description: editDrawerDescription.trim(),
-      start_time: buildIsoFromViewedDate(minutesToClock(startMin)),
-      end_time: buildIsoFromViewedDate(minutesToClock(endMin)),
-      recurrence_rule: editDrawerRecurrence,
-      recurrence_config:
-        editDrawerRecurrence === 'none'
-          ? null
-          : {
-              unit:
-                editDrawerRecurrence === 'daily'
-                  ? 'day'
-                  : editDrawerRecurrence === 'weekly'
-                    ? 'week'
-                    : 'month',
-              interval: 1,
-              limitType: 'indefinite'
-            }
+      start: buildIsoFromViewedDate(minutesToClock(startMin)),
+      end: buildIsoFromViewedDate(minutesToClock(endMin)),
+      recurrence: editDrawerRecurrence,
+      recurrenceConfig
     };
+
+    if ((activeDrawerBlock?.recurrence || 'none') !== 'none') {
+      setMobileEditScopeConfirm({ open: true, kind: 'save', patch });
+      return;
+    }
 
     setEditDrawerSaving(true);
     setBlocks((prev) =>
@@ -1785,7 +1851,15 @@ export default function MobileCalendarWireframe(): JSX.Element {
       )
     );
     try {
-      await calendarService.patchTimeBlock(drawer.blockId, patch);
+      await calendarService.applyScopedTimeBlockEdit({
+        userId: user.id,
+        sourceEventId: drawer.blockId,
+        occurrenceStartUtc: patch.start,
+        occurrenceEndUtc: patch.end,
+        scope: 'this_event',
+        updates: patch,
+        deleteOnly: false
+      });
     } catch (error) {
       console.error('Failed to save mobile drawer event edits:', error);
       await loadCalendarBlocks();
@@ -2340,7 +2414,6 @@ export default function MobileCalendarWireframe(): JSX.Element {
     if (!currentBlockId) return;
     openAddTaskDrawer(currentBlockId);
     setActiveNav('calendar');
-    setQuickPanelOpen(false);
   };
 
   const quickAddCalendarEvent = (): void => {
@@ -2487,14 +2560,10 @@ export default function MobileCalendarWireframe(): JSX.Element {
     );
   };
 
-  const getContextualAddSpec = (): { label: string; icon: any } => ({ label: 'Create', icon: Plus });
-
   const openUniversalQuickAdd = (): void => {
-    setQuickPanelOpen(false);
-    setQuickPanelMounted(false);
     openAddSheet({
       open: true,
-      type: activeNav === 'calendar' ? 'event' : activeNav === 'docs' ? 'doc' : 'item',
+      type: 'item',
       focalId: mobileScope.focalId,
       listId: mobileScope.listId
     });
@@ -2925,7 +2994,6 @@ export default function MobileCalendarWireframe(): JSX.Element {
   const startVoiceCapture = async (): Promise<void> => {
     setCaptureInputMode('voice');
     setCaptureMode('text');
-    setQuickPanelOpen(false);
     setVoiceTranscript('');
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -2986,7 +3054,6 @@ export default function MobileCalendarWireframe(): JSX.Element {
   const openUnifiedCapture = (mode: 'text' | 'voice'): void => {
     setCaptureInputMode(mode);
     setCaptureMode('text');
-    setQuickPanelOpen(false);
     if (mode === 'voice') {
       void startVoiceCapture();
       return;
@@ -3519,7 +3586,6 @@ export default function MobileCalendarWireframe(): JSX.Element {
       onTouchEnd={onTouchEnd}
       onClick={() => {
         if (settingsOpen) setSettingsOpen(false);
-        if (quickPanelOpen) setQuickPanelOpen(false);
       }}
     >
       <div className="mobile-wireframe-shell">
@@ -3574,11 +3640,12 @@ export default function MobileCalendarWireframe(): JSX.Element {
                     const top = rawTop + blockGap / 2;
                     const height = Math.max(rawHeight - blockGap, 24);
                     const isCurrent = block.id === currentBlockId;
+                    const hasDescription = Boolean(block.description?.trim());
                     const orderedBlockItems = sortMobileBlockItems(block.items);
                     const visibleItems = orderedBlockItems;
                     const expandedInline = isCurrent || expandedTasksByBlock[block.id];
                     const canToggleTasks = !isCurrent && visibleItems.length > 0;
-                    const reservedHeight = 42 + (canToggleTasks ? 24 : 0);
+                    const reservedHeight = 42 + (hasDescription ? 18 : 0) + (canToggleTasks ? 24 : 0);
                     const maxInlineItems = Math.max(0, Math.min(3, Math.floor((height - reservedHeight) / 32)));
                     const renderedItems = expandedInline ? visibleItems.slice(0, maxInlineItems) : [];
                     const hiddenItemCount = expandedInline ? Math.max(0, visibleItems.length - renderedItems.length) : 0;
@@ -3608,6 +3675,10 @@ export default function MobileCalendarWireframe(): JSX.Element {
                           </div>
                         </div>
 
+                        {hasDescription && (
+                          <p className="mobile-time-block-description">{block.description?.trim()}</p>
+                        )}
+
                         {canToggleTasks && (
                           <button
                             type="button"
@@ -3619,7 +3690,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                             }}
                           >
                             <ChevronDown size={14} className={expandedTasksByBlock[block.id] ? 'open' : ''} />
-                            {expandedTasksByBlock[block.id] ? 'Hide items' : `View items (${visibleItems.length})`}
+                            {expandedTasksByBlock[block.id] ? 'Hide items' : `${visibleItems.length} more ↗`}
                           </button>
                         )}
 
@@ -3778,7 +3849,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                                   openFullDrawer(block.id);
                                 }}
                               >
-                                View more ({hiddenItemCount})
+                                {hiddenItemCount} more ↗
                               </button>
                             )}
                           </div>
@@ -3951,44 +4022,6 @@ export default function MobileCalendarWireframe(): JSX.Element {
 
         {view === 'calendar' && (
           <div className="mobile-bottom-nav-wrap">
-            {quickPanelMounted && (
-              <div className={`mobile-quick-panel ${quickPanelOpen ? 'open' : ''}`.trim()}>
-                {(() => {
-                  const contextualAdd = getContextualAddSpec();
-                  const ContextIcon = contextualAdd.icon;
-                  return (
-                    <button type="button" onClick={openUniversalQuickAdd}>
-                      <ContextIcon size={16} />
-                      <span>{contextualAdd.label}</span>
-                    </button>
-                  );
-                })()}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setQuickPanelOpen(false);
-                    openAddSheet({ open: true, type: 'doc' });
-                  }}
-                >
-                  <FileText size={16} />
-                  <span>Note +</span>
-                </button>
-                <button type="button" onClick={() => openUnifiedCapture('text')}>
-                  <Type size={16} />
-                  <span>Capture</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setQuickPanelOpen(false);
-                    setView('ai');
-                  }}
-                >
-                  <img src="/Delta-AI-Button.png" alt="" aria-hidden="true" />
-                  <span>Delta AI</span>
-                </button>
-              </div>
-            )}
             {captureMode === 'text' && (
               <div className={`mobile-text-capture-bar ${captureInputMode === 'voice' ? 'voice' : 'text'}`.trim()}>
                 <div className={`mobile-capture-input-shell ${captureInputMode === 'voice' ? 'voice' : 'text'}`.trim()}>
@@ -4052,7 +4085,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
             </div>
             <button
               type="button"
-              className={`mobile-quick-add-btn ${quickPanelOpen ? 'open' : ''}`.trim()}
+              className="mobile-quick-add-btn"
               onClick={() => {
                 if (captureMode !== 'none') {
                   stopVoiceAnimation();
@@ -4562,40 +4595,86 @@ export default function MobileCalendarWireframe(): JSX.Element {
               onPointerCancel={onDrawerPointerEnd}
             />
             <div className="mobile-drawer-head">
-              <Clock3 size={15} />
-                <strong>
-                {drawer.mode === 'addTask'
-                  ? 'Add Task'
-                  : drawer.mode === 'item'
-                    ? resolvedDrawerItem?.name || 'Item Details'
-                    : activeDrawerBlock?.name || 'Time Block'}
-              </strong>
-              {drawer.mode !== 'addTask' && drawer.mode !== 'item' && drawer.blockId && (
-                <div className="mobile-drawer-head-actions">
-                  {drawer.mode !== 'edit' && (
-                    <button
-                      type="button"
-                      aria-label="Edit event"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        openEditDrawer(drawer.blockId as string);
-                      }}
-                    >
-                      Edit
-                    </button>
-                  )}
+              <div
+                className="mobile-drawer-head-drag"
+                onTouchStart={onDrawerTouchStart}
+                onTouchMove={onDrawerTouchMove}
+                onTouchEnd={onDrawerTouchEnd}
+                onPointerDown={onDrawerPointerDown}
+                onPointerMove={onDrawerPointerMove}
+                onPointerUp={onDrawerPointerEnd}
+                onPointerCancel={onDrawerPointerEnd}
+              >
+                {drawer.mode === 'item' && drawer.blockId ? (
                   <button
                     type="button"
-                    aria-label="Delete event"
+                    aria-label="Back to time block"
+                    className="mobile-drawer-back"
+                    onTouchStart={(event) => event.stopPropagation()}
+                    onPointerDown={(event) => event.stopPropagation()}
                     onClick={(event) => {
                       event.stopPropagation();
-                      void deleteDrawerBlock();
+                      returnToParentBlockDrawer();
                     }}
                   >
-                    <Trash2 size={14} />
+                    <ChevronLeft size={16} />
                   </button>
-                </div>
-              )}
+                ) : (
+                  <Clock3 size={15} />
+                )}
+                <strong>
+                  {drawer.mode === 'addTask'
+                    ? 'Add Task'
+                    : drawer.mode === 'item'
+                      ? resolvedDrawerItem?.name || 'Item Details'
+                      : activeDrawerBlock?.name || 'Time Block'}
+                </strong>
+              </div>
+              <div className="mobile-drawer-head-actions">
+                {drawer.mode !== 'addTask' && drawer.mode !== 'item' && drawer.blockId && (
+                  <>
+                    {drawer.mode !== 'edit' && (
+                      <button
+                        type="button"
+                        aria-label="Edit event"
+                        onTouchStart={(event) => event.stopPropagation()}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openEditDrawer(drawer.blockId as string);
+                        }}
+                      >
+                        Edit
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      aria-label="Delete event"
+                      onTouchStart={(event) => event.stopPropagation()}
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void deleteDrawerBlock();
+                      }}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </>
+                )}
+                <button
+                  type="button"
+                  aria-label="Close drawer"
+                  className="mobile-drawer-close"
+                  onTouchStart={(event) => event.stopPropagation()}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    closeDrawer();
+                  }}
+                >
+                  <X size={15} />
+                </button>
+              </div>
             </div>
             <div className="mobile-drawer-body">
             {drawer.mode === 'addTask' && drawer.blockId && (
@@ -4991,6 +5070,77 @@ export default function MobileCalendarWireframe(): JSX.Element {
                   </div>
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+      {mobileEditScopeConfirm.open && (
+        <div
+          className="mobile-status-sheet-overlay"
+          onClick={editDrawerSaving ? undefined : () => setMobileEditScopeConfirm({ open: false, kind: 'save' })}
+        >
+          <div className="mobile-status-sheet" onClick={(event) => event.stopPropagation()}>
+            <div className="mobile-status-sheet-grab" />
+            <div className="mobile-status-sheet-head">
+              <strong>{mobileEditScopeConfirm.kind === 'delete' ? 'Delete recurring block' : 'Apply recurring change'}</strong>
+              <button type="button" onClick={() => setMobileEditScopeConfirm({ open: false, kind: 'save' })} disabled={editDrawerSaving}>
+                <X size={16} />
+              </button>
+            </div>
+            <div className="mobile-status-sheet-body">
+              <div className="mobile-status-sheet-options">
+                {[
+                  { key: 'this_event', label: 'Just this occurrence' },
+                  { key: 'all_future', label: 'This and all future' },
+                  { key: 'next_window', label: 'Recurring override window' }
+                ].map((option) => (
+                  <button
+                    key={option.key}
+                    type="button"
+                    className={`mobile-status-sheet-option ${mobileEditScopeMode === option.key ? 'current' : ''}`.trim()}
+                    onClick={() => setMobileEditScopeMode(option.key as MobileEditScopeMode)}
+                  >
+                    <span className="mobile-status-sheet-option-label">{option.label}</span>
+                  </button>
+                ))}
+              </div>
+              {mobileEditScopeMode === 'next_window' && (
+                <div className="mobile-status-sheet-note">
+                  <label className="mobile-status-sheet-note-field">
+                    <span>Count</span>
+                    <input
+                      type="number"
+                      min={1}
+                      value={mobileEditScopeCount}
+                      onChange={(event) => setMobileEditScopeCount(event.target.value)}
+                    />
+                  </label>
+                  <label className="mobile-status-sheet-note-field">
+                    <span>Cadence</span>
+                    <select
+                      value={mobileEditScopeCadence}
+                      onChange={(event) => setMobileEditScopeCadence(event.target.value as 'days' | 'weeks' | 'months')}
+                    >
+                      <option value="days">Days</option>
+                      <option value="weeks">Weeks</option>
+                      <option value="months">Months</option>
+                    </select>
+                  </label>
+                </div>
+              )}
+              <div className="mobile-status-sheet-actions">
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => setMobileEditScopeConfirm({ open: false, kind: 'save' })}
+                  disabled={editDrawerSaving}
+                >
+                  Cancel
+                </button>
+                <button type="button" className="primary" onClick={() => void applyMobileEditScope(mobileEditScopeConfirm)} disabled={editDrawerSaving}>
+                  {editDrawerSaving ? 'Applying…' : 'Apply'}
+                </button>
+              </div>
             </div>
           </div>
         </div>

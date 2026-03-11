@@ -58,6 +58,13 @@ interface ResizeConfirmState {
   affectedEventIds: string[];
 }
 
+interface EditScopeConfirmState {
+  kind: 'save' | 'delete';
+  record?: Event;
+  sourceEvent: Event;
+  occurrence: OccurrenceContext;
+}
+
 interface TimeBlockContentRule {
   id: string;
   user_id: string;
@@ -268,6 +275,7 @@ export default function Calendar({
   const [resizeCadence, setResizeCadence] = useState<Extract<RecurrenceRule, 'daily' | 'weekly' | 'monthly'>>('weekly');
   const [resizeIndefinite, setResizeIndefinite] = useState(true);
   const [resizeCount, setResizeCount] = useState('8');
+  const [editScopeConfirm, setEditScopeConfirm] = useState<EditScopeConfirmState | null>(null);
   const [editScopeMode, setEditScopeMode] = useState<EditScopeMode>('this_event');
   const [editScopeCount, setEditScopeCount] = useState('4');
   const [editScopeCadence, setEditScopeCadence] = useState<'days' | 'weeks' | 'months'>('weeks');
@@ -1379,6 +1387,7 @@ export default function Calendar({
 
   const closeModal = (): void => {
     setIsModalOpen(false);
+    setEditScopeConfirm(null);
     closeCalendarStatusDialog();
     if (closeModalTimerRef.current) {
       window.clearTimeout(closeModalTimerRef.current);
@@ -1400,6 +1409,108 @@ export default function Calendar({
   };
 
   const mergeUniqueIds = (base: string[], additional: string[]): string[] => [...new Set([...(base || []), ...(additional || [])])];
+
+  const persistDraftContentForTimeBlock = async (timeBlockId: string): Promise<void> => {
+    const createdItemIdsByList: Record<string, string[]> = {};
+    if (user?.id && draftLinkedItems.length > 0) {
+      for (const entry of draftLinkedItems) {
+        if (!entry.listId || !entry.title.trim()) continue;
+        const created = await focalBoardService.createItem(entry.listId, user.id, entry.title.trim(), null);
+        if (!createdItemIdsByList[entry.listId]) {
+          createdItemIdsByList[entry.listId] = [];
+        }
+        createdItemIdsByList[entry.listId].push(created.id);
+      }
+    }
+
+    if (contentMode === 'all') {
+      const mergedAll = mergeUniqueIds(contentAll.itemIds, createdItemIdsByList[contentAll.listId] || []);
+      await persistContentRuleForTimeBlock({
+        timeBlockId,
+        selectorType: 'all',
+        selectorValue: null,
+        listId: contentAll.listId,
+        itemIds: mergedAll
+      });
+      return;
+    }
+
+    for (const weekday of CONTENT_WEEKDAYS) {
+      const row = contentByWeekday[weekday.key];
+      const mergedWeekday = mergeUniqueIds(row.itemIds, createdItemIdsByList[row.listId] || []);
+      await persistContentRuleForTimeBlock({
+        timeBlockId,
+        selectorType: 'weekday',
+        selectorValue: weekday.key,
+        listId: row.listId,
+        itemIds: mergedWeekday
+      });
+    }
+  };
+
+  const applyScopedEventListResult = (result: {
+    deletedIds: string[];
+    updatedEvents: Event[];
+    createdEvents: Event[];
+  }): void => {
+    setEventList((prev) => {
+      let next = prev.filter((entry) => !result.deletedIds.includes(entry.id));
+      for (const updated of result.updatedEvents) {
+        const exists = next.some((entry) => entry.id === updated.id);
+        next = exists ? next.map((entry) => (entry.id === updated.id ? updated : entry)) : [updated, ...next];
+      }
+      for (const created of result.createdEvents) {
+        if (!next.some((entry) => entry.id === created.id)) {
+          next = [created, ...next];
+        }
+      }
+      return next;
+    });
+  };
+
+  const applyEditScopeConfirm = async (): Promise<void> => {
+    if (!editScopeConfirm || !user?.id) return;
+    try {
+      const result = await calendarService.applyScopedTimeBlockEdit({
+        userId: user.id,
+        sourceEvent: editScopeConfirm.sourceEvent,
+        occurrenceStartUtc: editScopeConfirm.occurrence.scheduledStartUtc,
+        occurrenceEndUtc: editScopeConfirm.occurrence.scheduledEndUtc,
+        scope: editScopeMode,
+        windowCount: Number.parseInt(editScopeCount || '4', 10) || 4,
+        windowCadence: editScopeCadence,
+        updates: editScopeConfirm.record
+          ? {
+              title: editScopeConfirm.record.title,
+              description: editScopeConfirm.record.description,
+              start: editScopeConfirm.record.start,
+              end: editScopeConfirm.record.end,
+              recurrence: editScopeConfirm.record.recurrence,
+              recurrenceConfig: editScopeConfirm.record.recurrenceConfig,
+              includeWeekends: editScopeConfirm.record.includeWeekends,
+              timezone: editScopeConfirm.record.timezone,
+              tasks: editScopeConfirm.record.tasks,
+              tags: editScopeConfirm.record.tags
+            }
+          : {},
+        deleteOnly: editScopeConfirm.kind === 'delete'
+      });
+      if (editScopeConfirm.kind === 'save') {
+        const primaryScopedEvent =
+          result.createdEvents[0] ||
+          result.updatedEvents.find((entry: Event) => entry.id === editScopeConfirm.sourceEvent.id) ||
+          null;
+        if (primaryScopedEvent?.id) {
+          await persistDraftContentForTimeBlock(primaryScopedEvent.id);
+        }
+      }
+      applyScopedEventListResult(result);
+      setEditScopeConfirm(null);
+      closeModal();
+    } catch (error) {
+      console.error('Failed to apply scoped calendar edit:', error);
+    }
+  };
 
   const saveEvent = async (): Promise<void> => {
     try {
@@ -1445,6 +1556,21 @@ export default function Calendar({
         tags: [...baseTags, ...attachTags, ...taskRepeatTags]
       };
 
+      const isRecurringOccurrenceEdit =
+        Boolean(editingEvent?.recurrence && editingEvent.recurrence !== 'none') &&
+        Boolean(occurrenceContext) &&
+        occurrenceContext!.instanceId !== editingEventId;
+
+      if (editingEvent && occurrenceContext && isRecurringOccurrenceEdit) {
+        setEditScopeConfirm({
+          kind: 'save',
+          record,
+          sourceEvent: editingEvent,
+          occurrence: occurrenceContext
+        });
+        return;
+      }
+
       setEventList((prev) => {
         if (editingEventId) {
           return prev.map((item) => (item.id === editingEventId ? record : item));
@@ -1469,40 +1595,7 @@ export default function Calendar({
       }
 
       try {
-        const createdItemIdsByList: Record<string, string[]> = {};
-        if (user?.id && draftLinkedItems.length > 0) {
-          for (const entry of draftLinkedItems) {
-            if (!entry.listId || !entry.title.trim()) continue;
-            const created = await focalBoardService.createItem(entry.listId, user.id, entry.title.trim(), null);
-            if (!createdItemIdsByList[entry.listId]) {
-              createdItemIdsByList[entry.listId] = [];
-            }
-            createdItemIdsByList[entry.listId].push(created.id);
-          }
-        }
-
-        if (contentMode === 'all') {
-          const mergedAll = mergeUniqueIds(contentAll.itemIds, createdItemIdsByList[contentAll.listId] || []);
-          await persistContentRuleForTimeBlock({
-            timeBlockId: persistedId,
-            selectorType: 'all',
-            selectorValue: null,
-            listId: contentAll.listId,
-            itemIds: mergedAll
-          });
-        } else {
-          for (const weekday of CONTENT_WEEKDAYS) {
-            const row = contentByWeekday[weekday.key];
-            const mergedWeekday = mergeUniqueIds(row.itemIds, createdItemIdsByList[row.listId] || []);
-            await persistContentRuleForTimeBlock({
-              timeBlockId: persistedId,
-              selectorType: 'weekday',
-              selectorValue: weekday.key,
-              listId: row.listId,
-              itemIds: mergedWeekday
-            });
-          }
-        }
+        await persistDraftContentForTimeBlock(persistedId);
       } catch (error) {
         console.error('Failed to persist content links for event:', error);
       }
@@ -1671,6 +1764,14 @@ export default function Calendar({
 
   const deleteEvent = async (): Promise<void> => {
     if (!editingEventId) {
+      return;
+    }
+    if (editingEvent && occurrenceContext && editingEvent.recurrence && editingEvent.recurrence !== 'none' && occurrenceContext.instanceId !== editingEventId) {
+      setEditScopeConfirm({
+        kind: 'delete',
+        sourceEvent: editingEvent,
+        occurrence: occurrenceContext
+      });
       return;
     }
     const targetId = editingEventId;
@@ -2595,6 +2696,83 @@ export default function Calendar({
                 Cancel
               </Button>
               <Button className="calendar-confirm-btn" onClick={applyResizeConfirm}>
+                Apply
+              </Button>
+            </footer>
+          </section>
+        </div>
+      )}
+
+      {editScopeConfirm && (
+        <div className="modal-overlay calendar-drawer-overlay" onClick={() => setEditScopeConfirm(null)}>
+          <section
+            className="modal calendar-event-modal calendar-event-drawer resize-confirm-drawer"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header className="calendar-event-modal-header compact">
+              <h3>{editScopeConfirm.kind === 'delete' ? 'Delete Recurring Block' : 'Apply Recurring Change'}</h3>
+              <button className="calendar-drawer-close" type="button" onClick={() => setEditScopeConfirm(null)} aria-label="Close">
+                <X size={14} />
+              </button>
+            </header>
+
+            <div className="resize-confirm-grid">
+              <label>
+                <input
+                  type="radio"
+                  checked={editScopeMode === 'this_event'}
+                  onChange={() => setEditScopeMode('this_event')}
+                />
+                Just this occurrence
+              </label>
+              <label>
+                <input
+                  type="radio"
+                  checked={editScopeMode === 'all_future'}
+                  onChange={() => setEditScopeMode('all_future')}
+                />
+                This and all future
+              </label>
+              <label>
+                <input
+                  type="radio"
+                  checked={editScopeMode === 'next_window'}
+                  onChange={() => setEditScopeMode('next_window')}
+                />
+                Recurring override window
+              </label>
+
+              {editScopeMode === 'next_window' && (
+                <>
+                  <label className="calendar-field">
+                    <span>Count</span>
+                    <input
+                      className="calendar-input"
+                      value={editScopeCount}
+                      onChange={(event) => setEditScopeCount(event.target.value)}
+                    />
+                  </label>
+                  <label className="calendar-field">
+                    <span>Cadence</span>
+                    <select
+                      className="calendar-input"
+                      value={editScopeCadence}
+                      onChange={(event) => setEditScopeCadence(event.target.value as 'days' | 'weeks' | 'months')}
+                    >
+                      <option value="days">Days</option>
+                      <option value="weeks">Weeks</option>
+                      <option value="months">Months</option>
+                    </select>
+                  </label>
+                </>
+              )}
+            </div>
+
+            <footer className="calendar-drawer-footer">
+              <Button variant="secondary" onClick={() => setEditScopeConfirm(null)}>
+                Cancel
+              </Button>
+              <Button className="calendar-confirm-btn" onClick={() => void applyEditScopeConfirm()}>
                 Apply
               </Button>
             </footer>

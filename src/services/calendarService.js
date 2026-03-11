@@ -1,4 +1,12 @@
 import { supabase } from './supabaseClient.js';
+import {
+  buildCountLimitedRecurrenceConfig,
+  buildTailRecurrenceConfig,
+  computeOccurrenceCount,
+  getFirstOccurrenceAfter,
+  normalizeRecurrenceConfigForRule,
+  shiftByRecurrence
+} from '../utils/recurrence.js';
 
 const DEFAULT_TIMEZONE = 'America/Denver';
 
@@ -123,6 +131,69 @@ const eventToRow = (userId, event) => ({
   timezone: event.timezone || DEFAULT_TIMEZONE,
   tags: normalizeTags(event.tags)
 });
+
+const cloneRuleForTimeBlock = (rule, timeBlockId, userId) => ({
+  user_id: userId,
+  time_block_id: timeBlockId,
+  selector_type: rule.selector_type,
+  selector_value: rule.selector_type === 'weekday' ? rule.selector_value : null,
+  list_id: rule.list_id,
+  item_ids: Array.isArray(rule.item_ids) ? [...rule.item_ids] : []
+});
+
+const copyContentRulesToTimeBlock = async (sourceTimeBlockId, targetTimeBlockId, userId) => {
+  if (!sourceTimeBlockId || !targetTimeBlockId || sourceTimeBlockId === targetTimeBlockId) return;
+  const { data, error } = await supabase
+    .from('time_block_content_rules')
+    .select('*')
+    .eq('time_block_id', sourceTimeBlockId)
+    .order('created_at', { ascending: true });
+
+  if (error) {
+    if (isMissingTimeBlockContentRulesTableError(error)) return;
+    throw error;
+  }
+
+  for (const rule of data || []) {
+    const row = cloneRuleForTimeBlock(rule, targetTimeBlockId, userId);
+    const { error: upsertError } = await supabase
+      .from('time_block_content_rules')
+      .upsert({ ...row, updated_at: new Date().toISOString() }, { onConflict: 'time_block_id,selector_type,selector_value,list_id' });
+    if (upsertError) {
+      if (isMissingTimeBlockContentRulesTableError(upsertError)) {
+        return;
+      }
+      throw upsertError;
+    }
+  }
+};
+
+const makeEventFromOccurrence = (event, start, end, overrides = {}) => ({
+  ...event,
+  ...overrides,
+  id: overrides.id || crypto.randomUUID(),
+  start: start.toISOString(),
+  end: end.toISOString()
+});
+
+const getDurationMs = (event) => Math.max(15 * 60 * 1000, new Date(event.end).getTime() - new Date(event.start).getTime());
+
+const buildTailEvent = (event, tailStart, overrides = {}) => {
+  if (!tailStart) return null;
+  const durationMs = getDurationMs(event);
+  const recurrence = overrides.recurrence ?? event.recurrence ?? 'none';
+  const recurrenceConfig = overrides.recurrenceConfig ?? event.recurrenceConfig ?? null;
+  if (recurrence !== 'none') {
+    const tailConfig = buildTailRecurrenceConfig(new Date(event.start), tailStart, recurrence, recurrenceConfig);
+    if (!tailConfig) return null;
+    return makeEventFromOccurrence(event, tailStart, new Date(tailStart.getTime() + durationMs), {
+      ...overrides,
+      recurrence,
+      recurrenceConfig: tailConfig
+    });
+  }
+  return makeEventFromOccurrence(event, tailStart, new Date(tailStart.getTime() + durationMs), overrides);
+};
 
 const buildLinkContext = async (userId) => {
   const fetchFocals = async () => {
@@ -459,6 +530,153 @@ export const calendarService = {
       .single();
     if (error) throw error;
     return rowToEvent(data);
+  },
+
+  async getTimeBlockById(timeBlockId) {
+    if (!timeBlockId) {
+      throw new Error('timeBlockId is required');
+    }
+    const { data, error } = await supabase.from('time_blocks').select('*').eq('id', timeBlockId).single();
+    if (error) throw error;
+    return rowToEvent(data);
+  },
+
+  async applyScopedTimeBlockEdit({
+    userId,
+    sourceEvent,
+    sourceEventId,
+    occurrenceStartUtc,
+    occurrenceEndUtc,
+    scope = 'this_event',
+    windowCount = 4,
+    windowCadence = 'weeks',
+    updates = {},
+    deleteOnly = false
+  }) {
+    if (!userId) throw new Error('userId is required');
+    const baseEvent = sourceEvent || (await this.getTimeBlockById(sourceEventId));
+    if (!baseEvent?.id) throw new Error('source event is required');
+
+    const baseStart = new Date(baseEvent.start);
+    const baseEnd = new Date(baseEvent.end);
+    const durationMs = getDurationMs(baseEvent);
+    const occurrenceStart = new Date(occurrenceStartUtc || baseEvent.start);
+    const occurrenceEnd = new Date(occurrenceEndUtc || new Date(occurrenceStart.getTime() + durationMs).toISOString());
+    const isRecurring = (baseEvent.recurrence ?? 'none') !== 'none';
+    const isBaseOccurrence = occurrenceStart.getTime() === baseStart.getTime();
+
+    if (!isRecurring || isBaseOccurrence) {
+      if (deleteOnly) {
+        await this.deleteTimeBlock(userId, baseEvent.id);
+        return { deletedIds: [baseEvent.id], createdEvents: [], updatedEvents: [] };
+      }
+      const patched = await this.upsertTimeBlock(userId, {
+        ...baseEvent,
+        ...updates,
+        id: baseEvent.id
+      });
+      await this.syncTimeBlockLinks(userId, patched.id, patched.tags || [], patched);
+      return { deletedIds: [], createdEvents: [], updatedEvents: [patched] };
+    }
+
+    const recurrence = baseEvent.recurrence ?? 'none';
+    const recurrenceConfig = normalizeRecurrenceConfigForRule(recurrence, baseEvent.recurrenceConfig || null);
+    const occurrenceIndex = computeOccurrenceCount(baseStart, occurrenceStart, recurrence, recurrenceConfig);
+    const beforeCount = Math.max(0, occurrenceIndex - 1);
+    const nextOriginalOccurrence = shiftByRecurrence(occurrenceStart, recurrence, recurrenceConfig);
+    const updatedEvents = [];
+    const createdEvents = [];
+    const deletedIds = [];
+
+    if (beforeCount <= 0) {
+      await this.deleteTimeBlock(userId, baseEvent.id);
+      deletedIds.push(baseEvent.id);
+    } else {
+      const trimmed = await this.patchTimeBlock(baseEvent.id, {
+        recurrence_rule: recurrence,
+        recurrence_config: buildCountLimitedRecurrenceConfig(recurrence, recurrenceConfig, beforeCount)
+      });
+      await this.syncTimeBlockLinks(userId, trimmed.id, trimmed.tags || [], trimmed);
+      updatedEvents.push(trimmed);
+    }
+
+    const persistClonedSeries = async (eventToCreate) => {
+      if (!eventToCreate) return null;
+      const saved = await this.upsertTimeBlock(userId, eventToCreate);
+      await this.syncTimeBlockLinks(userId, saved.id, saved.tags || [], saved);
+      await copyContentRulesToTimeBlock(baseEvent.id, saved.id, userId);
+      createdEvents.push(saved);
+      return saved;
+    };
+
+    if (scope === 'this_event') {
+      if (!deleteOnly) {
+        await persistClonedSeries(
+          makeEventFromOccurrence(baseEvent, occurrenceStart, occurrenceEnd, {
+            ...updates,
+            recurrence: 'none',
+            recurrenceConfig: null
+          })
+        );
+      }
+
+      const tail = buildTailEvent(baseEvent, nextOriginalOccurrence);
+      if (tail) {
+        await persistClonedSeries(tail);
+      }
+      return { deletedIds, createdEvents, updatedEvents };
+    }
+
+    if (scope === 'all_future') {
+      if (!deleteOnly) {
+        await persistClonedSeries(
+          makeEventFromOccurrence(baseEvent, occurrenceStart, occurrenceEnd, {
+            ...updates,
+            recurrence: updates.recurrence ?? baseEvent.recurrence ?? 'none',
+            recurrenceConfig:
+              updates.recurrence === 'none'
+                ? null
+                : normalizeRecurrenceConfigForRule(
+                    updates.recurrence ?? baseEvent.recurrence ?? 'none',
+                    updates.recurrenceConfig ?? baseEvent.recurrenceConfig ?? null
+                  )
+          })
+        );
+      }
+      return { deletedIds, createdEvents, updatedEvents };
+    }
+
+    if (scope === 'next_window') {
+      const windowRule = windowCadence === 'days' ? 'daily' : windowCadence === 'months' ? 'monthly' : 'weekly';
+      const normalizedWindowCount = Math.max(1, Number.parseInt(String(windowCount || 1), 10) || 1);
+      const windowRecurrenceConfig = buildCountLimitedRecurrenceConfig(windowRule, null, normalizedWindowCount);
+      const windowLastStart = (() => {
+        let cursor = new Date(occurrenceStart);
+        for (let index = 1; index < normalizedWindowCount; index += 1) {
+          cursor = shiftByRecurrence(cursor, windowRule, windowRecurrenceConfig);
+        }
+        return cursor;
+      })();
+      const tailStart = getFirstOccurrenceAfter(baseStart, windowLastStart, recurrence, recurrenceConfig);
+
+      if (!deleteOnly) {
+        await persistClonedSeries(
+          makeEventFromOccurrence(baseEvent, occurrenceStart, occurrenceEnd, {
+            ...updates,
+            recurrence: windowRule,
+            recurrenceConfig: windowRecurrenceConfig
+          })
+        );
+      }
+
+      const tail = buildTailEvent(baseEvent, tailStart);
+      if (tail) {
+        await persistClonedSeries(tail);
+      }
+      return { deletedIds, createdEvents, updatedEvents };
+    }
+
+    throw new Error(`Unsupported edit scope: ${scope}`);
   },
 
   async deleteTimeBlock(userId, eventId) {
