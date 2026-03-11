@@ -324,61 +324,6 @@ export default function EventDrawer({
       .sort((a, b) => fuzzyScore(query, b.title) - fuzzyScore(query, a.title));
   };
 
-  const activeAttachListId =
-    (contentMode === 'all' ? contentAll.listId : contentByWeekday[activeWeekday]?.listId) ||
-    contentListOptions[0]?.id ||
-    '';
-  const activeAttachListName = listNameById.get(activeAttachListId) || contentListOptions[0]?.name || 'List';
-
-  const slashAttachOptions = useMemo<SlashAttachOption[]>(() => {
-    const rows: SlashAttachOption[] = [];
-    for (const list of contentListOptions) {
-      const items = contentItemOptionsByList[list.id] || [];
-      for (const item of items) {
-        rows.push({
-          kind: 'existing',
-          listId: list.id,
-          listName: list.name,
-          itemId: item.id,
-          itemTitle: item.title
-        });
-      }
-    }
-    const query = slashAttachQuery.trim();
-    if (!query) return rows.slice(0, 12);
-    const normalizedQuery = normalizeSearchText(query);
-    const filtered = rows
-      .filter((row) => fuzzyTokenMatch(query, row.itemTitle) || fuzzyTokenMatch(query, row.listName))
-      .sort(
-        (a, b) =>
-          Math.max(fuzzyScore(query, b.itemTitle), fuzzyScore(query, b.listName)) -
-          Math.max(fuzzyScore(query, a.itemTitle), fuzzyScore(query, a.listName))
-      )
-      .slice(0, 20);
-
-    const exactMatch =
-      filtered.find((row) => normalizeSearchText(row.itemTitle) === normalizedQuery) ||
-      rows.find((row) => normalizeSearchText(row.itemTitle) === normalizedQuery) ||
-      null;
-
-    const topRow: SlashAttachOption =
-      exactMatch
-        ? exactMatch
-        : {
-            kind: 'create',
-            listId: activeAttachListId,
-            listName: activeAttachListName,
-            itemId: `create:${normalizedQuery}`,
-            itemTitle: query
-          };
-
-    const deduped = [
-      topRow,
-      ...filtered.filter((row) => !(row.listId === topRow.listId && row.itemId === topRow.itemId))
-    ];
-    return deduped.slice(0, 20);
-  }, [activeAttachListId, activeAttachListName, contentItemOptionsByList, contentListOptions, slashAttachQuery]);
-
   const attachedItemsRows = useMemo(() => {
     if ((occurrenceItems || []).length > 0) {
       return occurrenceItems.map((entry) => ({
@@ -435,6 +380,70 @@ export default function EventDrawer({
       parentItemId: undefined
     }));
   }, [activeWeekday, contentAll.itemIds, contentAll.listId, contentByWeekday, contentItemOptionsByList, contentListOptions, contentMode, occurrenceItems, parentItemTitleById]);
+
+  const inferredAttachListId = useMemo(() => {
+    const attachedListIds = [...new Set(attachedItemsRows.map((row) => row.listId).filter(Boolean))];
+    if (attachedListIds.length === 1) {
+      return attachedListIds[0];
+    }
+    return '';
+  }, [attachedItemsRows]);
+
+  const activeAttachListId =
+    (contentMode === 'all' ? contentAll.listId : contentByWeekday[activeWeekday]?.listId) ||
+    inferredAttachListId ||
+    contentListOptions[0]?.id ||
+    '';
+  const activeAttachListName = listNameById.get(activeAttachListId) || contentListOptions[0]?.name || 'List';
+
+  const slashAttachOptions = useMemo<SlashAttachOption[]>(() => {
+    const rows: SlashAttachOption[] = [];
+    for (const list of contentListOptions) {
+      const items = contentItemOptionsByList[list.id] || [];
+      for (const item of items) {
+        rows.push({
+          kind: 'existing',
+          listId: list.id,
+          listName: list.name,
+          itemId: item.id,
+          itemTitle: item.title
+        });
+      }
+    }
+    const query = slashAttachQuery.trim();
+    if (!query) return rows.slice(0, 12);
+    const normalizedQuery = normalizeSearchText(query);
+    const filtered = rows
+      .filter((row) => fuzzyTokenMatch(query, row.itemTitle) || fuzzyTokenMatch(query, row.listName))
+      .sort(
+        (a, b) =>
+          Math.max(fuzzyScore(query, b.itemTitle), fuzzyScore(query, b.listName)) -
+          Math.max(fuzzyScore(query, a.itemTitle), fuzzyScore(query, a.listName))
+      )
+      .slice(0, 20);
+
+    const exactMatch =
+      filtered.find((row) => normalizeSearchText(row.itemTitle) === normalizedQuery) ||
+      rows.find((row) => normalizeSearchText(row.itemTitle) === normalizedQuery) ||
+      null;
+
+    const topRow: SlashAttachOption =
+      exactMatch
+        ? exactMatch
+        : {
+            kind: 'create',
+            listId: activeAttachListId,
+            listName: activeAttachListName,
+            itemId: `create:${normalizedQuery}`,
+            itemTitle: query
+          };
+
+    const deduped = [
+      topRow,
+      ...filtered.filter((row) => !(row.listId === topRow.listId && row.itemId === topRow.itemId))
+    ];
+    return deduped.slice(0, 20);
+  }, [activeAttachListId, activeAttachListName, contentItemOptionsByList, contentListOptions, slashAttachQuery]);
 
   const closeSlashAttach = (): void => {
     setSlashAttachOpen(false);

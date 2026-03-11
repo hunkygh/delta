@@ -743,6 +743,9 @@
   .mobile-timeline {
     position: relative;
     margin-left: 44px;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
   }
 
   .mobile-timeline-ticks {
@@ -751,6 +754,9 @@
     top: 0;
     width: 40px;
     z-index: 1;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
   }
 
   .mobile-tick-row {
@@ -825,6 +831,9 @@
     box-shadow: 0 0 0 1px rgba(0, 199, 255, 0.14), 0 10px 24px rgba(0, 151, 214, 0.2);
     z-index: 1;
     pointer-events: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
   }
 
   .mobile-time-block {
@@ -1365,6 +1374,20 @@
     text-align: left;
     min-width: 0;
     overflow: hidden;
+    color: inherit;
+  }
+
+  .mobile-item-drawer-subtasks {
+    display: grid;
+    gap: 8px;
+    margin-top: 6px;
+  }
+
+  .mobile-item-drawer-subtasks h5 {
+    margin: 0;
+    color: var(--color-text-primary);
+    font-size: 13px;
+    font-weight: 600;
   }
 
   .mobile-item-subtask-composer {
@@ -3832,6 +3855,22 @@
   .mobile-wireframe-root .mobile-time-block-items .mobile-item-subtext,
   .mobile-wireframe-root .mobile-drawer-linked-list.actionable .mobile-item-subtext {
     min-width: 0;
+  }
+
+  .mobile-wireframe-root .mobile-time-block-items .mobile-item-sub,
+  .mobile-wireframe-root .mobile-drawer-linked-list.actionable .mobile-item-sub,
+  .mobile-item-drawer-subtasks .mobile-item-sub {
+    display: block;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .mobile-item-drawer-subtasks .mobile-item-subrow.drawer-detail {
+    grid-template-columns: 22px minmax(0, 1fr);
+    gap: 8px;
+    align-items: center;
   }
 
   .mobile-wireframe-root .mobile-item-row {

@@ -38,6 +38,7 @@ import type { ChatMessage, ChatProposal } from '../../types/chat';
 type MobileBlockSubItem = {
   id: string;
   name: string;
+  description?: string;
   listId?: string;
   parentItemId?: string;
   subtask_status?: string | null;
@@ -89,6 +90,16 @@ type MobileEditScopeConfirmState = {
   };
 };
 
+type MobileSubtaskEditorState = {
+  open: boolean;
+  parentItemId: string | null;
+  subtask: MobileBlockSubItem | null;
+  title: string;
+  description: string;
+  saving: boolean;
+  error: string;
+};
+
 type AddSheetState = {
   open: boolean;
   type: 'space' | 'list' | 'item' | 'subitem' | 'event' | 'doc' | 'voice';
@@ -116,7 +127,7 @@ type MobileItem = {
   description?: string | null;
   status?: string | null;
   status_id?: string | null;
-  actions?: Array<{ id: string; title: string; subtask_status?: string | null; subtask_status_id?: string | null }>;
+  actions?: Array<{ id: string; title: string; description?: string | null; subtask_status?: string | null; subtask_status_id?: string | null }>;
 };
 
 type IndexedList = {
@@ -266,6 +277,15 @@ export default function MobileCalendarWireframe(): JSX.Element {
   const [mobileEditScopeMode, setMobileEditScopeMode] = useState<MobileEditScopeMode>('this_event');
   const [mobileEditScopeCount, setMobileEditScopeCount] = useState('4');
   const [mobileEditScopeCadence, setMobileEditScopeCadence] = useState<'days' | 'weeks' | 'months'>('weeks');
+  const [subtaskEditor, setSubtaskEditor] = useState<MobileSubtaskEditorState>({
+    open: false,
+    parentItemId: null,
+    subtask: null,
+    title: '',
+    description: '',
+    saving: false,
+    error: ''
+  });
   const [isDrawerDragging, setIsDrawerDragging] = useState(false);
   const [drawerDragY, setDrawerDragY] = useState(0);
   const [drawerClosing, setDrawerClosing] = useState(false);
@@ -470,11 +490,29 @@ export default function MobileCalendarWireframe(): JSX.Element {
     return {
       id: item.id,
       name: item.title,
-      listId: mobileScope.listId,
-      description: item.description || ''
+      listId: mobileScope.listId || undefined,
+      description: item.description || '',
+      subItems: (item.actions || []).map((action) => ({
+        id: action.id,
+        name: action.title,
+        description: action.description || '',
+        listId: mobileScope.listId || undefined,
+        parentItemId: item.id,
+        subtask_status: action.subtask_status || null,
+        subtask_status_id: action.subtask_status_id || null
+      }))
     };
   }, [drawer.itemId, itemsByList, mobileScope.listId]);
   const resolvedDrawerItem = activeDrawerItem || activeDrawerScopedListItem;
+  const getVisibleSubItems = (subItems: MobileBlockSubItem[] | undefined, includeCompleted = false): MobileBlockSubItem[] =>
+    (subItems || []).filter((subItem) => includeCompleted || isStatusIncomplete(getSubtaskStatusEntry(subItem)?.key || subItem.subtask_status));
+  const getSortedSubItems = (subItems: MobileBlockSubItem[] | undefined, includeCompleted = true): MobileBlockSubItem[] =>
+    [...(subItems || [])].sort((a, b) => {
+      const aPending = isStatusIncomplete(getSubtaskStatusEntry(a)?.key || a.subtask_status);
+      const bPending = isStatusIncomplete(getSubtaskStatusEntry(b)?.key || b.subtask_status);
+      if (aPending === bPending) return 0;
+      return aPending ? -1 : 1;
+    }).filter((subItem) => includeCompleted || isStatusIncomplete(getSubtaskStatusEntry(subItem)?.key || subItem.subtask_status));
   const getItemStatusEntry = (item: { listId?: string; status?: string | null; status_id?: string | null }) => {
     const listId = item.listId || '';
     const statusSet = listStatusesByList[listId] || [];
@@ -868,6 +906,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                     subItems: (row?.actions || []).map((action: any) => ({
                       id: action.id,
                       name: action.title || 'Untitled subtask',
+                      description: action.description || '',
                       listId: listId || undefined,
                       parentItemId: normalizedItemId,
                       subtask_status: action.subtask_status || action.status || null,
@@ -901,6 +940,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
         actions: (entry.actions || []).map((action: any) => ({
           id: action.id,
           title: action.title,
+          description: action.description || '',
           subtask_status: action.subtask_status || null,
           subtask_status_id: action.subtask_status_id || null
         }))
@@ -1269,6 +1309,21 @@ export default function MobileCalendarWireframe(): JSX.Element {
     return Math.max(DAY_START_MIN, Math.min(DAY_END_MIN, minute));
   };
 
+  const getTimelineDraftLayout = (rawStartMin: number, rawEndMin: number) => {
+    const startMin = Math.floor(Math.min(rawStartMin, rawEndMin) / 15) * 15;
+    const rawEnd = Math.ceil(Math.max(rawStartMin, rawEndMin) / 15) * 15;
+    const endMin = Math.max(startMin + MIN_TIME_BLOCK_MINUTES, Math.min(DAY_END_MIN, rawEnd));
+    const blockGap = 8;
+    const rawTop = (startMin - DAY_START_MIN) * PX_PER_MIN;
+    const rawHeight = Math.max((endMin - startMin) * PX_PER_MIN, 24);
+    return {
+      startMin,
+      endMin,
+      topPx: rawTop + blockGap / 2,
+      heightPx: Math.max(rawHeight - blockGap, 24)
+    };
+  };
+
   const finalizeTimelineDraftToEvent = (): void => {
     const draft = timelineDraft;
     if (!draft) return;
@@ -1299,14 +1354,8 @@ export default function MobileCalendarWireframe(): JSX.Element {
       timelineDraftPressTimerRef.current = null;
     }
     timelineDraftPressTimerRef.current = window.setTimeout(() => {
-      const px = (startMin - DAY_START_MIN) * PX_PER_MIN;
       timelineDraftGestureRef.current.active = true;
-      setTimelineDraft({
-        startMin,
-        endMin: startMin + MIN_TIME_BLOCK_MINUTES,
-        topPx: px,
-        heightPx: Math.max(MIN_TIME_BLOCK_MINUTES * PX_PER_MIN, 24)
-      });
+      setTimelineDraft(getTimelineDraftLayout(startMin, startMin + MIN_TIME_BLOCK_MINUTES));
     }, 320);
   };
 
@@ -1329,15 +1378,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
 
     event.preventDefault();
     const currentMin = getMinuteFromTimelineClientY(touch.clientY);
-    const startMin = gesture.startMin;
-    const topMin = Math.min(startMin, currentMin);
-    const heightMin = Math.max(30, Math.abs(currentMin - startMin));
-    setTimelineDraft({
-      startMin,
-      endMin: currentMin,
-      topPx: (topMin - DAY_START_MIN) * PX_PER_MIN,
-      heightPx: Math.max(heightMin * PX_PER_MIN, 24)
-    });
+    setTimelineDraft(getTimelineDraftLayout(gesture.startMin, currentMin));
   };
 
   const onTimelineTouchEnd = (event: TouchEvent): void => {
@@ -1901,6 +1942,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                       {
                         id: created.id,
                         name: created.title || title,
+                        description: created.description || '',
                         listId: item.listId,
                         parentItemId: item.id,
                         subtask_status: created.subtask_status || created.status || null,
@@ -1933,6 +1975,73 @@ export default function MobileCalendarWireframe(): JSX.Element {
       console.error('Failed to add item comment from mobile drawer:', error);
     } finally {
       setItemDrawerCommentSubmitting(false);
+    }
+  };
+
+  const saveSubtaskEditor = async (): Promise<void> => {
+    if (!subtaskEditor.subtask?.id) return;
+    const title = subtaskEditor.title.trim();
+    if (!title) {
+      setSubtaskEditor((prev) => ({ ...prev, error: 'Title is required' }));
+      return;
+    }
+    setSubtaskEditor((prev) => ({ ...prev, saving: true, error: '' }));
+    try {
+      const updated = await focalBoardService.updateAction(subtaskEditor.subtask.id, {
+        title,
+        description: subtaskEditor.description.trim() || null
+      });
+      setBlocks((prev) =>
+        prev.map((block) => ({
+          ...block,
+          items: block.items.map((item) => ({
+            ...item,
+            subItems: (item.subItems || []).map((subItem) =>
+              subItem.id === subtaskEditor.subtask?.id
+                ? {
+                    ...subItem,
+                    name: updated.title || title,
+                    description: updated.description || ''
+                  }
+                : subItem
+            )
+          }))
+        }))
+      );
+      setItemsByList((prev) =>
+        Object.fromEntries(
+          Object.entries(prev).map(([listId, items]) => [
+            listId,
+            (items || []).map((item) => ({
+              ...item,
+              actions: (item.actions || []).map((action) =>
+                action.id === subtaskEditor.subtask?.id
+                  ? {
+                      ...action,
+                      title: updated.title || title,
+                      description: updated.description || ''
+                    }
+                  : action
+              )
+            }))
+          ])
+        )
+      );
+      setSubtaskEditor({
+        open: false,
+        parentItemId: null,
+        subtask: null,
+        title: '',
+        description: '',
+        saving: false,
+        error: ''
+      });
+    } catch (error: any) {
+      setSubtaskEditor((prev) => ({
+        ...prev,
+        saving: false,
+        error: error?.message || 'Could not save subtask.'
+      }));
     }
   };
 
@@ -2000,6 +2109,18 @@ export default function MobileCalendarWireframe(): JSX.Element {
           return item;
         })
       }))
+    );
+    setSubtaskEditor((prev) =>
+      prev.subtask?.id === targetId
+        ? {
+            ...prev,
+            subtask: {
+              ...prev.subtask,
+              subtask_status: nextStatus.key,
+              subtask_status_id: nextStatus.id || null
+            }
+          }
+        : prev
     );
   };
 
@@ -2487,9 +2608,9 @@ export default function MobileCalendarWireframe(): JSX.Element {
                   >
                     +
                   </button>
-                  {item.subItems && item.subItems.length > 0 && (
+                  {getVisibleSubItems(item.subItems, false).length > 0 && (
                     <div className="mobile-subitems">
-                      {item.subItems.map((subItem) => {
+                      {getVisibleSubItems(item.subItems, false).map((subItem) => {
                         const subStatusEntry = getSubtaskStatusEntry(subItem);
                         const subIsPending = isStatusIncomplete(subStatusEntry?.key || subItem.subtask_status);
                         return (
@@ -2522,7 +2643,15 @@ export default function MobileCalendarWireframe(): JSX.Element {
                               className="mobile-item-subtext"
                               onClick={(event) => {
                                 event.stopPropagation();
-                                openItemDrawer(blockId, item.id);
+                                setSubtaskEditor({
+                                  open: true,
+                                  parentItemId: item.id,
+                                  subtask: subItem,
+                                  title: subItem.name,
+                                  description: subItem.description || '',
+                                  saving: false,
+                                  error: ''
+                                });
                               }}
                             >
                               <div className="mobile-item-sub">↳ {subItem.name}</div>
@@ -3763,9 +3892,9 @@ export default function MobileCalendarWireframe(): JSX.Element {
                                 >
                                   +
                                 </button>
-                                {item.subItems && item.subItems.length > 0 && (
+                                {getVisibleSubItems(item.subItems, false).length > 0 && (
                                   <div className="mobile-subitems">
-                                    {item.subItems.map((subItem) => (
+                                    {getVisibleSubItems(item.subItems, false).map((subItem) => (
                                       <div key={subItem.id} className="mobile-item-subrow">
                                         {(() => {
                                           const subStatusEntry = getSubtaskStatusEntry(subItem);
@@ -3810,7 +3939,15 @@ export default function MobileCalendarWireframe(): JSX.Element {
                                           onPointerDown={(event) => event.stopPropagation()}
                                           onClick={(event) => {
                                             event.stopPropagation();
-                                            openItemDrawer(block.id, item.id);
+                                            setSubtaskEditor({
+                                              open: true,
+                                              parentItemId: item.id,
+                                              subtask: subItem,
+                                              title: subItem.name,
+                                              description: subItem.description || '',
+                                              saving: false,
+                                              error: ''
+                                            });
                                           }}
                                         >
                                           <div className="mobile-item-sub">↳ {subItem.name}</div>
@@ -4952,6 +5089,63 @@ export default function MobileCalendarWireframe(): JSX.Element {
                         </div>
                       ))}
                     </div>
+                    <div className="mobile-item-drawer-subtasks">
+                      <h5>Tasks</h5>
+                      {getSortedSubItems(resolvedDrawerItem.subItems, true).length === 0 && (
+                        <div className="mobile-item-drawer-empty">No subtasks on this item yet.</div>
+                      )}
+                      {getSortedSubItems(resolvedDrawerItem.subItems, true).length > 0 && (
+                        <div className="mobile-drawer-linked-list actionable">
+                          {getSortedSubItems(resolvedDrawerItem.subItems, true).map((subItem) => {
+                            const subStatusEntry = getSubtaskStatusEntry(subItem);
+                            const subIsPending = isStatusIncomplete(subStatusEntry?.key || subItem.subtask_status);
+                            return (
+                              <div key={subItem.id} className="mobile-item-subrow drawer-detail">
+                                <button
+                                  type="button"
+                                  className={`mobile-item-check sub ${subIsPending ? 'todo' : 'done'}`.trim()}
+                                  onClick={() => {
+                                    void openStatusChangeFlow({
+                                      entityType: 'action',
+                                      listId: subItem.listId || resolvedDrawerItem.listId,
+                                      targetId: subItem.id,
+                                      parentItemId: subItem.parentItemId || resolvedDrawerItem.id,
+                                      title: subItem.name,
+                                      currentStatusKey: subStatusEntry?.key || subItem.subtask_status || null,
+                                      currentStatusLabel: subStatusEntry?.name || 'No status'
+                                    });
+                                  }}
+                                  aria-label="Change subtask status"
+                                >
+                                  {subIsPending ? (
+                                    <span className="mobile-status-ring small" style={{ color: subStatusEntry?.color || undefined }} />
+                                  ) : (
+                                    <Circle size={15} fill={subStatusEntry?.color || 'currentColor'} stroke={subStatusEntry?.color || 'currentColor'} />
+                                  )}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="mobile-item-subtext"
+                                  onClick={() =>
+                                    setSubtaskEditor({
+                                      open: true,
+                                      parentItemId: subItem.parentItemId || resolvedDrawerItem.id,
+                                      subtask: subItem,
+                                      title: subItem.name,
+                                      description: subItem.description || '',
+                                      saving: false,
+                                      error: ''
+                                    })
+                                  }
+                                >
+                                  <div className="mobile-item-sub">↳ {subItem.name}</div>
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 ) : (
                   <div className="mobile-item-drawer-comments">
@@ -5152,6 +5346,107 @@ export default function MobileCalendarWireframe(): JSX.Element {
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+      {subtaskEditor.open && subtaskEditor.subtask && (
+        <div className="mobile-status-sheet-overlay" onClick={subtaskEditor.saving ? undefined : () => setSubtaskEditor({
+          open: false,
+          parentItemId: null,
+          subtask: null,
+          title: '',
+          description: '',
+          saving: false,
+          error: ''
+        })}>
+          <div className="mobile-status-sheet" onClick={(event) => event.stopPropagation()}>
+            {(() => {
+              const editorSubtask = subtaskEditor.subtask;
+              const editorStatusEntry = editorSubtask ? getSubtaskStatusEntry(editorSubtask) : null;
+              return (
+                <>
+            <div className="mobile-status-sheet-grab" />
+            <div className="mobile-status-sheet-head">
+              <strong>Edit subtask</strong>
+              <button
+                type="button"
+                onClick={() => setSubtaskEditor({
+                  open: false,
+                  parentItemId: null,
+                  subtask: null,
+                  title: '',
+                  description: '',
+                  saving: false,
+                  error: ''
+                })}
+                disabled={subtaskEditor.saving}
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="mobile-status-sheet-body">
+              <label className="mobile-status-sheet-note-field">
+                <span>Title</span>
+                <input value={subtaskEditor.title} onChange={(event) => setSubtaskEditor((prev) => ({ ...prev, title: event.target.value }))} />
+              </label>
+              <label className="mobile-status-sheet-note-field">
+                <span>Description</span>
+                <textarea
+                  rows={4}
+                  value={subtaskEditor.description}
+                  onChange={(event) => setSubtaskEditor((prev) => ({ ...prev, description: event.target.value }))}
+                  placeholder="Optional description"
+                />
+              </label>
+              <button
+                type="button"
+                className="mobile-status-sheet-option"
+                disabled={!editorSubtask}
+                onClick={() =>
+                  editorSubtask
+                    ? void openStatusChangeFlow({
+                        entityType: 'action',
+                        listId: editorSubtask.listId || resolvedDrawerItem?.listId || null,
+                        targetId: editorSubtask.id,
+                        parentItemId: subtaskEditor.parentItemId,
+                        title: editorSubtask.name || subtaskEditor.title,
+                        currentStatusKey: editorSubtask.subtask_status || null,
+                        currentStatusLabel: editorStatusEntry?.name || 'No status'
+                      })
+                    : undefined
+                }
+              >
+                <span className="mobile-status-sheet-option-label">
+                  Status
+                  <strong>{editorStatusEntry?.name || 'No status'}</strong>
+                </span>
+              </button>
+              {subtaskEditor.error && <div className="mobile-task-drawer-empty error">{subtaskEditor.error}</div>}
+              <div className="mobile-status-sheet-actions">
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => setSubtaskEditor({
+                    open: false,
+                    parentItemId: null,
+                    subtask: null,
+                    title: '',
+                    description: '',
+                    saving: false,
+                    error: ''
+                  })}
+                  disabled={subtaskEditor.saving}
+                >
+                  Cancel
+                </button>
+                <button type="button" className="primary" onClick={() => void saveSubtaskEditor()} disabled={subtaskEditor.saving}>
+                  {subtaskEditor.saving ? 'Saving…' : 'Save'}
+                </button>
+              </div>
+            </div>
+                </>
+              );
+            })()}
           </div>
         </div>
       )}
