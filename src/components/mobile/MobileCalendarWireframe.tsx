@@ -1489,6 +1489,12 @@ export default function MobileCalendarWireframe(): JSX.Element {
     setDrawerClosing(false);
     setDrawer({ open: true, mode: 'edit', blockId });
   };
+
+  const returnFromEditDrawer = (): void => {
+    if (!drawer.blockId) return;
+    setDrawerClosing(false);
+    setDrawer({ open: true, mode: 'full', blockId: drawer.blockId });
+  };
   const openItemDrawer = (blockId: string, itemId: string): void => {
     setItemDrawerPanel('details');
     setItemDrawerCommentDraft('');
@@ -4663,12 +4669,16 @@ export default function MobileCalendarWireframe(): JSX.Element {
                 )}
                 <button
                   type="button"
-                  aria-label="Close drawer"
+                  aria-label={drawer.mode === 'edit' && drawer.blockId ? 'Back to time block' : 'Close drawer'}
                   className="mobile-drawer-close"
                   onTouchStart={(event) => event.stopPropagation()}
                   onPointerDown={(event) => event.stopPropagation()}
                   onClick={(event) => {
                     event.stopPropagation();
+                    if (drawer.mode === 'edit' && drawer.blockId) {
+                      returnFromEditDrawer();
+                      return;
+                    }
                     closeDrawer();
                   }}
                 >
