@@ -56,6 +56,21 @@ type MobileBlockItem = {
   listId?: string;
 };
 
+type MobileBlockTaskLinkedItem = MobileBlockItem & {
+  blockTaskItemId: string;
+  itemId: string;
+  completedInContext: boolean;
+  completionNote?: string | null;
+  completedAt?: string | null;
+};
+
+type MobileBlockTask = {
+  id: string;
+  title: string;
+  description?: string | null;
+  linkedItems: MobileBlockTaskLinkedItem[];
+};
+
 type MobileBlock = {
   id: string;
   name: string;
@@ -63,6 +78,7 @@ type MobileBlock = {
   startMin: number;
   endMin: number;
   recurrence?: AddSheetRecurrence;
+  blockTasks?: MobileBlockTask[];
   items: MobileBlockItem[];
 };
 
@@ -186,6 +202,23 @@ type StatusSheetState = {
   error: string;
 };
 
+type BlockTaskCompletionSheetState = {
+  open: boolean;
+  blockId: string | null;
+  blockTaskId: string | null;
+  blockTaskItemId: string | null;
+  itemId: string | null;
+  listId: string | null;
+  title: string;
+  note: string;
+  followUpTasks: string;
+  statuses: MobileStatusOption[];
+  selectedStatus: MobileStatusOption | null;
+  loading: boolean;
+  saving: boolean;
+  error: string;
+};
+
 const DAY_START_MIN = 6 * 60;
 const DAY_END_MIN = 22 * 60;
 const PX_PER_MIN = 2.2;
@@ -252,6 +285,17 @@ const normalizeLinkedEntityId = (value: string | null | undefined): string => {
   if (value.startsWith('lane|')) return value.slice(5);
   if (value.startsWith('focal|')) return value.slice(6);
   return value;
+};
+
+const countMobileBlockTaskRows = (blockTasks: MobileBlockTask[] | undefined): number =>
+  (blockTasks || []).reduce((total, task) => total + 1 + (task.linkedItems?.length || 0), 0);
+
+const filterDirectItemsAgainstBlockTasks = (
+  items: MobileBlockItem[],
+  blockTasks: MobileBlockTask[] | undefined
+): MobileBlockItem[] => {
+  const nestedIds = new Set((blockTasks || []).flatMap((task) => task.linkedItems.map((linked) => linked.itemId)));
+  return items.filter((item) => !nestedIds.has(item.id));
 };
 
 const mapThreadComment = (entry: any) => ({
@@ -326,6 +370,8 @@ export default function MobileCalendarWireframe(): JSX.Element {
   const [itemDrawerPanel, setItemDrawerPanel] = useState<'details' | 'comments'>('details');
   const [itemDrawerFields, setItemDrawerFields] = useState<any[]>([]);
   const [itemDrawerFieldValues, setItemDrawerFieldValues] = useState<Record<string, any>>({});
+  const [itemDrawerTitleDraft, setItemDrawerTitleDraft] = useState('');
+  const [itemDrawerDescriptionDraft, setItemDrawerDescriptionDraft] = useState('');
   const [itemDrawerComments, setItemDrawerComments] = useState<
     Array<{ id: string; body: string; created_at: string; author_type?: string; user_id?: string | null }>
   >([]);
@@ -347,6 +393,23 @@ export default function MobileCalendarWireframe(): JSX.Element {
     saving: false,
     error: ''
   });
+  const [blockTaskCompletionSheet, setBlockTaskCompletionSheet] = useState<BlockTaskCompletionSheetState>({
+    open: false,
+    blockId: null,
+    blockTaskId: null,
+    blockTaskItemId: null,
+    itemId: null,
+    listId: null,
+    title: '',
+    note: '',
+    followUpTasks: '',
+    statuses: [],
+    selectedStatus: null,
+    loading: false,
+    saving: false,
+    error: ''
+  });
+  const [pendingBlockTaskToggleIds, setPendingBlockTaskToggleIds] = useState<Record<string, boolean>>({});
   const [statusNoteDraft, setStatusNoteDraft] = useState('');
   const [taskDrawerSearch, setTaskDrawerSearch] = useState('');
   const [taskDrawerListId, setTaskDrawerListId] = useState<string | null>(null);
@@ -480,7 +543,12 @@ export default function MobileCalendarWireframe(): JSX.Element {
     [blocks, drawer.blockId]
   );
   const activeDrawerItem = useMemo(
-    () => (activeDrawerBlock && drawer.itemId ? activeDrawerBlock.items.find((item) => item.id === drawer.itemId) || null : null),
+    () =>
+      activeDrawerBlock && drawer.itemId
+        ? activeDrawerBlock.items.find((item) => item.id === drawer.itemId) ||
+          activeDrawerBlock.blockTasks?.flatMap((task) => task.linkedItems || []).find((item) => item.itemId === drawer.itemId || item.id === drawer.itemId) ||
+          null
+        : null,
     [activeDrawerBlock, drawer.itemId]
   );
   const activeDrawerScopedListItem = useMemo(() => {
@@ -492,6 +560,8 @@ export default function MobileCalendarWireframe(): JSX.Element {
       name: item.title,
       listId: mobileScope.listId || undefined,
       description: item.description || '',
+      status: item.status || null,
+      status_id: item.status_id || null,
       subItems: (item.actions || []).map((action) => ({
         id: action.id,
         name: action.title,
@@ -567,6 +637,21 @@ export default function MobileCalendarWireframe(): JSX.Element {
     () => (mobileScope.focalId ? (listsByFocal[mobileScope.focalId] || []).find((list) => list.id === mobileScope.listId) || null : null),
     [listsByFocal, mobileScope.focalId, mobileScope.listId]
   );
+  const listMetaById = useMemo(() => {
+    const map = new Map<string, { id: string; name: string; focalId: string; focalName: string }>();
+    Object.entries(listsByFocal).forEach(([focalId, lists]) => {
+      const focalName = focals.find((entry) => entry.id === focalId)?.name || 'Space';
+      lists.forEach((list) => {
+        map.set(list.id, {
+          id: list.id,
+          name: list.name,
+          focalId,
+          focalName
+        });
+      });
+    });
+    return map;
+  }, [focals, listsByFocal]);
 
   const addFocalOptions = useMemo(() => {
     if (focals.length === 0) return FALLBACK_FOCAL_OPTIONS;
@@ -821,6 +906,29 @@ export default function MobileCalendarWireframe(): JSX.Element {
         visibleEvents.map(async (event: any) => [event.id, await calendarService.getTimeBlockContentRules(event.id)] as const)
       );
       const contentRulesByEventId = Object.fromEntries(contentRuleEntries) as Record<string, any[]>;
+      const blockTaskEntries = await Promise.all(
+        visibleEvents.map(async (event: any) => [
+          event.id,
+          await calendarService.getBlockTasksWithItems({
+            timeBlockId: event.id,
+            scheduledStartUtc: new Date(event.start).toISOString()
+          })
+        ] as const)
+      );
+      const blockTasksByEventId = Object.fromEntries(blockTaskEntries) as Record<string, any[]>;
+      const attachedItemIds = [...new Set(
+        contentRuleEntries.flatMap(([, rules]) =>
+          (rules || []).flatMap((rule: any) => (rule?.item_ids || []).map((itemId: string) => normalizeLinkedEntityId(itemId)).filter(Boolean))
+        )
+      )] as string[];
+      const blockTaskItemIds = [...new Set(
+        blockTaskEntries.flatMap(([, tasks]) =>
+          (tasks || []).flatMap((task: any) =>
+            (task?.linkedItems || []).map((linked: any) => normalizeLinkedEntityId(linked?.itemId)).filter(Boolean)
+          )
+        )
+      )] as string[];
+      const resolvedLookupIds = [...new Set([...attachedItemIds, ...blockTaskItemIds])];
       const listIdsToHydrate = [...new Set(
         contentRuleEntries.flatMap(([, rules]) =>
           (rules || []).map((rule: any) => rule?.list_id).filter(Boolean)
@@ -830,6 +938,13 @@ export default function MobileCalendarWireframe(): JSX.Element {
         listIdsToHydrate.map(async (listId) => [listId, await focalBoardService.getItemsByListId(listId)] as const)
       );
       const itemsByListId = new Map<string, any[]>(listRows);
+      const resolvedAttachedRows = resolvedLookupIds.length > 0 ? await focalBoardService.getItemsByIds(user.id, resolvedLookupIds) : [];
+      const resolvedItemById = new Map<string, any>();
+      resolvedAttachedRows.forEach((row: any) => {
+        const normalizedId = normalizeLinkedEntityId(row?.id);
+        if (!normalizedId) return;
+        resolvedItemById.set(normalizedId, row);
+      });
       const itemTitleById = new Map<string, string>();
       listRows.forEach(([, rows]) => {
         (rows || []).forEach((row: any) => {
@@ -838,6 +953,46 @@ export default function MobileCalendarWireframe(): JSX.Element {
           if (row?.title) itemTitleById.set(normalizedId, row.title);
         });
       });
+      resolvedAttachedRows.forEach((row: any) => {
+        const normalizedId = normalizeLinkedEntityId(row?.id);
+        if (!normalizedId) return;
+        if (row?.title) itemTitleById.set(normalizedId, row.title);
+      });
+      const hydrateMobileBlockItem = (itemId: string, listIdHint?: string | null): MobileBlockItem | null => {
+        const normalizedItemId = normalizeLinkedEntityId(itemId);
+        if (!normalizedItemId) return null;
+        const fallbackIndexedList = listIdHint ? indexedLists.find((list) => list.id === listIdHint) || null : null;
+        const resolvedRow = resolvedItemById.get(normalizedItemId);
+        const actualListId = resolvedRow?.lane_id || listIdHint || undefined;
+        const listRowsForActualList = actualListId ? (itemsByListId.get(actualListId) || []) : [];
+        const rowById = new Map(listRowsForActualList.map((row: any) => [normalizeLinkedEntityId(row.id), row]));
+        const row = resolvedRow || rowById.get(normalizedItemId);
+        const actualListMeta = (actualListId ? listMetaById.get(actualListId) : null) || fallbackIndexedList || null;
+        const actualIndexedList = (actualListId ? indexedLists.find((list) => list.id === actualListId) : null) || fallbackIndexedList || null;
+        return {
+          id: normalizedItemId,
+          name:
+            row?.title ||
+            itemTitleById.get(normalizedItemId) ||
+            actualIndexedList?.items.find((item) => normalizeLinkedEntityId(item.id) === normalizedItemId)?.title ||
+            fallbackIndexedList?.items.find((item) => normalizeLinkedEntityId(item.id) === normalizedItemId)?.title ||
+            'Untitled',
+          description: row?.description || '',
+          status: row?.status || null,
+          status_id: row?.status_id || null,
+          focalId: actualListMeta?.focalId,
+          listId: actualListId,
+          subItems: (row?.actions || []).map((action: any) => ({
+            id: action.id,
+            name: action.title || 'Untitled subtask',
+            description: action.description || '',
+            listId: actualListId,
+            parentItemId: normalizedItemId,
+            subtask_status: action.subtask_status || action.status || null,
+            subtask_status_id: action.subtask_status_id || null
+          }))
+        };
+      };
 
       const dayStart = new Date(viewedDate);
       dayStart.setHours(0, 0, 0, 0);
@@ -873,6 +1028,25 @@ export default function MobileCalendarWireframe(): JSX.Element {
               event.recurrence === 'daily' || event.recurrence === 'weekly' || event.recurrence === 'monthly'
                 ? event.recurrence
                 : 'none',
+            blockTasks: (blockTasksByEventId[event.id] || []).map((task: any) => ({
+              id: task.id,
+              title: task.title || 'Untitled task',
+              description: task.description || '',
+              linkedItems: (task.linkedItems || [])
+                .map((linked: any) => {
+                  const hydratedItem = hydrateMobileBlockItem(linked.itemId, null);
+                  if (!hydratedItem) return null;
+                  return {
+                    ...hydratedItem,
+                    blockTaskItemId: linked.blockTaskItemId,
+                    itemId: linked.itemId,
+                    completedInContext: Boolean(linked.completedInContext),
+                    completionNote: linked.completionNote || null,
+                    completedAt: linked.completedAt || null
+                  };
+                })
+                .filter(Boolean)
+            })),
             items: (() => {
               const rules = (contentRulesByEventId[event.id] || []).filter(
                 (rule: any) =>
@@ -881,40 +1055,17 @@ export default function MobileCalendarWireframe(): JSX.Element {
               );
               const hydratedItems: MobileBlockItem[] = [];
               const seenItemIds = new Set<string>();
-              for (const rule of rules) {
-                const listId = rule?.list_id;
-                const rows = listId ? (itemsByListId.get(listId) || []) : [];
-                const rowById = new Map(rows.map((row: any) => [normalizeLinkedEntityId(row.id), row]));
-                for (const itemId of rule?.item_ids || []) {
-                  const normalizedItemId = normalizeLinkedEntityId(itemId);
-                  if (!normalizedItemId || seenItemIds.has(normalizedItemId)) continue;
-                  seenItemIds.add(normalizedItemId);
-                  const indexedList = indexedLists.find((list) => list.id === listId);
-                  const row = rowById.get(normalizedItemId);
-                  hydratedItems.push({
-                    id: normalizedItemId,
-                    name:
-                      row?.title ||
-                      itemTitleById.get(normalizedItemId) ||
-                      indexedList?.items.find((item) => normalizeLinkedEntityId(item.id) === normalizedItemId)?.title ||
-                      'Untitled',
-                    description: row?.description || '',
-                    status: row?.status || null,
-                    status_id: row?.status_id || null,
-                    focalId: indexedList?.focalId,
-                    listId: listId || undefined,
-                    subItems: (row?.actions || []).map((action: any) => ({
-                      id: action.id,
-                      name: action.title || 'Untitled subtask',
-                      description: action.description || '',
-                      listId: listId || undefined,
-                      parentItemId: normalizedItemId,
-                      subtask_status: action.subtask_status || action.status || null,
-                      subtask_status_id: action.subtask_status_id || null
-                    }))
-                  });
+                for (const rule of rules) {
+                  const listId = rule?.list_id;
+                  for (const itemId of rule?.item_ids || []) {
+                    const normalizedItemId = normalizeLinkedEntityId(itemId);
+                    if (!normalizedItemId || seenItemIds.has(normalizedItemId)) continue;
+                    const hydratedItem = hydrateMobileBlockItem(normalizedItemId, listId);
+                    if (!hydratedItem) continue;
+                    seenItemIds.add(normalizedItemId);
+                    hydratedItems.push(hydratedItem);
+                  }
                 }
-              }
               return hydratedItems;
             })()
           };
@@ -1108,9 +1259,14 @@ export default function MobileCalendarWireframe(): JSX.Element {
       if (!drawer.open || drawer.mode !== 'item' || !resolvedDrawerItem?.id) {
         setItemDrawerFields([]);
         setItemDrawerFieldValues({});
+        setItemDrawerTitleDraft('');
+        setItemDrawerDescriptionDraft('');
         setItemDrawerComments([]);
         return;
       }
+
+      setItemDrawerTitleDraft(resolvedDrawerItem.name || '');
+      setItemDrawerDescriptionDraft(resolvedDrawerItem.description || '');
 
       const listId = resolvedDrawerItem.listId || null;
       if (listId) {
@@ -1119,7 +1275,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
             listFieldService.getFields(listId),
             itemFieldValueService.bulkFetchForList(listId)
           ]);
-          setItemDrawerFields((fields || []).filter((field: any) => field.is_pinned));
+          setItemDrawerFields((fields || []).filter((field: any) => !field?.is_primary && field?.type !== 'status'));
           setItemDrawerFieldValues(valuesMap?.[resolvedDrawerItem.id] || {});
         } catch (error) {
           console.error('Failed loading item drawer fields:', error);
@@ -1923,42 +2079,355 @@ export default function MobileCalendarWireframe(): JSX.Element {
     setSubtaskComposerByItem((prev) => ({ ...prev, [itemId]: !prev[itemId] }));
   };
 
-  const createSubtaskFromBlock = async (blockId: string, itemId: string): Promise<void> => {
+  const createSubtaskFromBlock = async (blockId: string | null, itemId: string, listId?: string): Promise<void> => {
     const title = (subtaskDraftByItem[itemId] || '').trim();
     if (!title || !user?.id) return;
     try {
       const created = await focalBoardService.createAction(itemId, user.id, title, null, null);
-      setBlocks((prev) =>
-        prev.map((block) => {
-          if (block.id !== blockId) return block;
-          return {
-            ...block,
-            items: block.items.map((item) =>
-              item.id === itemId
-                ? {
-                    ...item,
-                    subItems: [
-                      ...(item.subItems || []),
-                      {
-                        id: created.id,
-                        name: created.title || title,
-                        description: created.description || '',
-                        listId: item.listId,
-                        parentItemId: item.id,
-                        subtask_status: created.subtask_status || created.status || null,
-                        subtask_status_id: created.subtask_status_id || null
+      const nextSubtask = {
+        id: created.id,
+        name: created.title || title,
+        description: created.description || '',
+        listId,
+        parentItemId: itemId,
+        subtask_status: created.subtask_status || created.status || null,
+        subtask_status_id: created.subtask_status_id || null
+      };
+      if (blockId) {
+        setBlocks((prev) =>
+          prev.map((block) => {
+            if (block.id !== blockId) return block;
+            return {
+              ...block,
+              items: block.items.map((item) =>
+                item.id === itemId
+                  ? {
+                      ...item,
+                      subItems: [...(item.subItems || []), nextSubtask]
+                    }
+                  : item
+              ),
+              blockTasks: (block.blockTasks || []).map((task) => ({
+                ...task,
+                linkedItems: (task.linkedItems || []).map((linked) =>
+                  linked.itemId === itemId || linked.id === itemId
+                    ? {
+                        ...linked,
+                        subItems: [...(linked.subItems || []), nextSubtask]
                       }
-                    ]
-                  }
-                : item
-            )
-          };
-        })
-      );
+                    : linked
+                )
+              }))
+            };
+          })
+        );
+      }
+      if (listId) {
+        setItemsByList((prev) => ({
+          ...prev,
+          [listId]: (prev[listId] || []).map((item) =>
+            item.id === itemId
+              ? {
+                  ...item,
+                  actions: [
+                    ...(item.actions || []),
+                    {
+                      id: nextSubtask.id,
+                      title: nextSubtask.name,
+                      description: nextSubtask.description,
+                      subtask_status: nextSubtask.subtask_status,
+                      subtask_status_id: nextSubtask.subtask_status_id
+                    }
+                  ]
+                }
+              : item
+          )
+        }));
+      }
       setSubtaskDraftByItem((prev) => ({ ...prev, [itemId]: '' }));
       setSubtaskComposerByItem((prev) => ({ ...prev, [itemId]: false }));
     } catch (error) {
       console.error('Failed to create subtask from mobile block:', error);
+    }
+  };
+
+  const closeBlockTaskCompletionSheet = (): void => {
+    setBlockTaskCompletionSheet({
+      open: false,
+      blockId: null,
+      blockTaskId: null,
+      blockTaskItemId: null,
+      itemId: null,
+      listId: null,
+      title: '',
+      note: '',
+      followUpTasks: '',
+      statuses: [],
+      selectedStatus: null,
+      loading: false,
+      saving: false,
+      error: ''
+    });
+  };
+
+  const syncBlockTaskLinkedItemLocalState = (
+    itemId: string,
+    blockTaskItemId: string,
+    updates: { completedInContext?: boolean; completionNote?: string | null; completedAt?: string | null }
+  ): void => {
+    setBlocks((prev) =>
+      prev.map((block) => ({
+        ...block,
+        blockTasks: (block.blockTasks || []).map((task) => ({
+          ...task,
+          linkedItems: (task.linkedItems || []).map((linked) =>
+            linked.blockTaskItemId === blockTaskItemId || linked.itemId === itemId
+              ? {
+                  ...linked,
+                  completedInContext: updates.completedInContext ?? linked.completedInContext,
+                  completionNote:
+                    updates.completionNote === undefined ? linked.completionNote : updates.completionNote,
+                  completedAt: updates.completedAt === undefined ? linked.completedAt : updates.completedAt
+                }
+              : linked
+          )
+        }))
+      }))
+    );
+  };
+
+  const withPendingBlockTaskToggle = async (blockTaskItemId: string, work: () => Promise<void>): Promise<void> => {
+    if (!blockTaskItemId || pendingBlockTaskToggleIds[blockTaskItemId]) return;
+    setPendingBlockTaskToggleIds((prev) => ({ ...prev, [blockTaskItemId]: true }));
+    try {
+      await work();
+    } finally {
+      setPendingBlockTaskToggleIds((prev) => {
+        const next = { ...prev };
+        delete next[blockTaskItemId];
+        return next;
+      });
+    }
+  };
+
+  const syncNewFollowUpTasksLocally = (
+    itemId: string,
+    listId: string | undefined,
+    createdTasks: Array<{ id: string; title: string; description?: string | null }>
+  ): void => {
+    if (!createdTasks.length) return;
+    setBlocks((prev) =>
+      prev.map((block) => ({
+        ...block,
+        items: block.items.map((item) =>
+          item.id === itemId
+            ? {
+                ...item,
+                subItems: [
+                  ...(item.subItems || []),
+                  ...createdTasks.map((task) => ({
+                    id: task.id,
+                    name: task.title,
+                    description: task.description || '',
+                    listId,
+                    parentItemId: itemId,
+                    subtask_status: null,
+                    subtask_status_id: null
+                  }))
+                ]
+              }
+            : item
+        ),
+        blockTasks: (block.blockTasks || []).map((task) => ({
+          ...task,
+          linkedItems: (task.linkedItems || []).map((linked) =>
+            linked.itemId === itemId
+              ? {
+                  ...linked,
+                  subItems: [
+                    ...(linked.subItems || []),
+                    ...createdTasks.map((taskRow) => ({
+                      id: taskRow.id,
+                      name: taskRow.title,
+                      description: taskRow.description || '',
+                      listId,
+                      parentItemId: itemId,
+                      subtask_status: null,
+                      subtask_status_id: null
+                    }))
+                  ]
+                }
+              : linked
+          )
+        }))
+      }))
+    );
+    if (listId) {
+      setItemsByList((prev) => ({
+        ...prev,
+        [listId]: (prev[listId] || []).map((item) =>
+          item.id === itemId
+            ? {
+                ...item,
+                actions: [
+                  ...(item.actions || []),
+                  ...createdTasks.map((task) => ({
+                    id: task.id,
+                    title: task.title,
+                    description: task.description || '',
+                    subtask_status: null,
+                    subtask_status_id: null
+                  }))
+                ]
+              }
+            : item
+        )
+      }));
+    }
+  };
+
+  const openBlockTaskCompletionFlow = async (
+    blockId: string,
+    blockTaskId: string,
+    linked: MobileBlockTaskLinkedItem
+  ): Promise<void> => {
+    setBlockTaskCompletionSheet({
+      open: true,
+      blockId,
+      blockTaskId,
+      blockTaskItemId: linked.blockTaskItemId,
+      itemId: linked.itemId,
+      listId: linked.listId || null,
+      title: linked.name,
+      note: '',
+      followUpTasks: '',
+      statuses: [],
+      selectedStatus: null,
+      loading: Boolean(linked.listId),
+      saving: false,
+      error: ''
+    });
+    if (!linked.listId) {
+      setBlockTaskCompletionSheet((prev) => ({ ...prev, loading: false }));
+      return;
+    }
+    try {
+      const { itemStatuses } = await loadStatusesForList(linked.listId);
+      setBlockTaskCompletionSheet((prev) =>
+        prev.blockTaskItemId === linked.blockTaskItemId
+          ? { ...prev, statuses: itemStatuses, loading: false }
+          : prev
+      );
+    } catch {
+      setBlockTaskCompletionSheet((prev) =>
+        prev.blockTaskItemId === linked.blockTaskItemId ? { ...prev, loading: false } : prev
+      );
+    }
+  };
+
+  const submitBlockTaskCompletion = async (): Promise<void> => {
+    if (!user?.id || !blockTaskCompletionSheet.blockId || !blockTaskCompletionSheet.blockTaskId || !blockTaskCompletionSheet.blockTaskItemId || !blockTaskCompletionSheet.itemId) {
+      return;
+    }
+    const targetBlock = blocks.find((entry) => entry.id === blockTaskCompletionSheet.blockId) || null;
+    const targetTask = targetBlock?.blockTasks?.find((entry) => entry.id === blockTaskCompletionSheet.blockTaskId) || null;
+    const linkedItem =
+      targetTask?.linkedItems.find((entry) => entry.blockTaskItemId === blockTaskCompletionSheet.blockTaskItemId) || null;
+    if (!targetBlock || !targetTask || !linkedItem) return;
+
+    setBlockTaskCompletionSheet((prev) => ({ ...prev, saving: true, error: '' }));
+    const note = blockTaskCompletionSheet.note.trim();
+    const followUpTitles = blockTaskCompletionSheet.followUpTasks
+      .split('\n')
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+
+    try {
+      setPendingBlockTaskToggleIds((prev) => ({
+        ...prev,
+        [blockTaskCompletionSheet.blockTaskItemId as string]: true
+      }));
+      await calendarService.setBlockTaskItemCompletion({
+        userId: user.id,
+        blockTaskItemId: blockTaskCompletionSheet.blockTaskItemId,
+        timeBlockId: targetBlock.id,
+        scheduledStartUtc: buildIsoFromViewedDate(minutesToClock(targetBlock.startMin)),
+        scheduledEndUtc: buildIsoFromViewedDate(minutesToClock(targetBlock.endMin)),
+        checked: true,
+        completionNote: note || null
+      });
+      syncBlockTaskLinkedItemLocalState(blockTaskCompletionSheet.itemId, blockTaskCompletionSheet.blockTaskItemId, {
+        completedInContext: true,
+        completionNote: note || null,
+        completedAt: new Date().toISOString()
+      });
+
+      const systemBody = `Completed during "${targetTask.title}" in "${targetBlock.name}".`;
+      const createdSystem = await focalBoardService.createScopedComment(
+        'item',
+        blockTaskCompletionSheet.itemId,
+        user.id,
+        systemBody,
+        'system'
+      );
+      const nextComments = [{ ...mapThreadComment(createdSystem), id: `thread-${createdSystem.id}` }];
+      if (blockTaskCompletionSheet.selectedStatus) {
+        const previousStatusLabel =
+          getItemStatusEntry(linkedItem)?.name || linkedItem.status || 'No status';
+        await focalBoardService.updateItem(blockTaskCompletionSheet.itemId, {
+          status: blockTaskCompletionSheet.selectedStatus.key,
+          status_id: blockTaskCompletionSheet.selectedStatus.id || null
+        });
+        applyStatusUpdateLocally(
+          linkedItem.listId || '',
+          'item',
+          blockTaskCompletionSheet.itemId,
+          blockTaskCompletionSheet.selectedStatus
+        );
+        const createdStatusSystem = await focalBoardService.createScopedComment(
+          'item',
+          blockTaskCompletionSheet.itemId,
+          user.id,
+          `Status changed: ${previousStatusLabel} -> ${blockTaskCompletionSheet.selectedStatus.name}`,
+          'system'
+        );
+        nextComments.push({ ...mapThreadComment(createdStatusSystem), id: `thread-${createdStatusSystem.id}` });
+      }
+      if (note) {
+        const createdUser = await focalBoardService.createScopedComment(
+          'item',
+          blockTaskCompletionSheet.itemId,
+          user.id,
+          note,
+          'user'
+        );
+        nextComments.push({ ...mapThreadComment(createdUser), id: `thread-${createdUser.id}` });
+      }
+      if (drawer.mode === 'item' && resolvedDrawerItem?.id === blockTaskCompletionSheet.itemId) {
+        setItemDrawerComments((prev) => [...prev, ...nextComments]);
+      }
+
+      const createdTasks = [];
+      for (const title of followUpTitles) {
+        const created = await focalBoardService.createAction(blockTaskCompletionSheet.itemId, user.id, title, null, null);
+        createdTasks.push(created);
+      }
+      syncNewFollowUpTasksLocally(blockTaskCompletionSheet.itemId, linkedItem.listId, createdTasks);
+      closeBlockTaskCompletionSheet();
+      await loadCalendarBlocks();
+    } catch (error: any) {
+      console.error('Failed to complete block task item on mobile:', error);
+      setBlockTaskCompletionSheet((prev) => ({
+        ...prev,
+        saving: false,
+        error: error?.message || 'Failed to complete task in block'
+      }));
+    } finally {
+      setPendingBlockTaskToggleIds((prev) => {
+        const next = { ...prev };
+        delete next[blockTaskCompletionSheet.blockTaskItemId as string];
+        return next;
+      });
     }
   };
 
@@ -2252,6 +2721,187 @@ export default function MobileCalendarWireframe(): JSX.Element {
     if (field.type === 'date') return value.value_date ? new Date(value.value_date).toLocaleDateString() : '--';
     if (field.type === 'boolean') return value.value_boolean ? 'Yes' : 'No';
     return '--';
+  };
+
+  const getItemDrawerFieldInputValue = (field: any): string => {
+    const value = itemDrawerFieldValues[field.id];
+    if (!value) return '';
+    if (field.type === 'text' || field.type === 'contact') return value.value_text || '';
+    if (field.type === 'number') return value.value_number != null ? String(value.value_number) : '';
+    if (field.type === 'date') return value.value_date ? new Date(value.value_date).toISOString().slice(0, 10) : '';
+    if (field.type === 'boolean') return value.value_boolean ? 'true' : 'false';
+    return value.option_id || '';
+  };
+
+  const syncMobileItemLocally = (itemId: string, updates: { title?: string; description?: string | null }): void => {
+    setItemsByList((prev) =>
+      Object.fromEntries(
+        Object.entries(prev).map(([listId, items]) => [
+          listId,
+          items.map((item) =>
+            item.id === itemId
+              ? {
+                  ...item,
+                  title: updates.title ?? item.title,
+                  description: updates.description ?? item.description
+                }
+              : item
+          )
+        ])
+      )
+    );
+    setBlocks((prev) =>
+      prev.map((block) => ({
+        ...block,
+        items: block.items.map((item) =>
+          item.id === itemId
+            ? {
+                ...item,
+                name: updates.title ?? item.name,
+                description: updates.description ?? item.description
+              }
+              : item
+        ),
+        blockTasks: (block.blockTasks || []).map((task) => ({
+          ...task,
+          linkedItems: (task.linkedItems || []).map((item) =>
+            item.itemId === itemId || item.id === itemId
+              ? {
+                  ...item,
+                  name: updates.title ?? item.name,
+                  description: updates.description ?? item.description
+                }
+              : item
+          )
+        }))
+      }))
+    );
+  };
+
+  const syncMobileSubtaskLocally = (
+    parentItemId: string,
+    subtaskId: string,
+    updates: { name?: string; description?: string | null }
+  ): void => {
+    setItemsByList((prev) =>
+      Object.fromEntries(
+        Object.entries(prev).map(([listId, items]) => [
+          listId,
+          items.map((item) =>
+            item.id === parentItemId
+              ? {
+                  ...item,
+                  actions: (item.actions || []).map((action) =>
+                    action.id === subtaskId
+                      ? {
+                          ...action,
+                          title: updates.name ?? action.title,
+                          description: updates.description ?? action.description
+                        }
+                      : action
+                  )
+                }
+              : item
+          )
+        ])
+      )
+    );
+    setBlocks((prev) =>
+      prev.map((block) => ({
+        ...block,
+        items: block.items.map((item) =>
+          item.id === parentItemId
+            ? {
+                ...item,
+                subItems: (item.subItems || []).map((subItem) =>
+                  subItem.id === subtaskId
+                    ? {
+                        ...subItem,
+                        name: updates.name ?? subItem.name,
+                        description: updates.description ?? subItem.description
+                      }
+                    : subItem
+                )
+              }
+              : item
+        ),
+        blockTasks: (block.blockTasks || []).map((task) => ({
+          ...task,
+          linkedItems: (task.linkedItems || []).map((item) =>
+            item.itemId === parentItemId || item.id === parentItemId
+              ? {
+                  ...item,
+                  subItems: (item.subItems || []).map((subItem) =>
+                    subItem.id === subtaskId
+                      ? {
+                          ...subItem,
+                          name: updates.name ?? subItem.name,
+                          description: updates.description ?? subItem.description
+                        }
+                      : subItem
+                  )
+                }
+              : item
+          )
+        }))
+      }))
+    );
+  };
+
+  const saveItemDrawerDetails = async (): Promise<void> => {
+    if (!resolvedDrawerItem?.id) return;
+    const nextTitle = itemDrawerTitleDraft.trim();
+    const nextDescription = itemDrawerDescriptionDraft.trim();
+    if (!nextTitle) {
+      setItemDrawerTitleDraft(resolvedDrawerItem.name || '');
+      return;
+    }
+    if (nextTitle === (resolvedDrawerItem.name || '') && nextDescription === (resolvedDrawerItem.description || '').trim()) return;
+    try {
+      const updated = await focalBoardService.updateItem(resolvedDrawerItem.id, {
+        title: nextTitle,
+        description: nextDescription || null
+      });
+      syncMobileItemLocally(resolvedDrawerItem.id, {
+        title: updated.title || nextTitle,
+        description: updated.description || ''
+      });
+    } catch (error) {
+      console.error('Failed saving mobile item drawer details:', error);
+      setItemDrawerTitleDraft(resolvedDrawerItem.name || '');
+      setItemDrawerDescriptionDraft(resolvedDrawerItem.description || '');
+    }
+  };
+
+  const upsertItemDrawerFieldValue = async (field: any, rawValue: string): Promise<void> => {
+    if (!user?.id || !resolvedDrawerItem?.id) return;
+    let payload: any = null;
+    if ((field.type === 'status' || field.type === 'select')) {
+      payload = { option_id: rawValue || '' };
+    } else if (field.type === 'text' || field.type === 'contact') {
+      payload = { value_text: rawValue.trim() || '' };
+    } else if (field.type === 'number') {
+      const trimmed = rawValue.trim();
+      if (!trimmed) return;
+      const parsed = Number(trimmed.replace(/^\+/, ''));
+      if (!Number.isFinite(parsed)) return;
+      payload = { value_number: parsed };
+    } else if (field.type === 'date') {
+      if (!rawValue) return;
+      payload = { value_date: new Date(rawValue).toISOString() };
+    } else if (field.type === 'boolean') {
+      payload = { value_boolean: rawValue === 'true' };
+    }
+    if (!payload) return;
+    try {
+      const saved = await itemFieldValueService.upsertValue(user.id, resolvedDrawerItem.id, field.id, payload);
+      setItemDrawerFieldValues((prev) => ({
+        ...prev,
+        [field.id]: saved
+      }));
+    } catch (error) {
+      console.error('Failed saving item drawer field value:', error);
+    }
   };
 
   const onItemDrawerPanelTouchStart = (event: TouchEvent): void => {
@@ -2548,7 +3198,10 @@ export default function MobileCalendarWireframe(): JSX.Element {
   };
 
   const renderBlockItemRows = (blockId: string, items: MobileBlockItem[], emptyLabel = 'No attached items yet.') => {
-    const orderedItems = dedupeMobileBlockItems(sortMobileBlockItems(items));
+    const block = blocks.find((entry) => entry.id === blockId) || null;
+    const orderedItems = dedupeMobileBlockItems(
+      sortMobileBlockItems(filterDirectItemsAgainstBlockTasks(items, block?.blockTasks))
+    );
     if (!orderedItems.length) {
       return <div className="mobile-drawer-empty">{emptyLabel}</div>;
     }
@@ -2666,6 +3319,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                       <input
                         type="text"
                         value={subtaskDraftByItem[item.id] || ''}
+                        autoFocus
                         onClick={(event) => event.stopPropagation()}
                         onChange={(event) =>
                           setSubtaskDraftByItem((prev) => ({
@@ -2679,7 +3333,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                         type="button"
                         onClick={(event) => {
                           event.stopPropagation();
-                          void createSubtaskFromBlock(blockId, item.id);
+                          void createSubtaskFromBlock(blockId, item.id, item.listId);
                         }}
                       >
                         Add
@@ -2689,6 +3343,86 @@ export default function MobileCalendarWireframe(): JSX.Element {
                 </>
               );
             })()}
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  const renderBlockTaskGroups = (blockId: string, blockTasks: MobileBlockTask[], emptyLabel = 'No block tasks yet.') => {
+    if (!blockTasks.length) {
+      return <div className="mobile-drawer-empty">{emptyLabel}</div>;
+    }
+
+    return (
+      <div className="mobile-block-task-stack">
+        {blockTasks.map((task) => (
+          <div key={task.id} className="mobile-block-task-card">
+            <div className="mobile-block-task-head">
+              <span className="mobile-block-task-kicker">Block task</span>
+              <strong className="mobile-block-task-title">{task.title}</strong>
+            </div>
+            {task.description?.trim() ? <p className="mobile-block-task-description">{task.description.trim()}</p> : null}
+            {task.linkedItems.length > 0 ? (
+              <div className="mobile-block-task-items">
+                {task.linkedItems.map((linked) => (
+                  <div key={linked.blockTaskItemId} className="mobile-item-row block-task-child">
+                    <button
+                      type="button"
+                      className={`mobile-block-task-context-toggle ${pendingBlockTaskToggleIds[linked.blockTaskItemId] ? 'pending' : ''}`.trim()}
+                      disabled={Boolean(pendingBlockTaskToggleIds[linked.blockTaskItemId])}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        if (linked.completedInContext) {
+                          void withPendingBlockTaskToggle(linked.blockTaskItemId, async () => {
+                            const targetBlock = blocks.find((entry) => entry.id === blockId);
+                            if (!user?.id || !targetBlock) return;
+                            await calendarService.setBlockTaskItemCompletion({
+                              userId: user.id,
+                              blockTaskItemId: linked.blockTaskItemId,
+                              timeBlockId: blockId,
+                              scheduledStartUtc: buildIsoFromViewedDate(minutesToClock(targetBlock.startMin)),
+                              scheduledEndUtc: buildIsoFromViewedDate(minutesToClock(targetBlock.endMin)),
+                              checked: false,
+                              completionNote: null
+                            });
+                            syncBlockTaskLinkedItemLocalState(linked.itemId, linked.blockTaskItemId, {
+                              completedInContext: false,
+                              completionNote: null,
+                              completedAt: null
+                            });
+                            await loadCalendarBlocks();
+                          }).catch((error) => console.error('Failed to reset mobile block task completion:', error));
+                          return;
+                        }
+                        if (pendingBlockTaskToggleIds[linked.blockTaskItemId]) return;
+                        void openBlockTaskCompletionFlow(blockId, task.id, linked);
+                      }}
+                      aria-label={linked.completedInContext ? 'Mark incomplete' : 'Mark complete in block task'}
+                    >
+                      <span
+                        className={`mobile-block-task-context-dot ${linked.completedInContext ? 'done' : ''}`.trim()}
+                        aria-hidden="true"
+                      />
+                    </button>
+                    <button
+                      type="button"
+                      className="mobile-item-text block-task-child"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openItemDrawer(blockId, linked.itemId);
+                      }}
+                    >
+                      <div className="mobile-item-main">
+                        <span className="mobile-item-label">{linked.name}</span>
+                      </div>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="mobile-drawer-empty compact">No linked items yet.</div>
+            )}
           </div>
         ))}
       </div>
@@ -3776,14 +4510,33 @@ export default function MobileCalendarWireframe(): JSX.Element {
                     const height = Math.max(rawHeight - blockGap, 24);
                     const isCurrent = block.id === currentBlockId;
                     const hasDescription = Boolean(block.description?.trim());
-                    const orderedBlockItems = sortMobileBlockItems(block.items);
+                    const orderedBlockItems = sortMobileBlockItems(
+                      filterDirectItemsAgainstBlockTasks(block.items, block.blockTasks)
+                    );
                     const visibleItems = orderedBlockItems;
+                    const visibleBlockTasks = block.blockTasks || [];
                     const expandedInline = isCurrent || expandedTasksByBlock[block.id];
-                    const canToggleTasks = !isCurrent && visibleItems.length > 0;
+                    const totalInlineRowCount =
+                      visibleItems.length +
+                      countMobileBlockTaskRows(visibleBlockTasks);
+                    const canToggleTasks = !isCurrent && totalInlineRowCount > 0;
                     const reservedHeight = 42 + (hasDescription ? 18 : 0) + (canToggleTasks ? 24 : 0);
-                    const maxInlineItems = Math.max(0, Math.min(3, Math.floor((height - reservedHeight) / 32)));
-                    const renderedItems = expandedInline ? visibleItems.slice(0, maxInlineItems) : [];
-                    const hiddenItemCount = expandedInline ? Math.max(0, visibleItems.length - renderedItems.length) : 0;
+                    const maxInlineRows = Math.max(0, Math.min(6, Math.floor((height - reservedHeight) / 32)));
+                    let remainingRows = maxInlineRows;
+                    const renderedBlockTasks = expandedInline
+                      ? visibleBlockTasks.reduce<MobileBlockTask[]>((acc, task) => {
+                          if (remainingRows <= 0) return acc;
+                          remainingRows -= 1;
+                          const shownLinkedItems = task.linkedItems.slice(0, Math.max(0, remainingRows));
+                          remainingRows = Math.max(0, remainingRows - shownLinkedItems.length);
+                          acc.push({ ...task, linkedItems: shownLinkedItems });
+                          return acc;
+                        }, [])
+                      : [];
+                    const renderedItems = expandedInline ? visibleItems.slice(0, Math.max(0, remainingRows)) : [];
+                    const renderedRowCount =
+                      renderedItems.length + countMobileBlockTaskRows(renderedBlockTasks);
+                    const hiddenItemCount = expandedInline ? Math.max(0, totalInlineRowCount - renderedRowCount) : 0;
                     return (
                       <article
                         key={block.id}
@@ -3825,12 +4578,80 @@ export default function MobileCalendarWireframe(): JSX.Element {
                             }}
                           >
                             <ChevronDown size={14} className={expandedTasksByBlock[block.id] ? 'open' : ''} />
-                            {expandedTasksByBlock[block.id] ? 'Hide items' : `${visibleItems.length} more ↗`}
+                            {expandedTasksByBlock[block.id] ? 'Hide items' : `${totalInlineRowCount} more ↗`}
                           </button>
                         )}
 
                         {expandedInline && (
                           <div className="mobile-time-block-items">
+                            {renderedBlockTasks.map((task) => (
+                              <div key={task.id} className="mobile-time-block-task-group">
+                                <div className="mobile-block-task-heading">
+                                  <span className="mobile-block-task-heading-kicker">Task</span>
+                                  <span className="mobile-block-task-heading-title">{task.title}</span>
+                                </div>
+                                {task.linkedItems.map((linked) => (
+                                  <div key={linked.blockTaskItemId} className="mobile-item-row block-task-child">
+                                    <button
+                                      type="button"
+                                      className={`mobile-block-task-context-toggle ${pendingBlockTaskToggleIds[linked.blockTaskItemId] ? 'pending' : ''}`.trim()}
+                                      disabled={Boolean(pendingBlockTaskToggleIds[linked.blockTaskItemId])}
+                                      onPointerDown={(event) => event.stopPropagation()}
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        if (linked.completedInContext) {
+                                          if (!user?.id) return;
+                                          void withPendingBlockTaskToggle(linked.blockTaskItemId, () =>
+                                            calendarService.setBlockTaskItemCompletion({
+                                              userId: user.id,
+                                              blockTaskItemId: linked.blockTaskItemId,
+                                              timeBlockId: block.id,
+                                              scheduledStartUtc: buildIsoFromViewedDate(minutesToClock(block.startMin)),
+                                              scheduledEndUtc: buildIsoFromViewedDate(minutesToClock(block.endMin)),
+                                              checked: false,
+                                              completionNote: null
+                                            })
+                                            .then(() =>
+                                              syncBlockTaskLinkedItemLocalState(linked.itemId, linked.blockTaskItemId, {
+                                                completedInContext: false,
+                                                completionNote: null,
+                                                completedAt: null
+                                              })
+                                            )
+                                            .then(() => loadCalendarBlocks())
+                                            .catch((error: any) =>
+                                              console.error('Failed to reset block task item from mobile card:', error)
+                                            )
+                                          );
+                                          return;
+                                        }
+                                        if (pendingBlockTaskToggleIds[linked.blockTaskItemId]) return;
+                                        void openBlockTaskCompletionFlow(block.id, task.id, linked);
+                                      }}
+                                      aria-label={linked.completedInContext ? 'Mark incomplete' : 'Mark complete in block task'}
+                                    >
+                                      <span
+                                        className={`mobile-block-task-context-dot ${linked.completedInContext ? 'done' : ''}`.trim()}
+                                        aria-hidden="true"
+                                      />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="mobile-item-text block-task-child"
+                                      onPointerDown={(event) => event.stopPropagation()}
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        openItemDrawer(block.id, linked.itemId);
+                                      }}
+                                    >
+                                      <div className="mobile-item-main">
+                                        <span className="mobile-item-label">{linked.name}</span>
+                                      </div>
+                                    </button>
+                                  </div>
+                                ))}
+                              </div>
+                            ))}
                             {renderedItems.map((item) => (
                               <div key={item.id} className="mobile-item-row">
                                 {(() => {
@@ -3961,6 +4782,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                                     <input
                                       type="text"
                                       value={subtaskDraftByItem[item.id] || ''}
+                                      autoFocus
                                       onPointerDown={(event) => event.stopPropagation()}
                                       onClick={(event) => event.stopPropagation()}
                                       onChange={(event) =>
@@ -3973,7 +4795,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                                       onPointerDown={(event) => event.stopPropagation()}
                                       onClick={(event) => {
                                         event.stopPropagation();
-                                        void createSubtaskFromBlock(block.id, item.id);
+                                        void createSubtaskFromBlock(block.id, item.id, item.listId);
                                       }}
                                     >
                                       Add
@@ -4974,7 +5796,20 @@ export default function MobileCalendarWireframe(): JSX.Element {
                       Add items
                     </button>
                   </div>
-                  {drawer.blockId && renderBlockItemRows(drawer.blockId, activeDrawerBlock?.items || [])}
+                  {activeDrawerBlock?.blockTasks?.length ? (
+                    <div className="mobile-drawer-linked-block-tasks">
+                      <h5>Block tasks</h5>
+                      {renderBlockTaskGroups(drawer.blockId as string, activeDrawerBlock.blockTasks)}
+                    </div>
+                  ) : null}
+                  {activeDrawerBlock?.items?.length ? (
+                    <div className="mobile-drawer-linked-direct">
+                      {activeDrawerBlock.blockTasks?.length ? <h5>Direct items</h5> : null}
+                      {renderBlockItemRows(drawer.blockId as string, activeDrawerBlock.items || [])}
+                    </div>
+                  ) : activeDrawerBlock?.blockTasks?.length ? null : (
+                    renderBlockItemRows(drawer.blockId as string, activeDrawerBlock?.items || [])
+                  )}
                 </div>
               </>
             )}
@@ -5077,20 +5912,108 @@ export default function MobileCalendarWireframe(): JSX.Element {
 
                 {itemDrawerPanel === 'details' ? (
                   <div className="mobile-item-drawer-details">
-                    <h4>{resolvedDrawerItem.name}</h4>
-                    <p>{resolvedDrawerItem.description?.trim() || activeDrawerBlock?.description?.trim() || 'No description yet.'}</p>
+                    <div className="mobile-item-drawer-editable">
+                      <input
+                        className="mobile-item-drawer-title-input"
+                        type="text"
+                        value={itemDrawerTitleDraft}
+                        onChange={(event) => setItemDrawerTitleDraft(event.target.value)}
+                        onBlur={() => void saveItemDrawerDetails()}
+                        placeholder="Item title"
+                      />
+                      <button
+                        type="button"
+                        className="mobile-item-drawer-status-trigger"
+                        onClick={() =>
+                          void openStatusChangeFlow({
+                            entityType: 'item',
+                            listId: resolvedDrawerItem.listId,
+                            targetId: resolvedDrawerItem.id,
+                            parentItemId: resolvedDrawerItem.id,
+                            title: resolvedDrawerItem.name,
+                            currentStatusKey: getItemStatusEntry(resolvedDrawerItem)?.key || resolvedDrawerItem.status || null,
+                            currentStatusLabel: getItemStatusEntry(resolvedDrawerItem)?.name || 'No status'
+                          })
+                        }
+                      >
+                        {getItemStatusEntry(resolvedDrawerItem)?.name || 'Set status'}
+                      </button>
+                      <textarea
+                        className="mobile-item-drawer-description-input"
+                        value={itemDrawerDescriptionDraft}
+                        onChange={(event) => setItemDrawerDescriptionDraft(event.target.value)}
+                        onBlur={() => void saveItemDrawerDetails()}
+                        placeholder="No description yet."
+                        rows={3}
+                      />
+                    </div>
                     <div className="mobile-item-drawer-fields">
                       <h5>Column values</h5>
                       {itemDrawerFields.length === 0 && <div className="mobile-item-drawer-empty">No column values on this task yet.</div>}
                       {itemDrawerFields.map((field) => (
                         <div key={field.id} className="mobile-item-drawer-field-row">
                           <span>{field.name}</span>
-                          <strong>{getFieldDisplayValue(field)}</strong>
+                          {field.type === 'status' || field.type === 'select' ? (
+                            <select
+                              className="mobile-item-drawer-field-input"
+                              value={getItemDrawerFieldInputValue(field)}
+                              onChange={(event) => void upsertItemDrawerFieldValue(field, event.target.value)}
+                            >
+                              <option value="">Select</option>
+                              {(field.options || []).map((option: any) => (
+                                <option key={option.id} value={option.id}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          ) : field.type === 'boolean' ? (
+                            <button
+                              type="button"
+                              className="mobile-item-drawer-boolean"
+                              onClick={() =>
+                                void upsertItemDrawerFieldValue(
+                                  field,
+                                  getItemDrawerFieldInputValue(field) === 'true' ? 'false' : 'true'
+                                )
+                              }
+                            >
+                              {getFieldDisplayValue(field)}
+                            </button>
+                          ) : (
+                            <input
+                              className="mobile-item-drawer-field-input"
+                              type={field.type === 'date' ? 'date' : 'text'}
+                              inputMode={field.type === 'number' ? 'decimal' : undefined}
+                              value={getItemDrawerFieldInputValue(field)}
+                              placeholder={field.type === 'contact' ? 'Name • phone • email' : field.name}
+                              onChange={(event) =>
+                                setItemDrawerFieldValues((prev) => ({
+                                  ...prev,
+                                  [field.id]:
+                                    field.type === 'number'
+                                      ? { ...(prev[field.id] || {}), value_number: event.target.value }
+                                      : field.type === 'date'
+                                        ? { ...(prev[field.id] || {}), value_date: event.target.value }
+                                        : { ...(prev[field.id] || {}), value_text: event.target.value }
+                                }))
+                              }
+                              onBlur={(event) => void upsertItemDrawerFieldValue(field, event.target.value)}
+                            />
+                          )}
                         </div>
                       ))}
                     </div>
                     <div className="mobile-item-drawer-subtasks">
-                      <h5>Tasks</h5>
+                      <div className="mobile-item-drawer-subtasks-head">
+                        <h5>Tasks</h5>
+                        <button
+                          type="button"
+                          className="mobile-item-subtask-toggle plain-text"
+                          onClick={() => toggleSubtaskComposer(resolvedDrawerItem.id)}
+                        >
+                          + Add task
+                        </button>
+                      </div>
                       {getSortedSubItems(resolvedDrawerItem.subItems, true).length === 0 && (
                         <div className="mobile-item-drawer-empty">No subtasks on this item yet.</div>
                       )}
@@ -5143,6 +6066,28 @@ export default function MobileCalendarWireframe(): JSX.Element {
                               </div>
                             );
                           })}
+                        </div>
+                      )}
+                      {subtaskComposerByItem[resolvedDrawerItem.id] && (
+                        <div className="mobile-item-subtask-composer drawer">
+                          <input
+                            type="text"
+                            value={subtaskDraftByItem[resolvedDrawerItem.id] || ''}
+                            autoFocus
+                            onChange={(event) =>
+                              setSubtaskDraftByItem((prev) => ({
+                                ...prev,
+                                [resolvedDrawerItem.id]: event.target.value
+                              }))
+                            }
+                            placeholder="Add subtask"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => void createSubtaskFromBlock(drawer.blockId || null, resolvedDrawerItem.id, resolvedDrawerItem.listId)}
+                          >
+                            Add
+                          </button>
                         </div>
                       )}
                     </div>
@@ -5274,6 +6219,72 @@ export default function MobileCalendarWireframe(): JSX.Element {
                   </div>
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {blockTaskCompletionSheet.open && (
+        <div className="mobile-status-sheet-overlay" onClick={blockTaskCompletionSheet.saving ? undefined : closeBlockTaskCompletionSheet}>
+          <div className="mobile-status-sheet block-task-completion" onClick={(event) => event.stopPropagation()}>
+            <div className="mobile-status-sheet-head">
+              <strong>Complete in block</strong>
+              <button type="button" onClick={closeBlockTaskCompletionSheet} disabled={blockTaskCompletionSheet.saving}>
+                <X size={16} />
+              </button>
+            </div>
+            <div className="mobile-status-sheet-body">
+              <h4>{blockTaskCompletionSheet.title}</h4>
+              {blockTaskCompletionSheet.error && <div className="mobile-task-drawer-empty error">{blockTaskCompletionSheet.error}</div>}
+              <textarea
+                value={blockTaskCompletionSheet.note}
+                onChange={(event) =>
+                  setBlockTaskCompletionSheet((prev) => ({ ...prev, note: event.target.value }))
+                }
+                placeholder="Add completion note / outcome"
+                rows={3}
+                disabled={blockTaskCompletionSheet.saving}
+              />
+              <textarea
+                value={blockTaskCompletionSheet.followUpTasks}
+                onChange={(event) =>
+                  setBlockTaskCompletionSheet((prev) => ({ ...prev, followUpTasks: event.target.value }))
+                }
+                placeholder="Add next tasks, one per line"
+                rows={4}
+                disabled={blockTaskCompletionSheet.saving}
+              />
+              <label className="mobile-block-task-status-field">
+                <span>Optional status update</span>
+                <select
+                  value={blockTaskCompletionSheet.selectedStatus?.id || blockTaskCompletionSheet.selectedStatus?.key || ''}
+                  onChange={(event) =>
+                    setBlockTaskCompletionSheet((prev) => ({
+                      ...prev,
+                      selectedStatus:
+                        prev.statuses.find((status) => (status.id || status.key) === event.target.value) || null
+                    }))
+                  }
+                  disabled={blockTaskCompletionSheet.loading || blockTaskCompletionSheet.saving || blockTaskCompletionSheet.statuses.length === 0}
+                >
+                  <option value="">
+                    {blockTaskCompletionSheet.loading ? 'Loading statuses…' : 'Keep current status'}
+                  </option>
+                  {blockTaskCompletionSheet.statuses.map((status) => (
+                    <option key={status.id || status.key} value={status.id || status.key}>
+                      {status.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="mobile-status-sheet-actions">
+                <button type="button" onClick={closeBlockTaskCompletionSheet} disabled={blockTaskCompletionSheet.saving}>
+                  Cancel
+                </button>
+                <button type="button" className="primary" onClick={() => void submitBlockTaskCompletion()} disabled={blockTaskCompletionSheet.saving}>
+                  {blockTaskCompletionSheet.saving ? 'Saving…' : 'Save'}
+                </button>
+              </div>
             </div>
           </div>
         </div>

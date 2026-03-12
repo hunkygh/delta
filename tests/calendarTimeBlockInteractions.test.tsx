@@ -164,6 +164,15 @@ describe('calendar time block interactions', () => {
         onContentModeChange={() => undefined}
         contentListOptions={[{ id: 'list-1', name: 'Today' }]}
         contentItemOptionsByList={{ 'list-1': [{ id: 'item-1', title: 'First task' }] }}
+        contentRuleRows={[
+          {
+            id: 'rule-1',
+            selector_type: 'all',
+            selector_value: null,
+            list_id: 'list-1',
+            item_ids: ['item-1']
+          }
+        ]}
         contentFocalTree={[]}
         contentAll={{ listId: 'list-1', itemIds: ['item-1'] }}
         contentByWeekday={{

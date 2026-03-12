@@ -8,12 +8,12 @@ import {
   SlidersHorizontal,
   X
 } from 'lucide-react';
-import type { CustomRecurrenceConfig, Event, EventTask, RecurrenceRule } from '../types/Event';
+import type { BlockTask, CustomRecurrenceConfig, Event, EventTask, RecurrenceRule } from '../types/Event';
 import Button from './Button';
 import StatusChangeDialog, { type StatusDialogOption } from './StatusChangeDialog';
 import WeekCalendar from './calendar/WeekCalendar';
 import EventDrawer from './calendar/EventDrawer';
-import type { CalendarEvent } from './calendar/WeekCalendar';
+import type { CalendarEvent, CalendarViewMode } from './calendar/WeekCalendar';
 import { calendarService } from '../services/calendarService';
 import threadService from '../services/threadService';
 import focalBoardService from '../services/focalBoardService';
@@ -176,8 +176,14 @@ export default function Calendar({
   const { user } = useAuth();
   const navigate = useNavigate();
   const [eventList, setEventList] = useState<Event[]>(events);
+  const [calendarViewMode, setCalendarViewMode] = useState<CalendarViewMode>('week');
   const [weekAnchorMode, setWeekAnchorMode] = useState<WeekAnchorMode>('today_second');
   const [weekStart, setWeekStart] = useState<Date>(() => getStartForMode(new Date(), 'today_second'));
+  const [dayDate, setDayDate] = useState<Date>(() => {
+    const next = new Date();
+    next.setHours(0, 0, 0, 0);
+    return next;
+  });
   const [allowOverlap, setAllowOverlap] = useState(false);
   const [isConfigOpen, setIsConfigOpen] = useState(false);
 
@@ -219,6 +225,7 @@ export default function Calendar({
   const [resolvedItemsByOccurrence, setResolvedItemsByOccurrence] = useState<
     Record<string, Array<{ id: string; title: string; completed: boolean; kind: 'task' | 'item'; parentItemId?: string }>>
   >({});
+  const [resolvedBlockTasksByOccurrence, setResolvedBlockTasksByOccurrence] = useState<Record<string, BlockTask[]>>({});
   const [occurrenceContext, setOccurrenceContext] = useState<OccurrenceContext | null>(null);
   const [calendarStatusDialog, setCalendarStatusDialog] = useState<CalendarStatusDialogState>({
     open: false,
@@ -233,6 +240,9 @@ export default function Calendar({
     saving: false,
     error: null
   });
+  const [blockTaskItemStatusesByItemId, setBlockTaskItemStatusesByItemId] = useState<
+    Record<string, { statuses: StatusDialogOption[]; currentStatusKey: string | null; currentStatusLabel: string }>
+  >({});
   const [contentMode, setContentMode] = useState<'all' | 'weekday'>('all');
   const [contentAll, setContentAll] = useState<{ listId: string; itemIds: string[] }>({ listId: '', itemIds: [] });
   const [contentByWeekday, setContentByWeekday] = useState<
@@ -288,6 +298,11 @@ export default function Calendar({
   useEffect(() => {
     setWeekStart(getStartForMode(new Date(), weekAnchorMode));
   }, [weekAnchorMode]);
+
+  useEffect(() => {
+    if (calendarViewMode !== 'day') return;
+    setIsConfigOpen(false);
+  }, [calendarViewMode]);
 
   useEffect(() => {
     setEventList(events);
@@ -470,15 +485,32 @@ export default function Calendar({
     return `${startLabel} - ${endLabel}`;
   }, [weekStart]);
 
-  const monthLabel = useMemo(
-    () => weekStart.toLocaleDateString(undefined, { month: 'long', year: 'numeric' }),
-    [weekStart]
+  const dayRangeLabel = useMemo(
+    () =>
+      dayDate.toLocaleDateString(undefined, {
+        weekday: 'long',
+        month: 'short',
+        day: 'numeric'
+      }),
+    [dayDate]
   );
-  const weekEnd = useMemo(() => {
-    const end = addDays(weekStart, 6);
+
+  const monthLabel = useMemo(
+    () => (calendarViewMode === 'day' ? dayDate : weekStart).toLocaleDateString(undefined, { month: 'long', year: 'numeric' }),
+    [calendarViewMode, dayDate, weekStart]
+  );
+
+  const visibleRangeStart = useMemo(() => {
+    const start = new Date(calendarViewMode === 'day' ? dayDate : weekStart);
+    start.setHours(0, 0, 0, 0);
+    return start;
+  }, [calendarViewMode, dayDate, weekStart]);
+
+  const visibleRangeEnd = useMemo(() => {
+    const end = addDays(visibleRangeStart, calendarViewMode === 'day' ? 0 : 6);
     end.setHours(23, 59, 59, 999);
     return end;
-  }, [weekStart]);
+  }, [calendarViewMode, visibleRangeStart]);
 
   const listOptions = useMemo<ListOption[]>(() => {
     const options: ListOption[] = [];
@@ -651,8 +683,9 @@ export default function Calendar({
       });
     }
 
-    return expandEventsForWeek(baseEvents, weekStart, weekEnd);
+    return expandEventsForRange(baseEvents, visibleRangeStart, visibleRangeEnd);
   }, [
+    calendarViewMode,
     editingEventId,
     eventList,
     formState.description,
@@ -665,8 +698,8 @@ export default function Calendar({
     formState.title,
     isModalOpen,
     showDraftPreview,
-    weekEnd,
-    weekStart
+    visibleRangeEnd,
+    visibleRangeStart
   ]);
 
   useEffect(() => {
@@ -754,16 +787,16 @@ export default function Calendar({
           actionIds.length > 0
             ? await calendarService.getOccurrenceTaskCompletionRows({
                 timeBlockIds: sourceIds,
-                rangeStartUtc: weekStart.toISOString(),
-                rangeEndUtc: weekEnd.toISOString(),
+                rangeStartUtc: visibleRangeStart.toISOString(),
+                rangeEndUtc: visibleRangeEnd.toISOString(),
                 actionIds
               })
             : [];
 
         const itemCompletionRows = await calendarService.getOccurrenceCompletionRows({
           timeBlockIds: sourceIds,
-          rangeStartUtc: weekStart.toISOString(),
-          rangeEndUtc: weekEnd.toISOString(),
+          rangeStartUtc: visibleRangeStart.toISOString(),
+          rangeEndUtc: visibleRangeEnd.toISOString(),
           itemIds: [...allItemIds]
         });
         if (!active) return;
@@ -786,6 +819,7 @@ export default function Calendar({
           string,
           Array<{ id: string; title: string; completed: boolean; kind: 'task' | 'item'; parentItemId?: string }>
         > = {};
+        const nextBlockTasks: Record<string, BlockTask[]> = {};
         for (const event of baseVisibleEvents) {
           const sourceId = event.sourceEventId ?? event.id;
           const occurrenceStartUtc = new Date(event.start).toISOString();
@@ -830,8 +864,13 @@ export default function Calendar({
             });
           }
           nextResolved[event.id] = entries;
+          nextBlockTasks[event.id] = await calendarService.getBlockTasksWithItems({
+            timeBlockId: sourceId,
+            scheduledStartUtc: occurrenceStartUtc
+          });
         }
         setResolvedItemsByOccurrence(nextResolved);
+        setResolvedBlockTasksByOccurrence(nextBlockTasks);
       } catch (error) {
         console.error('Failed to resolve occurrence contents:', error);
       }
@@ -839,7 +878,7 @@ export default function Calendar({
     return () => {
       active = false;
     };
-  }, [baseVisibleEvents, eventList, itemTitleById, timeBlockContentRules, weekEnd, weekStart]);
+  }, [baseVisibleEvents, eventList, itemTitleById, timeBlockContentRules, visibleRangeEnd, visibleRangeStart]);
 
   const visibleEvents = baseVisibleEvents;
   const isPendingLikeStatus = (value: string | null | undefined): boolean =>
@@ -859,11 +898,13 @@ export default function Calendar({
     () =>
       visibleEvents.map((event) => {
         const linkedRows = sortOccurrenceEntries(resolvedItemsByOccurrence[event.id] || []);
-        if (linkedRows.length === 0) {
+        const blockTasks = resolvedBlockTasksByOccurrence[event.id] || [];
+        if (linkedRows.length === 0 && blockTasks.length === 0) {
           return event;
         }
         return {
           ...event,
+          blockTasks,
           occurrenceItems: linkedRows,
           tasks: linkedRows.map((row) => ({
             id: row.id,
@@ -873,8 +914,9 @@ export default function Calendar({
           }))
         };
       }),
-    [resolvedItemsByOccurrence, visibleEvents]
+    [resolvedBlockTasksByOccurrence, resolvedItemsByOccurrence, visibleEvents]
   );
+  const calendarPixelsPerMinute = calendarViewMode === 'day' ? 1.65 : 1;
 
   const occurrenceParentItemTitleById = useMemo(
     () =>
@@ -892,6 +934,9 @@ export default function Calendar({
   const showSeriesScopeControls = Boolean(editingEventId) && isRecurringSelection;
   const activeOccurrenceItems = occurrenceContext
     ? sortOccurrenceEntries(resolvedItemsByOccurrence[occurrenceContext.instanceId] || [])
+    : [];
+  const activeOccurrenceBlockTasks = occurrenceContext
+    ? resolvedBlockTasksByOccurrence[occurrenceContext.instanceId] || []
     : [];
 
   const hydrateContentDrafts = (timeBlockId: string): void => {
@@ -1040,6 +1085,104 @@ export default function Calendar({
     });
   };
 
+  const upsertScopedContentRuleForTimeBlock = async ({
+    timeBlockId,
+    selectorType,
+    selectorValue,
+    listId,
+    itemIds
+  }: {
+    timeBlockId: string;
+    selectorType: 'all' | 'weekday';
+    selectorValue: 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun' | null;
+    listId: string;
+    itemIds: string[];
+  }): Promise<void> => {
+    if (!listId) return;
+    const existing = timeBlockContentRules[timeBlockId] || [];
+    const keepRule =
+      existing.find(
+        (rule) =>
+          rule.selector_type === selectorType &&
+          (selectorType === 'all' || rule.selector_value === selectorValue) &&
+          rule.list_id === listId
+      ) || null;
+
+    const savedRule = await calendarService.upsertTimeBlockContentRule({
+      id: keepRule?.id,
+      time_block_id: timeBlockId,
+      selector_type: selectorType,
+      selector_value: selectorType === 'weekday' ? selectorValue : null,
+      list_id: listId,
+      item_ids: itemIds
+    });
+
+    setTimeBlockContentRules((prev) => {
+      const next = [...(prev[timeBlockId] || [])];
+      const index = next.findIndex((rule) => rule.id === savedRule.id);
+      if (index >= 0) next[index] = savedRule;
+      else next.push(savedRule);
+      return {
+        ...prev,
+        [timeBlockId]: next
+      };
+    });
+  };
+
+  const handleAttachExistingSearchItem = async (
+    itemId: string,
+    options: { listId: string; weekday: 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun' | null }
+  ): Promise<void> => {
+    if (!editingEventId || !itemId || !options.listId) return;
+    const selectorType = options.weekday ? 'weekday' : 'all';
+    const selectorValue = options.weekday ?? null;
+    const existing = timeBlockContentRules[editingEventId] || [];
+    const matchingRule =
+      existing.find(
+        (rule) =>
+          rule.selector_type === selectorType &&
+          (selectorType === 'all' || rule.selector_value === selectorValue) &&
+          rule.list_id === options.listId
+      ) || null;
+    const nextItemIds = [...new Set([...(matchingRule?.item_ids || []), itemId])];
+
+    await upsertScopedContentRuleForTimeBlock({
+      timeBlockId: editingEventId,
+      selectorType,
+      selectorValue,
+      listId: options.listId,
+      itemIds: nextItemIds
+    });
+
+    if (!options.weekday && (!contentAll.listId || contentAll.listId === options.listId)) {
+      setContentAll((prev) => ({
+        listId: prev.listId || options.listId,
+        itemIds: prev.listId === options.listId ? nextItemIds : prev.itemIds
+      }));
+    }
+
+    if (options.weekday) {
+      setContentByWeekday((prev) => {
+        const current = prev[options.weekday as keyof typeof prev];
+        if (current?.listId && current.listId !== options.listId) {
+          return prev;
+        }
+        return {
+          ...prev,
+          [options.weekday as keyof typeof prev]: {
+            listId: current?.listId || options.listId,
+            itemIds: current?.listId === options.listId ? nextItemIds : current?.itemIds || []
+          }
+        };
+      });
+    }
+
+    setRepeatTasksByItemId((prev) => ({
+      ...prev,
+      [itemId]: prev[itemId] ?? true
+    }));
+  };
+
   const handleToggleOccurrenceItem = async (
     entry: OccurrenceEntry,
     checked: boolean
@@ -1070,6 +1213,201 @@ export default function Calendar({
         )
       )
     }));
+  };
+
+  const applyBlockTaskPatchToResolvedState = (
+    timeBlockId: string,
+    updater: (tasks: BlockTask[]) => BlockTask[]
+  ): void => {
+    setResolvedBlockTasksByOccurrence((prev) => {
+      const next = { ...prev };
+      for (const event of baseVisibleEvents) {
+        const sourceId = event.sourceEventId ?? event.id;
+        if (sourceId !== timeBlockId) continue;
+        next[event.id] = updater(prev[event.id] || []);
+      }
+      return next;
+    });
+  };
+
+  const handleCreateBlockTask = async (title: string): Promise<void> => {
+    if (!user?.id || !editingEventId || !title.trim()) return;
+    const created = await calendarService.createBlockTask({
+      userId: user.id,
+      timeBlockId: editingEventId,
+      title: title.trim(),
+      sortOrder: activeOccurrenceBlockTasks.length
+    });
+    applyBlockTaskPatchToResolvedState(editingEventId, (tasks) => [...tasks, created]);
+  };
+
+  const handleUpdateBlockTask = async (
+    blockTaskId: string,
+    updates: { title?: string; description?: string }
+  ): Promise<void> => {
+    if (!editingEventId || !blockTaskId) return;
+    const saved = await calendarService.updateBlockTask(blockTaskId, updates);
+    applyBlockTaskPatchToResolvedState(editingEventId, (tasks) =>
+      tasks.map((task) => (task.id === blockTaskId ? { ...task, ...saved, linkedItems: task.linkedItems } : task))
+    );
+  };
+
+  const handleDeleteBlockTask = async (blockTaskId: string): Promise<void> => {
+    if (!editingEventId || !blockTaskId) return;
+    await calendarService.deleteBlockTask(blockTaskId);
+    applyBlockTaskPatchToResolvedState(editingEventId, (tasks) => tasks.filter((task) => task.id !== blockTaskId));
+  };
+
+  const handleAttachItemToBlockTask = async (blockTaskId: string, itemId: string): Promise<void> => {
+    if (!user?.id || !editingEventId || !blockTaskId || !itemId) return;
+    const targetTask = activeOccurrenceBlockTasks.find((task) => task.id === blockTaskId) || null;
+    const attached = await calendarService.attachItemToBlockTask({
+      userId: user.id,
+      blockTaskId,
+      itemId,
+      sortOrder: targetTask?.linkedItems.length || 0
+    });
+    applyBlockTaskPatchToResolvedState(editingEventId, (tasks) =>
+      tasks.map((task) =>
+        task.id === blockTaskId
+          ? {
+              ...task,
+              linkedItems: [...task.linkedItems, attached]
+            }
+          : task
+      )
+    );
+  };
+
+  const handleDetachItemFromBlockTask = async (blockTaskItemId: string): Promise<void> => {
+    if (!editingEventId || !blockTaskItemId) return;
+    await calendarService.detachItemFromBlockTask(blockTaskItemId);
+    applyBlockTaskPatchToResolvedState(editingEventId, (tasks) =>
+      tasks.map((task) => ({
+        ...task,
+        linkedItems: task.linkedItems.filter((linked) => linked.blockTaskItemId !== blockTaskItemId)
+      }))
+    );
+  };
+
+  const handleSubmitBlockTaskItemCompletion = async ({
+    blockTaskId,
+    blockTaskItemId,
+    itemId,
+    checked,
+    note,
+    followUpTasks,
+    statusUpdate
+  }: {
+    blockTaskId: string;
+    blockTaskItemId: string;
+    itemId: string;
+    checked: boolean;
+    note: string;
+    followUpTasks: string[];
+    statusUpdate?: StatusDialogOption | null;
+  }): Promise<void> => {
+    if (!user?.id || !occurrenceContext || !editingEventId) return;
+    const blockTask = activeOccurrenceBlockTasks.find((task) => task.id === blockTaskId) || null;
+    await calendarService.setBlockTaskItemCompletion({
+      userId: user.id,
+      blockTaskItemId,
+      timeBlockId: occurrenceContext.sourceEventId,
+      scheduledStartUtc: occurrenceContext.scheduledStartUtc,
+      scheduledEndUtc: occurrenceContext.scheduledEndUtc,
+      checked,
+      completionNote: note.trim() || null
+    });
+
+    applyBlockTaskPatchToResolvedState(editingEventId, (tasks) =>
+      tasks.map((task) =>
+        task.id === blockTaskId
+          ? {
+              ...task,
+              linkedItems: task.linkedItems.map((linked) =>
+                linked.blockTaskItemId === blockTaskItemId
+                  ? {
+                      ...linked,
+                      completedInContext: checked,
+                      completionNote: note.trim() || null,
+                      completedAt: checked ? new Date().toISOString() : null
+                    }
+                  : linked
+              )
+            }
+          : task
+      )
+    );
+
+    const timeBlockLabel = formState.title || editingEvent?.title || 'time block';
+    const blockTaskLabel = blockTask?.title || 'block task';
+    const systemBody = checked
+      ? `Completed during "${blockTaskLabel}" in "${timeBlockLabel}".`
+      : `Marked incomplete in "${blockTaskLabel}" during "${timeBlockLabel}".`;
+    await focalBoardService.createScopedComment('item', itemId, user.id, systemBody, 'system');
+    if (statusUpdate) {
+      await focalBoardService.updateItem(itemId, {
+        status: statusUpdate.key || 'pending',
+        status_id: statusUpdate.id ?? null
+      });
+      const previousStatus = blockTaskItemStatusesByItemId[itemId]?.currentStatusLabel || 'No status';
+      await focalBoardService.createScopedComment(
+        'item',
+        itemId,
+        user.id,
+        `Status changed: ${previousStatus} -> ${statusUpdate.name}`,
+        'system'
+      );
+      setBlockTaskItemStatusesByItemId((prev) => ({
+        ...prev,
+        [itemId]: {
+          statuses: prev[itemId]?.statuses || [],
+          currentStatusKey: statusUpdate.key || null,
+          currentStatusLabel: statusUpdate.name
+        }
+      }));
+    }
+    if (note.trim()) {
+      await focalBoardService.createScopedComment('item', itemId, user.id, note.trim(), 'user');
+    }
+
+    for (const taskTitle of followUpTasks) {
+      await focalBoardService.createAction(itemId, user.id, taskTitle, null, null);
+    }
+  };
+
+  const getBlockTaskItemStatusOptions = async (
+    itemId: string
+  ): Promise<{ statuses: StatusDialogOption[]; currentStatusKey: string | null; currentStatusLabel: string }> => {
+    const cached = blockTaskItemStatusesByItemId[itemId];
+    if (cached) return cached;
+    const listId = listIdByItemId.get(itemId);
+    if (!listId) {
+      return { statuses: [], currentStatusKey: null, currentStatusLabel: 'No status' };
+    }
+
+    const [itemsInList, itemStatuses] = await Promise.all([
+      focalBoardService.getItemsByListId(listId),
+      focalBoardService.getLaneStatuses(listId)
+    ]);
+    const itemRow = (itemsInList || []).find((row: any) => row.id === itemId) || null;
+    const statuses = (itemStatuses || []).map((status: any) => ({
+      id: status.id,
+      key: status.key || 'pending',
+      name: status.name || status.key || 'Status',
+      color: status.color || undefined
+    }));
+    const currentStatus =
+      statuses.find((status: StatusDialogOption) => Boolean(status.id) && status.id === itemRow?.status_id) ||
+      statuses.find((status: StatusDialogOption) => status.key === itemRow?.status) ||
+      null;
+    const result = {
+      statuses,
+      currentStatusKey: currentStatus?.key || itemRow?.status || null,
+      currentStatusLabel: currentStatus?.name || 'No status'
+    };
+    setBlockTaskItemStatusesByItemId((prev) => ({ ...prev, [itemId]: result }));
+    return result;
   };
 
   const closeCalendarStatusDialog = (): void => {
@@ -2364,22 +2702,30 @@ export default function Calendar({
             <button
               type="button"
               className="calendar-nav-btn"
-              aria-label="Previous week"
-              onClick={() => setWeekStart((prev) => addDays(prev, -7))}
+              aria-label={calendarViewMode === 'day' ? 'Previous day' : 'Previous week'}
+              onClick={() =>
+                calendarViewMode === 'day'
+                  ? setDayDate((prev) => addDays(prev, -1))
+                  : setWeekStart((prev) => addDays(prev, -7))
+              }
             >
               <ChevronLeft size={16} />
             </button>
             <button
               type="button"
               className="calendar-nav-btn"
-              aria-label="Next week"
-              onClick={() => setWeekStart((prev) => addDays(prev, 7))}
+              aria-label={calendarViewMode === 'day' ? 'Next day' : 'Next week'}
+              onClick={() =>
+                calendarViewMode === 'day'
+                  ? setDayDate((prev) => addDays(prev, 1))
+                  : setWeekStart((prev) => addDays(prev, 7))
+              }
             >
               <ChevronRight size={16} />
             </button>
             <div className="calendar-range-copy">
               <p className="calendar-month-name">{monthLabel}</p>
-              <p className="calendar-week-label">{weekRangeLabel}</p>
+              <p className="calendar-week-label">{calendarViewMode === 'day' ? dayRangeLabel : weekRangeLabel}</p>
             </div>
           </div>
 
@@ -2387,14 +2733,36 @@ export default function Calendar({
             <Button
               variant="secondary"
               className="calendar-today-btn"
-              onClick={() => setWeekStart(getStartForMode(new Date(), weekAnchorMode))}
+              onClick={() => {
+                if (calendarViewMode === 'day') {
+                  const today = new Date();
+                  today.setHours(0, 0, 0, 0);
+                  setDayDate(today);
+                  return;
+                }
+                setWeekStart(getStartForMode(new Date(), weekAnchorMode));
+              }}
             >
               Today
             </Button>
-            <button type="button" className="calendar-view-chip">
-              <CalendarDays size={14} />
-              Week
-            </button>
+            <div className="calendar-view-mode-group" role="tablist" aria-label="Calendar view mode">
+              <button
+                type="button"
+                className={`calendar-view-chip ${calendarViewMode === 'day' ? 'active' : ''}`.trim()}
+                onClick={() => setCalendarViewMode('day')}
+              >
+                <CalendarDays size={14} />
+                Day
+              </button>
+              <button
+                type="button"
+                className={`calendar-view-chip ${calendarViewMode === 'week' ? 'active' : ''}`.trim()}
+                onClick={() => setCalendarViewMode('week')}
+              >
+                <CalendarDays size={14} />
+                Week
+              </button>
+            </div>
           <div className="calendar-config-wrap">
             <button
               type="button"
@@ -2405,7 +2773,7 @@ export default function Calendar({
               <SlidersHorizontal size={14} />
             </button>
 
-            {isConfigOpen && (
+            {isConfigOpen && calendarViewMode === 'week' && (
               <div className="calendar-config-menu">
                 <label className="calendar-config-row">
                   <span>Event Overlap</span>
@@ -2442,10 +2810,12 @@ export default function Calendar({
       <div className="calendar-main-row">
         <div className="calendar-grid-area">
           <WeekCalendar
-            startOfWeek={weekStart}
+            startOfWeek={calendarViewMode === 'day' ? dayDate : weekStart}
             events={visibleEventsWithLinkedTasks}
+            daysCount={calendarViewMode === 'day' ? 1 : 7}
+            viewMode={calendarViewMode}
             hours={{ start: 1, end: 23 }}
-            pixelsPerMinute={1}
+            pixelsPerMinute={calendarPixelsPerMinute}
             onEventClick={(eventItem) => {
               // Don't open drawer if we're resizing
               if (isResizing) {
@@ -2575,6 +2945,7 @@ export default function Calendar({
             onContentModeChange={handleContentModeChange}
             contentListOptions={listOptions.map((option) => ({ id: option.id, name: option.name }))}
             contentItemOptionsByList={contentItemOptionsByList}
+            contentRuleRows={editingEventId ? (timeBlockContentRules[editingEventId] || []) : []}
             contentFocalTree={contentFocalTree}
             contentAll={contentAll}
             contentByWeekday={contentByWeekday}
@@ -2592,8 +2963,17 @@ export default function Calendar({
             onContentWeekdayListChange={(weekday, listId) => void handleWeekdayListChange(weekday, listId)}
             onContentWeekdayItemsChange={(weekday, itemIds) => void handleWeekdayItemsChange(weekday, itemIds)}
             onCreateAndAttachSearchItem={(title, options) => void handleCreateAndAttachSearchItem(title, options)}
+            onAttachExistingSearchItem={(itemId, options) => void handleAttachExistingSearchItem(itemId, options)}
+            onCreateBlockTask={(taskTitle) => void handleCreateBlockTask(taskTitle)}
+            onUpdateBlockTask={(blockTaskId, updates) => void handleUpdateBlockTask(blockTaskId, updates)}
+            onDeleteBlockTask={(blockTaskId) => void handleDeleteBlockTask(blockTaskId)}
+            onAttachItemToBlockTask={(blockTaskId, itemId) => void handleAttachItemToBlockTask(blockTaskId, itemId)}
+            onDetachItemFromBlockTask={(blockTaskItemId) => void handleDetachItemFromBlockTask(blockTaskItemId)}
+            onSubmitBlockTaskItemCompletion={(payload) => void handleSubmitBlockTaskItemCompletion(payload)}
+            getBlockTaskItemStatusOptions={(itemId) => getBlockTaskItemStatusOptions(itemId)}
             occurrenceWeekday={occurrenceContext?.weekday || null}
             occurrenceItems={activeOccurrenceItems}
+            occurrenceBlockTasks={activeOccurrenceBlockTasks}
             onToggleOccurrenceItem={(entry, checked) => void handleToggleOccurrenceItem(entry, checked)}
             onRequestOccurrenceStatusChange={(entry) => void handleRequestOccurrenceStatusChange(entry)}
             onOpenOccurrenceItem={handleOpenOccurrenceItem}
@@ -3150,7 +3530,7 @@ function getUserTimeZone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/Denver';
 }
 
-function expandEventsForWeek(events: Event[], weekStart: Date, weekEnd: Date): CalendarEvent[] {
+function expandEventsForRange(events: Event[], rangeStart: Date, rangeEnd: Date): CalendarEvent[] {
   const visible: CalendarEvent[] = [];
 
   for (const event of events) {
@@ -3162,7 +3542,7 @@ function expandEventsForWeek(events: Event[], weekStart: Date, weekEnd: Date): C
     const durationMs = Math.max(15 * 60 * 1000, baseEnd.getTime() - baseStart.getTime());
 
     if (recurrence === 'none') {
-      if (baseEnd >= weekStart && baseStart <= weekEnd) {
+      if (baseEnd >= rangeStart && baseStart <= rangeEnd) {
         visible.push({
           id: event.id,
           sourceEventId: event.id,
@@ -3178,7 +3558,7 @@ function expandEventsForWeek(events: Event[], weekStart: Date, weekEnd: Date): C
     let cursor = new Date(baseStart);
     let guard = 0;
     const maxIterations = 1200;
-    while (cursor < weekStart && guard < 800) {
+    while (cursor < rangeStart && guard < 800) {
       if (hasRecurrenceExceededLimit(baseStart, cursor, recurrence, recurrenceConfig)) {
         break;
       }
@@ -3186,7 +3566,7 @@ function expandEventsForWeek(events: Event[], weekStart: Date, weekEnd: Date): C
       guard += 1;
     }
 
-    while (cursor <= weekEnd && guard < maxIterations) {
+    while (cursor <= rangeEnd && guard < maxIterations) {
       if (hasRecurrenceExceededLimit(baseStart, cursor, recurrence, recurrenceConfig)) {
         break;
       }
@@ -3194,7 +3574,7 @@ function expandEventsForWeek(events: Event[], weekStart: Date, weekEnd: Date): C
       const isWeekend = cursor.getDay() === 0 || cursor.getDay() === 6;
       const shouldIncludeOccurrence =
         (recurrence !== 'daily' && recurrence !== 'custom') || includeWeekends || !isWeekend;
-      if (shouldIncludeOccurrence && occurrenceEnd >= weekStart && cursor <= weekEnd) {
+      if (shouldIncludeOccurrence && occurrenceEnd >= rangeStart && cursor <= rangeEnd) {
         visible.push({
           id: `${event.id}__${cursor.toISOString()}`,
           sourceEventId: event.id,

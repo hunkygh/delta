@@ -30,6 +30,9 @@ const isMissingLaneStatusesTableError = (error) =>
         error.message.toLowerCase().includes('schema cache'))
   );
 
+const isMissingLaneStatusesShowInOverviewColumnError = (error) =>
+  isMissingColumnError(error, 'show_in_overview', 'lane_statuses');
+
 const isMissingLaneSubtaskStatusesTableError = (error) =>
   Boolean(
     error?.message &&
@@ -552,6 +555,28 @@ export const focalBoardService = {
     return data || [];
   },
 
+  async getItemsByIds(userId, itemIds) {
+    if (!userId) {
+      throw new Error('userId is required');
+    }
+    if (!Array.isArray(itemIds) || itemIds.length === 0) {
+      return [];
+    }
+    const normalizedIds = [...new Set(itemIds.filter(Boolean))];
+    const { data, error } = await supabase
+      .from('items')
+      .select(`
+        *,
+        actions (*)
+      `)
+      .eq('user_id', userId)
+      .in('id', normalizedIds);
+    if (error) {
+      throw error;
+    }
+    return data || [];
+  },
+
   async createLane(focalId, userId, name, itemLabel = null, actionLabel = null) {
     try {
       const nextOrder = 0;
@@ -677,7 +702,7 @@ export const focalBoardService = {
   },
 
   async createLaneStatus(laneId, userId, payload) {
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from('lane_statuses')
       .insert([{
         lane_id: laneId,
@@ -692,6 +717,25 @@ export const focalBoardService = {
       }])
       .select()
       .single();
+
+    if (error && isMissingLaneStatusesShowInOverviewColumnError(error)) {
+      const fallback = await supabase
+        .from('lane_statuses')
+        .insert([{
+          lane_id: laneId,
+          user_id: userId,
+          key: payload.key,
+          name: payload.name,
+          color: payload.color,
+          group_key: payload.group_key ?? 'todo',
+          order_num: payload.order_num ?? 0,
+          is_default: Boolean(payload.is_default)
+        }])
+        .select()
+        .single();
+      data = fallback.data;
+      error = fallback.error;
+    }
 
     if (error) {
       if (isMissingLaneStatusesTableError(error)) {
@@ -728,12 +772,24 @@ export const focalBoardService = {
   },
 
   async updateLaneStatus(id, updates) {
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from('lane_statuses')
       .update(updates)
       .eq('id', id)
       .select()
       .single();
+
+    if (error && isMissingLaneStatusesShowInOverviewColumnError(error)) {
+      const { show_in_overview, ...fallbackUpdates } = updates;
+      const fallback = await supabase
+        .from('lane_statuses')
+        .update(fallbackUpdates)
+        .eq('id', id)
+        .select()
+        .single();
+      data = fallback.data;
+      error = fallback.error;
+    }
 
     if (error) {
       if (isMissingLaneStatusesTableError(error)) {

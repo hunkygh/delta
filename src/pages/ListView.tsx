@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
+import type { SyntheticEvent } from 'react';
 import { ArrowRightLeft, ChevronRight, Eye, EyeOff, GitMerge, Trash2, X as CloseIcon } from 'lucide-react';
 import { GearSix, PaperPlaneTilt, Plus } from '@phosphor-icons/react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import StatusSelect from '../components/FocalBoard/StatusSelect';
-import StatusChangeDialog, { type StatusDialogOption } from '../components/StatusChangeDialog';
+import type { StatusDialogOption } from '../components/StatusChangeDialog';
 import ProposalReviewTable from '../components/ProposalReviewTable';
 import { useAuth } from '../context/AuthContext';
 import focalBoardService from '../services/focalBoardService';
@@ -19,6 +20,7 @@ import '../components/FocalBoard/StatusSelect.css';
 import './ListView.css';
 import type { CalendarProposal, FieldUpdateProposal, NewActionProposal } from '../contracts/executionContracts';
 import type { FieldOption, ItemFieldValue, ItemFieldValueMap, ListField, ListFieldType } from '../types/customFields';
+import type { CustomRecurrenceConfig, RecurrenceRule } from '../types/Event';
 
 interface LaneStatus {
   id: string | null;
@@ -36,6 +38,8 @@ interface ActionItem {
   status?: string;
   subtask_status_id?: string | null;
   scheduled_at?: string | null;
+  recurrence_rule?: RecurrenceRule | null;
+  recurrence_config?: CustomRecurrenceConfig | null;
   recurring?: RecurringItemMeta;
 }
 
@@ -113,16 +117,26 @@ interface CommentScope {
   scopeId: string;
 }
 
-interface ListStatusDialogState {
+interface InlineStatusComposerState {
   open: boolean;
   entityType: 'item' | 'action';
   itemId: string | null;
   actionId: string | null;
   title: string;
   currentStatusLabel: string;
-  currentStatusKey: string | null;
-  scopeType: CommentScopeType;
+  nextStatus: StatusDialogOption | null;
+  scopeType: 'item' | 'action';
   scopeId: string | null;
+  anchor: AnchorRect | null;
+}
+
+interface AnchorRect {
+  top: number;
+  left: number;
+  width: number;
+  height: number;
+  right?: number;
+  bottom?: number;
 }
 
 interface ThreadProposalState {
@@ -234,6 +248,58 @@ const fromDateTimeLocalValue = (value: string): string | null => {
   return date.toISOString();
 };
 
+const DEFAULT_ACTION_RECURRENCE_CONFIG: CustomRecurrenceConfig = {
+  unit: 'week',
+  interval: 1,
+  limitType: 'indefinite'
+};
+
+const toDateInputValue = (value?: string | null): string => {
+  if (!value) return '';
+  return toDateTimeLocalValue(value).slice(0, 10);
+};
+
+const toTimeInputValue = (value?: string | null): string => {
+  if (!value) return '';
+  return toDateTimeLocalValue(value).slice(11, 16);
+};
+
+const mergeDateAndTimeInput = (existingIso: string | null | undefined, nextDate: string, nextTime: string): string | null => {
+  const base = existingIso ? new Date(existingIso) : new Date();
+  if (Number.isNaN(base.getTime())) return null;
+  const offset = base.getTimezoneOffset();
+  const localBase = new Date(base.getTime() - offset * 60000);
+  const datePart = nextDate || localBase.toISOString().slice(0, 10);
+  const timePart = nextTime || localBase.toISOString().slice(11, 16);
+  return fromDateTimeLocalValue(`${datePart}T${timePart}`);
+};
+
+const normalizeActionRecurrenceConfig = (
+  recurrence: RecurrenceRule,
+  config?: CustomRecurrenceConfig | null
+): CustomRecurrenceConfig => {
+  const safe = config || DEFAULT_ACTION_RECURRENCE_CONFIG;
+  if (recurrence === 'daily') return { ...safe, unit: 'day', interval: Math.max(1, safe.interval || 1) };
+  if (recurrence === 'weekly') return { ...safe, unit: 'week', interval: Math.max(1, safe.interval || 1) };
+  if (recurrence === 'monthly') return { ...safe, unit: 'month', interval: Math.max(1, safe.interval || 1) };
+  return {
+    ...safe,
+    interval: Math.max(1, safe.interval || 1)
+  };
+};
+
+const formatActionRecurrenceSummary = (recurrence: RecurrenceRule, config?: CustomRecurrenceConfig | null): string => {
+  if (!recurrence || recurrence === 'none') return 'Once';
+  if (recurrence === 'daily') return 'Daily';
+  if (recurrence === 'weekly') return 'Weekly';
+  if (recurrence === 'monthly') return 'Monthly';
+  const safe = normalizeActionRecurrenceConfig('custom', config);
+  const unitLabel =
+    safe.unit === 'day' ? 'day' : safe.unit === 'week' ? 'week' : safe.unit === 'year' ? 'year' : 'month';
+  const plural = safe.interval === 1 ? unitLabel : `${unitLabel}s`;
+  return `Every ${safe.interval} ${plural}`;
+};
+
 const formatContactValue = (raw: string | null | undefined): string => {
   const text = String(raw || '').trim();
   if (!text) return '—';
@@ -309,6 +375,7 @@ export default function ListView(): JSX.Element {
   const [actionDraftByItem, setActionDraftByItem] = useState<Record<string, string>>({});
   const [statusManagerOpen, setStatusManagerOpen] = useState(false);
   const [statusManagerScope, setStatusManagerScope] = useState<'item' | 'subtask'>('item');
+  const [statusManagerAnchor, setStatusManagerAnchor] = useState<AnchorRect | null>(null);
   const [statusInlineCreateOpen, setStatusInlineCreateOpen] = useState(false);
   const [draggingManagerStatusId, setDraggingManagerStatusId] = useState<string | null>(null);
   const [fieldManagerOpen, setFieldManagerOpen] = useState(false);
@@ -318,6 +385,7 @@ export default function ListView(): JSX.Element {
   const [listFields, setListFields] = useState<ListField[]>([]);
   const [itemFieldValues, setItemFieldValues] = useState<ItemFieldValueMap>({});
   const [editingFieldCell, setEditingFieldCell] = useState<EditingFieldCell | null>(null);
+  const [modalEditingFieldId, setModalEditingFieldId] = useState<string | null>(null);
   const [newFieldName, setNewFieldName] = useState('');
   const [newFieldType, setNewFieldType] = useState<ListFieldType>('status');
   const [newOptionByField, setNewOptionByField] = useState<Record<string, string>>({});
@@ -337,6 +405,9 @@ export default function ListView(): JSX.Element {
   const [columnPopoverOptions, setColumnPopoverOptions] = useState<ColumnOptionDraft[]>([]);
   const [draggingFieldId, setDraggingFieldId] = useState<string | null>(null);
   const [draggingItemId, setDraggingItemId] = useState<string | null>(null);
+  const [isTabletLayout, setIsTabletLayout] = useState<boolean>(() =>
+    typeof window !== 'undefined' ? window.matchMedia('(min-width: 901px) and (max-width: 1366px)').matches : false
+  );
 
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [modalTitleDraft, setModalTitleDraft] = useState('');
@@ -352,8 +423,10 @@ export default function ListView(): JSX.Element {
   const [deletingItem, setDeletingItem] = useState(false);
   const itemAutosaveTimerRef = useRef<number | null>(null);
   const actionAutosaveTimersRef = useRef<Record<string, number>>({});
+  const fieldEditorActivationRef = useRef<{ key: string; until: number } | null>(null);
   const [itemModalExpandedActions, setItemModalExpandedActions] = useState<Record<string, boolean>>({});
   const [itemModalActionSaveState, setItemModalActionSaveState] = useState<Record<string, 'saved' | 'saving' | 'retrying'>>({});
+  const [itemModalActionRecurrenceOpen, setItemModalActionRecurrenceOpen] = useState<Record<string, boolean>>({});
 
   const [activeCommentScope, setActiveCommentScope] = useState<CommentScope | null>(null);
   const [selectedActionForThreadId, setSelectedActionForThreadId] = useState<string | null>(null);
@@ -363,19 +436,22 @@ export default function ListView(): JSX.Element {
   const [commentDraft, setCommentDraft] = useState('');
   const [commentSubmitting, setCommentSubmitting] = useState(false);
   const [commentError, setCommentError] = useState<string | null>(null);
-  const [statusDialog, setStatusDialog] = useState<ListStatusDialogState>({
+  const [inlineStatusComposer, setInlineStatusComposer] = useState<InlineStatusComposerState>({
     open: false,
     entityType: 'item',
     itemId: null,
     actionId: null,
     title: '',
     currentStatusLabel: '',
-    currentStatusKey: null,
+    nextStatus: null,
     scopeType: 'item',
-    scopeId: null
+    scopeId: null,
+    anchor: null
   });
-  const [statusDialogSaving, setStatusDialogSaving] = useState(false);
-  const [statusDialogError, setStatusDialogError] = useState<string | null>(null);
+  const [inlineStatusNoteDraft, setInlineStatusNoteDraft] = useState('');
+  const [inlineStatusTaskDraft, setInlineStatusTaskDraft] = useState('');
+  const [inlineStatusSaving, setInlineStatusSaving] = useState(false);
+  const [inlineStatusError, setInlineStatusError] = useState<string | null>(null);
   const [pushingCommentId, setPushingCommentId] = useState<string | null>(null);
   const [applyingCommentProposalId, setApplyingCommentProposalId] = useState<string | null>(null);
   const [commentProposalNotes, setCommentProposalNotes] = useState<Record<string, string>>({});
@@ -518,6 +594,15 @@ export default function ListView(): JSX.Element {
   }, []);
 
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const media = window.matchMedia('(min-width: 901px) and (max-width: 1366px)');
+    const sync = (): void => setIsTabletLayout(media.matches);
+    sync();
+    media.addEventListener('change', sync);
+    return () => media.removeEventListener('change', sync);
+  }, []);
+
+  useEffect(() => {
     if (!selectedItem || !user?.id) {
       setPeerLists([]);
       return;
@@ -565,6 +650,7 @@ export default function ListView(): JSX.Element {
     if (!selectedItem) {
       return;
     }
+    setModalEditingFieldId(null);
     setSelectedActionForThreadId(null);
     setActiveCommentScope({ type: 'item', scopeId: selectedItem.id });
   }, [selectedItem]);
@@ -765,6 +851,22 @@ export default function ListView(): JSX.Element {
     return parsed;
   }, []);
 
+  const buildEditingFieldKey = useCallback((itemId: string, fieldId: string): string => `${itemId}:${fieldId}`, []);
+
+  const shouldSuppressInitialFieldBlur = useCallback((itemId: string, fieldId: string): boolean => {
+    const active = fieldEditorActivationRef.current;
+    if (!active) return false;
+    return active.key === buildEditingFieldKey(itemId, fieldId) && Date.now() < active.until;
+  }, [buildEditingFieldKey]);
+
+  const openFieldEditor = useCallback((itemId: string, fieldId: string): void => {
+    fieldEditorActivationRef.current = {
+      key: buildEditingFieldKey(itemId, fieldId),
+      until: Date.now() + 180
+    };
+    setEditingFieldCell({ itemId, fieldId });
+  }, [buildEditingFieldKey]);
+
   const upsertFieldValue = useCallback(
     async (itemId: string, field: ListField, payload: any): Promise<void> => {
       if (!user?.id) return;
@@ -789,6 +891,18 @@ export default function ListView(): JSX.Element {
     },
     [user?.id]
   );
+
+  useEffect(() => {
+    if (!editingFieldCell || typeof document === 'undefined') return;
+    const rafId = window.requestAnimationFrame(() => {
+      const target = document.querySelector('[data-active-field-editor="true"]') as
+        | HTMLInputElement
+        | HTMLSelectElement
+        | null;
+      target?.focus();
+    });
+    return () => window.cancelAnimationFrame(rafId);
+  }, [editingFieldCell]);
 
   const updateItemLocally = (itemId: string, patch: Partial<ListItem>): void => {
     setItems((prev) => prev.map((entry) => (entry.id === itemId ? { ...entry, ...patch } : entry)));
@@ -826,55 +940,81 @@ export default function ListView(): JSX.Element {
     }
   }, [activeCommentScope]);
 
-  const openStatusDialogForItem = useCallback((item: ListItem): void => {
-    const current = statuses.find((status) => status.id === item.status_id || status.key === item.status) || statuses[0] || null;
-    setStatusDialog({
+  const openInlineStatusComposerForItem = useCallback((item: ListItem, status: StatusDialogOption, anchor: AnchorRect | null = null): void => {
+    const current = statuses.find((entry) => entry.id === item.status_id || entry.key === item.status) || statuses[0] || null;
+    setInlineStatusComposer({
       open: true,
       entityType: 'item',
       itemId: item.id,
       actionId: null,
       title: item.title,
       currentStatusLabel: current?.name || 'No status',
-      currentStatusKey: current?.key || item.status || null,
+      nextStatus: status,
       scopeType: 'item',
-      scopeId: item.id
+      scopeId: item.id,
+      anchor
     });
-    setStatusDialogError(null);
+    setInlineStatusNoteDraft('');
+    setInlineStatusTaskDraft('');
+    setInlineStatusError(null);
   }, [statuses]);
 
-  const openStatusDialogForAction = useCallback((item: ListItem, action: ActionItem): void => {
+  const openInlineStatusComposerForAction = useCallback((item: ListItem, action: ActionItem, status: StatusDialogOption, anchor: AnchorRect | null = null): void => {
     const current =
-      subtaskStatuses.find((status) => status.id === action.subtask_status_id || status.key === action.status) ||
+      subtaskStatuses.find((entry) => entry.id === action.subtask_status_id || entry.key === action.status) ||
       subtaskStatuses[0] ||
       null;
-    setStatusDialog({
+    setInlineStatusComposer({
       open: true,
       entityType: 'action',
       itemId: item.id,
       actionId: action.id,
       title: action.title,
       currentStatusLabel: current?.name || 'No status',
-      currentStatusKey: current?.key || action.status || null,
+      nextStatus: status,
       scopeType: 'action',
-      scopeId: action.id
+      scopeId: action.id,
+      anchor
     });
-    setStatusDialogError(null);
+    setInlineStatusNoteDraft('');
+    setInlineStatusTaskDraft('');
+    setInlineStatusError(null);
+    setItemModalExpandedActions((prev) => ({ ...prev, [action.id]: true }));
   }, [subtaskStatuses]);
 
-  const closeStatusDialog = useCallback((): void => {
-    setStatusDialog({
+  const closeInlineStatusComposer = useCallback((): void => {
+    setInlineStatusComposer({
       open: false,
       entityType: 'item',
       itemId: null,
       actionId: null,
       title: '',
       currentStatusLabel: '',
-      currentStatusKey: null,
+      nextStatus: null,
       scopeType: 'item',
-      scopeId: null
+      scopeId: null,
+      anchor: null
     });
-    setStatusDialogSaving(false);
-    setStatusDialogError(null);
+    setInlineStatusNoteDraft('');
+    setInlineStatusTaskDraft('');
+    setInlineStatusSaving(false);
+    setInlineStatusError(null);
+  }, []);
+
+  const openStatusManagerPanel = useCallback(
+    (scope: 'item' | 'subtask', anchor: AnchorRect | null = null): void => {
+      setStatusManagerScope(scope);
+      setStatusInlineCreateOpen(false);
+      setStatusManagerAnchor(anchor);
+      setStatusManagerOpen(true);
+    },
+    []
+  );
+
+  const closeStatusManagerPanel = useCallback((): void => {
+    setStatusManagerOpen(false);
+    setStatusInlineCreateOpen(false);
+    setStatusManagerAnchor(null);
   }, []);
 
   const handleDropItem = useCallback(
@@ -999,87 +1139,134 @@ export default function ListView(): JSX.Element {
     }
   };
 
-  const handleStatusChange = async (item: ListItem, status: LaneStatus): Promise<void> => {
-    void status;
-    openStatusDialogForItem(item);
+  const handleStatusChange = async (item: ListItem, status: LaneStatus, anchor: AnchorRect | null = null): Promise<void> => {
+    openInlineStatusComposerForItem(item, status, anchor);
   };
 
-  const handleActionStatusChange = async (itemId: string, actionId: string, status: LaneStatus): Promise<void> => {
-    void status;
+  const handleActionStatusChange = async (
+    itemId: string,
+    actionId: string,
+    status: LaneStatus,
+    anchor: AnchorRect | null = null
+  ): Promise<void> => {
     const item = items.find((entry) => entry.id === itemId);
     const action = item?.actions?.find((entry) => entry.id === actionId);
     if (!item || !action) return;
-    openStatusDialogForAction(item, action);
+    openInlineStatusComposerForAction(item, action, status, anchor);
   };
 
-  const submitStatusDialog = useCallback(
-    async (status: StatusDialogOption, note: string): Promise<void> => {
-      if (!user?.id || !statusDialog.scopeId) return;
-      setStatusDialogSaving(true);
-      setStatusDialogError(null);
-      const currentLabel = statusDialog.currentStatusLabel || 'No status';
+  const submitInlineStatusComposer = useCallback(async (): Promise<void> => {
+    if (!user?.id || !inlineStatusComposer.scopeId || !inlineStatusComposer.nextStatus) return;
+    const currentLabel = inlineStatusComposer.currentStatusLabel || 'No status';
+    setInlineStatusSaving(true);
+    setInlineStatusError(null);
 
-      try {
-        if (statusDialog.entityType === 'item' && statusDialog.itemId) {
-          const updates = { status: status.key || 'pending', status_id: status.id ?? null };
-          updateItemLocally(statusDialog.itemId, updates);
-          if (selectedItem?.id === statusDialog.itemId) {
-            setModalStatusValue(status.id ?? status.key);
-          }
-          await focalBoardService.updateItem(statusDialog.itemId, updates);
-        } else if (statusDialog.entityType === 'action' && statusDialog.itemId && statusDialog.actionId) {
-          const updates = { status: status.key || 'not_started', subtask_status_id: status.id ?? null };
-          updateActionLocally(statusDialog.itemId, statusDialog.actionId, updates);
-          await focalBoardService.updateAction(statusDialog.actionId, updates);
-        } else {
-          return;
+    try {
+      if (inlineStatusComposer.entityType === 'item' && inlineStatusComposer.itemId) {
+        const updates = {
+          status: inlineStatusComposer.nextStatus.key || 'pending',
+          status_id: inlineStatusComposer.nextStatus.id ?? null
+        };
+        updateItemLocally(inlineStatusComposer.itemId, updates);
+        if (selectedItem?.id === inlineStatusComposer.itemId) {
+          setModalStatusValue(inlineStatusComposer.nextStatus.id ?? inlineStatusComposer.nextStatus.key);
         }
-
-        const systemSaved = await focalBoardService.createScopedComment(
-          statusDialog.scopeType,
-          statusDialog.scopeId,
-          user.id,
-          `${statusDialog.title} status changed: ${currentLabel} -> ${status.name}`,
-          'system'
-        );
-        appendCommentIfActive(statusDialog.scopeType, statusDialog.scopeId, {
-          id: systemSaved.id,
-          author_type: 'system',
-          content: systemSaved.content,
-          created_at: systemSaved.created_at
-        });
-
-        const trimmedNote = note.trim();
-        if (trimmedNote) {
-          const noteSaved = await focalBoardService.createScopedComment(
-            statusDialog.scopeType,
-            statusDialog.scopeId,
-            user.id,
-            trimmedNote,
-            'user'
-          );
-          appendCommentIfActive(statusDialog.scopeType, statusDialog.scopeId, {
-            id: noteSaved.id,
-            author_type: 'user',
-            content: noteSaved.content,
-            created_at: noteSaved.created_at
-          });
-        }
-
-        closeStatusDialog();
-      } catch (err: any) {
-        setStatusDialogError(err?.message || 'Failed to update status');
-        if (listId) {
-          const refreshed = await focalBoardService.getListDetail(listId);
-          const nextItems = (refreshed.items || []).map((entry: any) => ({ ...entry, actions: entry.actions || [] }));
-          setItems(nextItems);
-        }
-      } finally {
-        setStatusDialogSaving(false);
+        await focalBoardService.updateItem(inlineStatusComposer.itemId, updates);
+      } else if (
+        inlineStatusComposer.entityType === 'action' &&
+        inlineStatusComposer.itemId &&
+        inlineStatusComposer.actionId
+      ) {
+        const updates = {
+          status: inlineStatusComposer.nextStatus.key || 'not_started',
+          subtask_status_id: inlineStatusComposer.nextStatus.id ?? null
+        };
+        updateActionLocally(inlineStatusComposer.itemId, inlineStatusComposer.actionId, updates);
+        await focalBoardService.updateAction(inlineStatusComposer.actionId, updates);
+      } else {
+        return;
       }
-    },
-    [appendCommentIfActive, closeStatusDialog, listId, selectedItem?.id, statusDialog, updateActionLocally, user?.id]
-  );
+
+      const systemSaved = await focalBoardService.createScopedComment(
+        inlineStatusComposer.scopeType,
+        inlineStatusComposer.scopeId,
+        user.id,
+        `${inlineStatusComposer.title} status changed: ${currentLabel} -> ${inlineStatusComposer.nextStatus.name}`,
+        'system'
+      );
+      appendCommentIfActive(inlineStatusComposer.scopeType, inlineStatusComposer.scopeId, {
+        id: systemSaved.id,
+        author_type: 'system',
+        content: systemSaved.content,
+        created_at: systemSaved.created_at
+      });
+
+      const trimmedNote = inlineStatusNoteDraft.trim();
+      if (trimmedNote) {
+        const noteSaved = await focalBoardService.createScopedComment(
+          inlineStatusComposer.scopeType,
+          inlineStatusComposer.scopeId,
+          user.id,
+          trimmedNote,
+          'user'
+        );
+        appendCommentIfActive(inlineStatusComposer.scopeType, inlineStatusComposer.scopeId, {
+          id: noteSaved.id,
+          author_type: 'user',
+          content: noteSaved.content,
+          created_at: noteSaved.created_at
+        });
+      }
+
+      const trimmedTask = inlineStatusTaskDraft.trim();
+      if (trimmedTask && inlineStatusComposer.itemId) {
+        const fallbackSubtaskStatus =
+          subtaskStatuses.find((entry) => Boolean((entry as any).is_default)) || subtaskStatuses[0] || DEFAULT_SUBTASK_STATUSES[0];
+        const createdAction = await focalBoardService.createAction(inlineStatusComposer.itemId, user.id, trimmedTask, null, null, {
+          id: fallbackSubtaskStatus?.id ?? null,
+          key: fallbackSubtaskStatus?.key || 'not_started'
+        });
+        updateActionLocally(inlineStatusComposer.itemId, createdAction.id, createdAction);
+        setItems((prev) =>
+          prev.map((entry) =>
+            entry.id === inlineStatusComposer.itemId
+              ? { ...entry, actions: [...(entry.actions || []), createdAction] }
+              : entry
+          )
+        );
+        setRecurringItems((prev) =>
+          prev.map((entry) =>
+            entry.id === inlineStatusComposer.itemId
+              ? { ...entry, actions: [...(entry.actions || []), createdAction] }
+              : entry
+          )
+        );
+        setItemModalExpandedActions((prev) => ({ ...prev, [createdAction.id]: true }));
+      }
+
+      closeInlineStatusComposer();
+    } catch (err: any) {
+      setInlineStatusError(err?.message || 'Failed to update status');
+      if (listId) {
+        const refreshed = await focalBoardService.getListDetail(listId);
+        const nextItems = (refreshed.items || []).map((entry: any) => ({ ...entry, actions: entry.actions || [] }));
+        setItems(nextItems);
+      }
+    } finally {
+      setInlineStatusSaving(false);
+    }
+  }, [
+    appendCommentIfActive,
+    closeInlineStatusComposer,
+    inlineStatusComposer,
+    inlineStatusNoteDraft,
+    inlineStatusTaskDraft,
+    listId,
+    selectedItem?.id,
+    subtaskStatuses,
+    updateActionLocally,
+    user?.id
+  ]);
 
   const handleCreateItemInStatus = async (status: LaneStatus): Promise<void> => {
     if (!user || !list?.id) {
@@ -1285,6 +1472,13 @@ export default function ListView(): JSX.Element {
         movePayload.status = 'pending';
       }
       await focalBoardService.updateItem(selectedItem.id, movePayload);
+      if (user?.id) {
+        try {
+          await calendarService.repairTimeBlockContentRulesForItem(user.id, selectedItem.id);
+        } catch (repairError) {
+          console.error('Failed to repair time block content rules after item move:', repairError);
+        }
+      }
       setItems((prev) => prev.filter((entry) => entry.id !== selectedItem.id));
       closeItemModal();
     } catch (err: any) {
@@ -2304,9 +2498,15 @@ export default function ListView(): JSX.Element {
     await handleReorderStatusById(draggingManagerStatusId, targetStatusId);
   };
 
-  const renderPinnedFieldCell = (item: ListItem, field: ListField): JSX.Element => {
+  const renderPinnedFieldCell = (
+    item: ListItem,
+    field: ListField,
+    options?: { fullWidth?: boolean; activateOnMouseDown?: boolean }
+  ): JSX.Element => {
     const value = getFieldValueForItem(item.id, field.id);
     const isEditing = editingFieldCell?.itemId === item.id && editingFieldCell?.fieldId === field.id;
+    const fullWidth = Boolean(options?.fullWidth);
+    const activateOnMouseDown = Boolean(options?.activateOnMouseDown);
 
     if ((field.type === 'status' || field.type === 'select') && isEditing) {
       return (
@@ -2318,7 +2518,16 @@ export default function ListView(): JSX.Element {
             if (!optionId) return;
             void upsertFieldValue(item.id, field, { option_id: optionId });
           }}
-          onBlur={() => setEditingFieldCell(null)}
+          data-active-field-editor="true"
+          onBlur={(event) => {
+            if (shouldSuppressInitialFieldBlur(item.id, field.id)) {
+              window.requestAnimationFrame(() => {
+                (event.target as HTMLSelectElement).focus();
+              });
+              return;
+            }
+            setEditingFieldCell(null);
+          }}
           autoFocus
         >
           <option value="">Select</option>
@@ -2352,8 +2561,17 @@ export default function ListView(): JSX.Element {
         return (
           <input
             className="list-field-cell-input"
+            data-active-field-editor="true"
             defaultValue={value?.value_text || ''}
-            onBlur={(event) => void upsertFieldValue(item.id, field, { value_text: event.target.value.trim() || '' })}
+            onBlur={(event) => {
+              if (shouldSuppressInitialFieldBlur(item.id, field.id)) {
+                window.requestAnimationFrame(() => {
+                  (event.target as HTMLInputElement).focus();
+                });
+                return;
+              }
+              void upsertFieldValue(item.id, field, { value_text: event.target.value.trim() || '' });
+            }}
             autoFocus
           />
         );
@@ -2362,9 +2580,18 @@ export default function ListView(): JSX.Element {
         return (
           <input
             className="list-field-cell-input"
+            data-active-field-editor="true"
             defaultValue={value?.value_text || ''}
             placeholder="Name • phone • email"
-            onBlur={(event) => void upsertFieldValue(item.id, field, { value_text: event.target.value.trim() || '' })}
+            onBlur={(event) => {
+              if (shouldSuppressInitialFieldBlur(item.id, field.id)) {
+                window.requestAnimationFrame(() => {
+                  (event.target as HTMLInputElement).focus();
+                });
+                return;
+              }
+              void upsertFieldValue(item.id, field, { value_text: event.target.value.trim() || '' });
+            }}
             autoFocus
           />
         );
@@ -2375,8 +2602,15 @@ export default function ListView(): JSX.Element {
             className="list-field-cell-input"
             type="text"
             inputMode="decimal"
+            data-active-field-editor="true"
             defaultValue={value?.value_number ?? undefined}
             onBlur={(event) => {
+              if (shouldSuppressInitialFieldBlur(item.id, field.id)) {
+                window.requestAnimationFrame(() => {
+                  (event.target as HTMLInputElement).focus();
+                });
+                return;
+              }
               const num = parseNumericFieldInput(event.target.value);
               if (num == null) {
                 setEditingFieldCell(null);
@@ -2393,8 +2627,15 @@ export default function ListView(): JSX.Element {
           <input
             className="list-field-cell-input"
             type="date"
+            data-active-field-editor="true"
             defaultValue={value?.value_date ? new Date(value.value_date).toISOString().slice(0, 10) : ''}
             onBlur={(event) => {
+              if (shouldSuppressInitialFieldBlur(item.id, field.id)) {
+                window.requestAnimationFrame(() => {
+                  (event.target as HTMLInputElement).focus();
+                });
+                return;
+              }
               if (!event.target.value) {
                 setEditingFieldCell(null);
                 return;
@@ -2412,10 +2653,18 @@ export default function ListView(): JSX.Element {
       return (
         <button
           type="button"
-          className="list-field-cell-value"
+          className={`list-field-cell-value ${fullWidth ? 'full-width' : ''}`.trim()}
+          onMouseDown={(event) => {
+            if (!activateOnMouseDown) return;
+            event.stopPropagation();
+            openFieldEditor(item.id, field.id);
+          }}
           onClick={(event) => {
             event.stopPropagation();
-            setEditingFieldCell({ itemId: item.id, fieldId: field.id });
+            if (activateOnMouseDown) {
+              return;
+            }
+            openFieldEditor(item.id, field.id);
           }}
         >
           {option?.label || '--'}
@@ -2424,19 +2673,197 @@ export default function ListView(): JSX.Element {
     }
 
     const cellClassName = field.type === 'text' || field.type === 'contact'
-      ? 'list-field-cell-value list-field-cell-text'
-      : 'list-field-cell-value';
+      ? `list-field-cell-value list-field-cell-text ${fullWidth ? 'full-width' : ''}`.trim()
+      : `list-field-cell-value ${fullWidth ? 'full-width' : ''}`.trim();
 
     return (
       <button
         type="button"
         className={cellClassName}
+        onMouseDown={(event) => {
+          if (!activateOnMouseDown) return;
+          event.stopPropagation();
+          openFieldEditor(item.id, field.id);
+        }}
         onClick={(event) => {
           event.stopPropagation();
-          setEditingFieldCell({ itemId: item.id, fieldId: field.id });
+          if (activateOnMouseDown) {
+            return;
+          }
+          openFieldEditor(item.id, field.id);
         }}
       >
         {getDisplayValue(field, value)}
+      </button>
+    );
+  };
+
+  const renderModalFieldCell = (item: ListItem, field: ListField): JSX.Element => {
+    const value = getFieldValueForItem(item.id, field.id);
+    const isEditing = modalEditingFieldId === field.id;
+    const option = getOptionById(field, value?.option_id);
+
+    const stop = (event: SyntheticEvent): void => {
+      event.stopPropagation();
+    };
+
+    const close = (): void => setModalEditingFieldId(null);
+
+    if (field.type === 'boolean') {
+      const checked = Boolean(value?.value_boolean);
+      return (
+        <button
+          type="button"
+          className={`list-field-boolean ${checked ? 'on' : ''}`.trim()}
+          onClick={(event) => {
+            event.stopPropagation();
+            void upsertFieldValue(item.id, field, { value_boolean: !checked });
+          }}
+        >
+          {checked ? 'Yes' : 'No'}
+        </button>
+      );
+    }
+
+    if ((field.type === 'status' || field.type === 'select') && isEditing) {
+      return (
+        <select
+          className="list-field-cell-input"
+          value={value?.option_id || ''}
+          autoFocus
+          onMouseDown={stop}
+          onClick={stop}
+          onChange={(event) => {
+            void upsertFieldValue(item.id, field, { option_id: event.target.value });
+            close();
+          }}
+          onBlur={close}
+        >
+          <option value="">Select</option>
+          {(field.options || []).map((entry) => (
+            <option key={entry.id} value={entry.id}>
+              {entry.label}
+            </option>
+          ))}
+        </select>
+      );
+    }
+
+    if (field.type === 'text' && isEditing) {
+      return (
+        <input
+          className="list-field-cell-input"
+          defaultValue={value?.value_text || ''}
+          autoFocus
+          onMouseDown={stop}
+          onClick={stop}
+          onBlur={(event) => {
+            void upsertFieldValue(item.id, field, { value_text: event.target.value.trim() || '' });
+            close();
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              (event.currentTarget as HTMLInputElement).blur();
+            }
+            if (event.key === 'Escape') {
+              close();
+            }
+          }}
+        />
+      );
+    }
+
+    if (field.type === 'contact' && isEditing) {
+      return (
+        <input
+          className="list-field-cell-input"
+          defaultValue={value?.value_text || ''}
+          placeholder="Name • phone • email"
+          autoFocus
+          onMouseDown={stop}
+          onClick={stop}
+          onBlur={(event) => {
+            void upsertFieldValue(item.id, field, { value_text: event.target.value.trim() || '' });
+            close();
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              (event.currentTarget as HTMLInputElement).blur();
+            }
+            if (event.key === 'Escape') {
+              close();
+            }
+          }}
+        />
+      );
+    }
+
+    if (field.type === 'number' && isEditing) {
+      return (
+        <input
+          className="list-field-cell-input"
+          type="text"
+          inputMode="decimal"
+          defaultValue={value?.value_number ?? undefined}
+          autoFocus
+          onMouseDown={stop}
+          onClick={stop}
+          onBlur={(event) => {
+            const raw = event.target.value.trim();
+            if (!raw) {
+              void upsertFieldValue(item.id, field, { value_number: null });
+              close();
+              return;
+            }
+            const parsed = parseNumericFieldInput(raw);
+            if (parsed != null) {
+              void upsertFieldValue(item.id, field, { value_number: parsed });
+            }
+            close();
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              (event.currentTarget as HTMLInputElement).blur();
+            }
+            if (event.key === 'Escape') {
+              close();
+            }
+          }}
+        />
+      );
+    }
+
+    if (field.type === 'date' && isEditing) {
+      return (
+        <input
+          className="list-field-cell-input"
+          type="date"
+          defaultValue={value?.value_date ? new Date(value.value_date).toISOString().slice(0, 10) : ''}
+          autoFocus
+          onMouseDown={stop}
+          onClick={stop}
+          onChange={(event) => {
+            if (!event.target.value) {
+              void upsertFieldValue(item.id, field, { value_date: null });
+            } else {
+              void upsertFieldValue(item.id, field, { value_date: new Date(event.target.value).toISOString() });
+            }
+          }}
+          onBlur={close}
+        />
+      );
+    }
+
+    return (
+      <button
+        type="button"
+        className={`list-field-cell-value ${field.type === 'text' || field.type === 'contact' ? 'list-field-cell-text ' : ''}full-width`.replace(/\s+/g, ' ').trim()}
+        onClick={(event) => {
+          event.stopPropagation();
+          setModalEditingFieldId(field.id);
+        }}
+      >
+        {field.type === 'status' || field.type === 'select' ? option?.label || '--' : getDisplayValue(field, value)}
       </button>
     );
   };
@@ -2460,12 +2887,42 @@ export default function ListView(): JSX.Element {
   const itemTerm = list.item_label || 'Items';
   const actionTerm = list.action_label || 'Tasks';
   const oneOffRowTemplate = pinnedFields.length
-    ? `auto auto minmax(140px,1fr) repeat(${pinnedFields.length}, minmax(120px, 1fr))`
+    ? `auto auto minmax(${isTabletLayout ? 120 : 140}px,1fr) repeat(${pinnedFields.length}, minmax(${isTabletLayout ? 96 : 120}px, 1fr))`
     : 'auto auto minmax(140px, 1fr)';
   const oneOffHeaderTemplate = oneOffRowTemplate;
   const recurringRowTemplate = pinnedFields.length
-    ? `auto auto minmax(140px,1fr) repeat(${pinnedFields.length}, minmax(120px, 1fr)) minmax(260px, 1.6fr)`
+    ? `auto auto minmax(${isTabletLayout ? 120 : 140}px,1fr) repeat(${pinnedFields.length}, minmax(${isTabletLayout ? 96 : 120}px, 1fr)) minmax(${isTabletLayout ? 200 : 260}px, ${isTabletLayout ? 1.2 : 1.6}fr)`
     : 'auto auto minmax(140px, 1fr) minmax(260px, 1.6fr)';
+  const statusManagerPanelStyle: CSSProperties = statusManagerAnchor
+    ? {
+        position: 'fixed',
+        top:
+          typeof window !== 'undefined'
+            ? Math.min(statusManagerAnchor.top + statusManagerAnchor.height + 10, window.innerHeight - 420)
+            : statusManagerAnchor.top + statusManagerAnchor.height + 10,
+        left:
+          typeof window !== 'undefined'
+            ? Math.min(Math.max(16, statusManagerAnchor.left - 12), window.innerWidth - 660)
+            : statusManagerAnchor.left
+      }
+    : {
+        position: 'fixed',
+        top: 120,
+        right: 24
+      };
+  const inlineStatusComposerPanelStyle: CSSProperties | undefined = inlineStatusComposer.anchor
+    ? {
+        position: 'fixed',
+        top:
+          typeof window !== 'undefined'
+            ? Math.min(Math.max(24, inlineStatusComposer.anchor.top - 8), window.innerHeight - 180)
+            : inlineStatusComposer.anchor.top - 8,
+        left:
+          typeof window !== 'undefined'
+            ? Math.min(inlineStatusComposer.anchor.left + inlineStatusComposer.anchor.width + 14, window.innerWidth - 420)
+            : inlineStatusComposer.anchor.left + inlineStatusComposer.anchor.width + 14
+      }
+    : undefined;
 
   return (
     <div className="app-page list-view-page">
@@ -2565,6 +3022,42 @@ export default function ListView(): JSX.Element {
                     {status.name}
                   </span>
                 </div>
+                {composerOpenByStatus[status.key] ? (
+                  <form
+                    className="list-status-header-add-form"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void handleCreateItemInStatus(status);
+                    }}
+                  >
+                    <input
+                      value={draftByStatus[status.key] || ''}
+                      onChange={(event) =>
+                        setDraftByStatus((prev) => ({ ...prev, [status.key]: event.target.value }))
+                      }
+                      onKeyDown={(event) => {
+                        if (event.key === 'Escape') {
+                          event.preventDefault();
+                          setComposerOpenByStatus((prev) => ({ ...prev, [status.key]: false }));
+                          setDraftByStatus((prev) => ({ ...prev, [status.key]: '' }));
+                          setComposerModeByStatus((prev) => ({ ...prev, [status.key]: 'item' }));
+                        }
+                      }}
+                      autoFocus
+                    />
+                  </form>
+                ) : (
+                  <button
+                    type="button"
+                    className="list-status-add list-status-add-header"
+                    onClick={() => {
+                      setComposerOpenByStatus((prev) => ({ ...prev, [status.key]: true }));
+                      setComposerModeByStatus((prev) => ({ ...prev, [status.key]: 'item' }));
+                    }}
+                  >
+                    <span className="list-inline-add-label">+ New</span>
+                  </button>
+                )}
               </header>
 
               <div className="list-status-items">
@@ -2665,14 +3158,22 @@ export default function ListView(): JSX.Element {
                             <option value="boolean">Boolean</option>
                           </select>
                         </label>
-                        <label className="list-column-popover-pin">
-                          <input
-                            type="checkbox"
-                            checked={columnPopoverPinned}
-                            onChange={(event) => setColumnPopoverPinned(event.target.checked)}
-                          />
-                          <span>Show in table</span>
-                        </label>
+                        <div className="list-column-popover-meta">
+                          <div className="list-column-popover-meta-copy">
+                            <strong>Visible in list</strong>
+                            <span>Show this column in the main grid</span>
+                          </div>
+                          <label className="list-column-popover-switch">
+                            <input
+                              type="checkbox"
+                              checked={columnPopoverPinned}
+                              onChange={(event) => setColumnPopoverPinned(event.target.checked)}
+                            />
+                            <span className="list-column-popover-switch-track">
+                              <span className="list-column-popover-switch-thumb" />
+                            </span>
+                          </label>
+                        </div>
 
                         {(columnPopoverType === 'status' || columnPopoverType === 'select') && (
                           <div className="list-column-options-editor">
@@ -2780,17 +3281,18 @@ export default function ListView(): JSX.Element {
                         <StatusSelect
                           statuses={statuses}
                           value={item.status_id ?? item.status}
-                          onChange={(_next: LaneStatus) => void handleStatusChange(item, _next)}
+                          onChange={(_next: LaneStatus, anchor: AnchorRect | null) => void handleStatusChange(item, _next, anchor)}
                           appearance="circle"
-                          onManageStatuses={() => {
-                            setStatusManagerScope('item');
-                            setStatusManagerOpen(true);
-                          }}
+                          onManageStatuses={(anchor: AnchorRect | null) => openStatusManagerPanel('item', anchor)}
                         />
 
                         <span className="list-item-title">{item.title}</span>
                         {pinnedFields.map((field) => (
-                          <span key={`${item.id}-${field.id}`} className="list-item-field-cell">
+                          <span
+                            key={`${item.id}-${field.id}`}
+                            className="list-item-field-cell"
+                            onClick={(event) => event.stopPropagation()}
+                          >
                             {renderPinnedFieldCell(item, field)}
                           </span>
                         ))}
@@ -2804,12 +3306,9 @@ export default function ListView(): JSX.Element {
                               <StatusSelect
                                 statuses={subtaskStatuses}
                                 value={action.subtask_status_id ?? action.status}
-                                onChange={(next: LaneStatus) => void handleActionStatusChange(item.id, action.id, next)}
+                                onChange={(next: LaneStatus, anchor: AnchorRect | null) => void handleActionStatusChange(item.id, action.id, next, anchor)}
                                 appearance="circle"
-                                onManageStatuses={() => {
-                                  setStatusManagerScope('subtask');
-                                  setStatusManagerOpen(true);
-                                }}
+                                onManageStatuses={(anchor: AnchorRect | null) => openStatusManagerPanel('subtask', anchor)}
                               />
                               <span className="list-action-title">{action.title}</span>
                             </div>
@@ -2966,7 +3465,11 @@ export default function ListView(): JSX.Element {
                         )}
                       </span>
                       {pinnedFields.map((field) => (
-                        <span key={`rec-${item.id}-${field.id}`} className="list-item-field-cell">
+                        <span
+                          key={`rec-${item.id}-${field.id}`}
+                          className="list-item-field-cell"
+                          onClick={(event) => event.stopPropagation()}
+                        >
                           {renderPinnedFieldCell(item, field)}
                         </span>
                       ))}
@@ -2999,12 +3502,9 @@ export default function ListView(): JSX.Element {
                             <StatusSelect
                               statuses={subtaskStatuses}
                               value={action.subtask_status_id ?? action.status}
-                              onChange={(next: LaneStatus) => void handleActionStatusChange(item.id, action.id, next)}
+                              onChange={(next: LaneStatus, anchor: AnchorRect | null) => void handleActionStatusChange(item.id, action.id, next, anchor)}
                               appearance="circle"
-                              onManageStatuses={() => {
-                                setStatusManagerScope('subtask');
-                                setStatusManagerOpen(true);
-                              }}
+                              onManageStatuses={(anchor: AnchorRect | null) => openStatusManagerPanel('subtask', anchor)}
                             />
                             <span className="list-action-title">{action.title}</span>
                           </div>
@@ -3134,13 +3634,48 @@ export default function ListView(): JSX.Element {
                     <StatusSelect
                       statuses={statuses}
                       value={modalStatusValue}
-                      onChange={() => selectedItem && openStatusDialogForItem(selectedItem)}
-                      onManageStatuses={() => {
-                        setStatusManagerScope('item');
-                        setStatusManagerOpen(true);
-                      }}
+                      onChange={(next: StatusDialogOption) => selectedItem && openInlineStatusComposerForItem(selectedItem, next)}
+                      onManageStatuses={(anchor: AnchorRect | null) => openStatusManagerPanel('item', anchor)}
                     />
                   </div>
+                  {inlineStatusComposer.open &&
+                    inlineStatusComposer.entityType === 'item' &&
+                    inlineStatusComposer.itemId === selectedItem.id && (
+                      <div className="list-inline-status-composer">
+                        <input
+                          value={inlineStatusNoteDraft}
+                          onChange={(event) => setInlineStatusNoteDraft(event.target.value)}
+                          placeholder="add completion note"
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') {
+                              event.preventDefault();
+                              void submitInlineStatusComposer();
+                            }
+                            if (event.key === 'Escape') {
+                              event.preventDefault();
+                              closeInlineStatusComposer();
+                            }
+                          }}
+                          autoFocus
+                        />
+                        <input
+                          value={inlineStatusTaskDraft}
+                          onChange={(event) => setInlineStatusTaskDraft(event.target.value)}
+                          placeholder="next task (optional)"
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') {
+                              event.preventDefault();
+                              void submitInlineStatusComposer();
+                            }
+                            if (event.key === 'Escape') {
+                              event.preventDefault();
+                              closeInlineStatusComposer();
+                            }
+                          }}
+                        />
+                        {inlineStatusError ? <span className="list-inline-status-error">{inlineStatusError}</span> : null}
+                      </div>
+                    )}
                 </div>
               </div>
               <div className="list-item-modal-head-actions">
@@ -3218,16 +3753,175 @@ export default function ListView(): JSX.Element {
                 </label>
 
                 <div className="list-item-field list-item-column-values">
-                  <span>Column values</span>
+                  <div className="list-item-column-values-head">
+                    <span>Column values</span>
+                    <div
+                      className="list-fields-header-cell add-column list-item-column-add-wrap"
+                      ref={columnPopoverStatusKey === 'item-modal' ? columnPopoverRef : null}
+                    >
+                      <button
+                        type="button"
+                        className="list-add-column-btn"
+                        aria-expanded={columnPopoverStatusKey === 'item-modal' && columnPopoverOpen}
+                        onClick={() => {
+                          if (columnPopoverStatusKey === 'item-modal' && columnPopoverOpen) {
+                            closeColumnPopover();
+                            return;
+                          }
+                          openCreateColumnPopover('item-modal');
+                        }}
+                      >
+                        <span className="list-add-column-plus-wrap">
+                          <Plus size={13} />
+                        </span>
+                        <span className="list-add-column-label">Add Column</span>
+                      </button>
+                      {columnPopoverStatusKey === 'item-modal' && (
+                        <div className={`list-column-popover ${columnPopoverOpen ? 'open' : 'closing'}`.trim()}>
+                          <div className="list-column-popover-head">
+                            <strong>{columnPopoverFieldId ? 'Edit Column' : 'Add Column'}</strong>
+                            {columnPopoverFieldId && (
+                              <button
+                                type="button"
+                                className="list-column-popover-delete"
+                                onClick={() => void handleDeleteColumnFromPopover()}
+                              >
+                                Delete
+                              </button>
+                            )}
+                          </div>
+                          <label className="list-column-popover-field">
+                            <span>Field name</span>
+                            <input
+                              value={columnPopoverName}
+                              onChange={(event) => setColumnPopoverName(event.target.value)}
+                              placeholder="e.g. Lead source"
+                              autoFocus
+                            />
+                          </label>
+                          <label className="list-column-popover-field">
+                            <span>Field type</span>
+                            <select
+                              value={columnPopoverType}
+                              onChange={(event) => {
+                                const nextType = event.target.value as ListFieldType;
+                                setColumnPopoverType(nextType);
+                                if (nextType === 'status' || nextType === 'select') {
+                                  if (columnPopoverOptions.length === 0) {
+                                    setColumnPopoverOptions(buildDefaultOptionDrafts(nextType));
+                                  }
+                                } else {
+                                  setColumnPopoverOptions([]);
+                                }
+                              }}
+                              disabled={Boolean(columnPopoverFieldId)}
+                            >
+                              <option value="status">Status</option>
+                              <option value="select">Select</option>
+                              <option value="text">Text</option>
+                              <option value="contact">Contact</option>
+                              <option value="number">Number</option>
+                              <option value="date">Date</option>
+                              <option value="boolean">Boolean</option>
+                            </select>
+                          </label>
+                          <div className="list-column-popover-meta">
+                            <div className="list-column-popover-meta-copy">
+                              <strong>Visible in list</strong>
+                              <span>Show this column in the main grid</span>
+                            </div>
+                            <label className="list-column-popover-switch">
+                              <input
+                                type="checkbox"
+                                checked={columnPopoverPinned}
+                                onChange={(event) => setColumnPopoverPinned(event.target.checked)}
+                              />
+                              <span className="list-column-popover-switch-track">
+                                <span className="list-column-popover-switch-thumb" />
+                              </span>
+                            </label>
+                          </div>
+                          {(columnPopoverType === 'status' || columnPopoverType === 'select') && (
+                            <div className="list-column-options-editor">
+                              <div className="list-column-options-head">
+                                <span>{columnPopoverType === 'status' ? 'Status options' : 'Select options'}</span>
+                                <button type="button" onClick={appendColumnOptionDraft}>
+                                  Add option
+                                </button>
+                              </div>
+                              <div className="list-column-options-list">
+                                {columnPopoverOptions.map((option) => (
+                                  <div key={option.id} className="list-column-option-row">
+                                    <input
+                                      value={option.label}
+                                      onChange={(event) =>
+                                        updateColumnOptionDraft(option.id, { label: event.target.value })
+                                      }
+                                      placeholder="Option label"
+                                    />
+                                    <label className="list-column-option-color">
+                                      <input
+                                        type="color"
+                                        value={option.color_fill}
+                                        onChange={(event) =>
+                                          updateColumnOptionDraft(option.id, {
+                                            color_fill: event.target.value,
+                                            color_border: event.target.value
+                                          })
+                                        }
+                                        aria-label="Option color"
+                                      />
+                                    </label>
+                                    <button
+                                      type="button"
+                                      className="list-column-option-remove"
+                                      onClick={() => removeColumnOptionDraft(option.id)}
+                                      aria-label="Remove option"
+                                    >
+                                      ×
+                                    </button>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          <div className="list-column-popover-actions">
+                            <button type="button" className="ghost" onClick={() => closeColumnPopover()}>
+                              Cancel
+                            </button>
+                            <button type="button" className="primary" onClick={() => void handleSaveColumnPopover()}>
+                              {columnPopoverFieldId ? 'Save Column' : 'Add Column'}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
                   {(listFields || []).length === 0 ? (
                     <p className="list-item-column-empty">No custom columns yet.</p>
                   ) : (
                     <div className="list-item-column-grid">
                       {listFields.map((field) => {
                         return (
-                          <div key={field.id} className="list-item-column-row">
-                            <strong>{field.name}</strong>
-                            {renderPinnedFieldCell(selectedItem, field)}
+                          <div
+                            key={field.id}
+                            className="list-item-column-row"
+                          >
+                            <button
+                              type="button"
+                              className="list-column-header-btn list-column-control-label list-item-column-name-btn"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                openEditColumnPopover('item-modal', field);
+                              }}
+                            >
+                              {field.name}
+                            </button>
+                            <div
+                              className="list-item-column-value-hit"
+                            >
+                              {renderModalFieldCell(selectedItem, field)}
+                            </div>
                           </div>
                         );
                       })}
@@ -3264,12 +3958,9 @@ export default function ListView(): JSX.Element {
                           <StatusSelect
                             statuses={subtaskStatuses}
                             value={action.subtask_status_id ?? action.status}
-                            onChange={() => openStatusDialogForAction(selectedItem, action)}
+                            onChange={(next: StatusDialogOption) => openInlineStatusComposerForAction(selectedItem, action, next)}
                             appearance="circle"
-                            onManageStatuses={() => {
-                              setStatusManagerScope('subtask');
-                              setStatusManagerOpen(true);
-                            }}
+                            onManageStatuses={(anchor: AnchorRect | null) => openStatusManagerPanel('subtask', anchor)}
                           />
                           <span className="list-action-title">{action.title}</span>
                           <span className={`list-item-modal-task-save-state ${itemModalActionSaveState[action.id] || 'saved'}`.trim()}>
@@ -3293,6 +3984,44 @@ export default function ListView(): JSX.Element {
                         </div>
                         {itemModalExpandedActions[action.id] && (
                           <div className="list-item-modal-action-editor" onClick={(event) => event.stopPropagation()}>
+                            {inlineStatusComposer.open &&
+                              inlineStatusComposer.entityType === 'action' &&
+                              inlineStatusComposer.actionId === action.id && (
+                                <div className="list-inline-status-composer task">
+                                  <input
+                                    value={inlineStatusNoteDraft}
+                                    onChange={(event) => setInlineStatusNoteDraft(event.target.value)}
+                                    placeholder="add completion note"
+                                    onKeyDown={(event) => {
+                                      if (event.key === 'Enter') {
+                                        event.preventDefault();
+                                        void submitInlineStatusComposer();
+                                      }
+                                      if (event.key === 'Escape') {
+                                        event.preventDefault();
+                                        closeInlineStatusComposer();
+                                      }
+                                    }}
+                                    autoFocus
+                                  />
+                                  <input
+                                    value={inlineStatusTaskDraft}
+                                    onChange={(event) => setInlineStatusTaskDraft(event.target.value)}
+                                    placeholder="next task (optional)"
+                                    onKeyDown={(event) => {
+                                      if (event.key === 'Enter') {
+                                        event.preventDefault();
+                                        void submitInlineStatusComposer();
+                                      }
+                                      if (event.key === 'Escape') {
+                                        event.preventDefault();
+                                        closeInlineStatusComposer();
+                                      }
+                                    }}
+                                  />
+                                  {inlineStatusError ? <span className="list-inline-status-error">{inlineStatusError}</span> : null}
+                                </div>
+                              )}
                             <label className="list-item-field">
                               <span>Task name</span>
                               <input
@@ -3314,23 +4043,247 @@ export default function ListView(): JSX.Element {
                                 rows={3}
                               />
                             </label>
-                            <label className="list-item-field">
-                              <span>Scheduled</span>
-                              <input
-                                type="datetime-local"
-                                value={toDateTimeLocalValue(action.scheduled_at)}
-                                onChange={(event) =>
-                                  handleActionDraftChange(selectedItem.id, action, {
-                                    scheduled_at: fromDateTimeLocalValue(event.target.value)
-                                  })
-                                }
-                              />
-                            </label>
+                            <div className="list-item-modal-action-schedule">
+                              <label className="list-item-field list-item-field-compact">
+                                <span>Date</span>
+                                <input
+                                  type="date"
+                                  value={toDateInputValue(action.scheduled_at)}
+                                  onChange={(event) =>
+                                    handleActionDraftChange(selectedItem.id, action, {
+                                      scheduled_at: mergeDateAndTimeInput(
+                                        action.scheduled_at,
+                                        event.target.value,
+                                        toTimeInputValue(action.scheduled_at) || '09:00'
+                                      )
+                                    })
+                                  }
+                                />
+                              </label>
+                              <label className="list-item-field list-item-field-compact">
+                                <span>Time</span>
+                                <input
+                                  type="time"
+                                  value={toTimeInputValue(action.scheduled_at)}
+                                  onChange={(event) =>
+                                    handleActionDraftChange(selectedItem.id, action, {
+                                      scheduled_at: mergeDateAndTimeInput(
+                                        action.scheduled_at,
+                                        toDateInputValue(action.scheduled_at) || new Date().toISOString().slice(0, 10),
+                                        event.target.value
+                                      )
+                                    })
+                                  }
+                                />
+                              </label>
+                              <div className="list-item-field list-item-field-compact">
+                                <span>Repeat</span>
+                                <button
+                                  type="button"
+                                  className={`list-item-modal-recurrence-trigger ${itemModalActionRecurrenceOpen[action.id] ? 'open' : ''}`.trim()}
+                                  onClick={() =>
+                                    setItemModalActionRecurrenceOpen((prev) => ({ ...prev, [action.id]: !prev[action.id] }))
+                                  }
+                                >
+                                  {formatActionRecurrenceSummary(
+                                    action.recurrence_rule || 'none',
+                                    action.recurrence_config || DEFAULT_ACTION_RECURRENCE_CONFIG
+                                  )}
+                                </button>
+                              </div>
+                            </div>
+                            {itemModalActionRecurrenceOpen[action.id] && (
+                              <div className="list-item-modal-recurrence-panel">
+                                <div className="list-item-modal-recurrence-grid">
+                                  <label className="list-item-field list-item-field-compact">
+                                    <span>Rule</span>
+                                    <select
+                                      value={action.recurrence_rule || 'none'}
+                                      onChange={(event) => {
+                                        const nextRule = event.target.value as RecurrenceRule;
+                                        handleActionDraftChange(selectedItem.id, action, {
+                                          recurrence_rule: nextRule,
+                                          recurrence_config:
+                                            nextRule === 'none'
+                                              ? null
+                                              : normalizeActionRecurrenceConfig(nextRule, action.recurrence_config)
+                                        });
+                                      }}
+                                    >
+                                      <option value="none">Once</option>
+                                      <option value="daily">Daily</option>
+                                      <option value="weekly">Weekly</option>
+                                      <option value="monthly">Monthly</option>
+                                      <option value="custom">Custom</option>
+                                    </select>
+                                  </label>
+                                  {(action.recurrence_rule || 'none') !== 'none' && (
+                                    <>
+                                      <label className="list-item-field list-item-field-compact">
+                                        <span>Every</span>
+                                        <input
+                                          type="number"
+                                          min="1"
+                                          max="99"
+                                          value={Math.max(1, action.recurrence_config?.interval || 1)}
+                                          onChange={(event) =>
+                                            handleActionDraftChange(selectedItem.id, action, {
+                                              recurrence_config: {
+                                                ...normalizeActionRecurrenceConfig(
+                                                  action.recurrence_rule || 'custom',
+                                                  action.recurrence_config
+                                                ),
+                                                interval: Math.max(1, Number.parseInt(event.target.value || '1', 10))
+                                              }
+                                            })
+                                          }
+                                        />
+                                      </label>
+                                      <label className="list-item-field list-item-field-compact">
+                                        <span>Unit</span>
+                                        <select
+                                          value={normalizeActionRecurrenceConfig(
+                                            action.recurrence_rule || 'custom',
+                                            action.recurrence_config
+                                          ).unit}
+                                          disabled={(action.recurrence_rule || 'none') !== 'custom'}
+                                          onChange={(event) =>
+                                            handleActionDraftChange(selectedItem.id, action, {
+                                              recurrence_config: {
+                                                ...normalizeActionRecurrenceConfig(
+                                                  action.recurrence_rule || 'custom',
+                                                  action.recurrence_config
+                                                ),
+                                                unit: event.target.value as CustomRecurrenceConfig['unit']
+                                              }
+                                            })
+                                          }
+                                        >
+                                          <option value="day">Days</option>
+                                          <option value="week">Weeks</option>
+                                          <option value="month">Months</option>
+                                          <option value="year">Years</option>
+                                        </select>
+                                      </label>
+                                    </>
+                                  )}
+                                </div>
+                                {(action.recurrence_rule || 'none') !== 'none' && (
+                                  <div className="list-item-modal-recurrence-grid limit">
+                                    <label className="list-item-field list-item-field-compact">
+                                      <span>Ends</span>
+                                      <select
+                                        value={normalizeActionRecurrenceConfig(
+                                          action.recurrence_rule || 'custom',
+                                          action.recurrence_config
+                                        ).limitType}
+                                        onChange={(event) =>
+                                          handleActionDraftChange(selectedItem.id, action, {
+                                            recurrence_config: {
+                                              ...normalizeActionRecurrenceConfig(
+                                                action.recurrence_rule || 'custom',
+                                                action.recurrence_config
+                                              ),
+                                              limitType: event.target.value as CustomRecurrenceConfig['limitType']
+                                            }
+                                          })
+                                        }
+                                      >
+                                        <option value="indefinite">Never</option>
+                                        <option value="count">After count</option>
+                                        <option value="until">On date</option>
+                                      </select>
+                                    </label>
+                                    {normalizeActionRecurrenceConfig(
+                                      action.recurrence_rule || 'custom',
+                                      action.recurrence_config
+                                    ).limitType === 'count' && (
+                                      <label className="list-item-field list-item-field-compact">
+                                        <span>Count</span>
+                                        <input
+                                          type="number"
+                                          min="1"
+                                          max="365"
+                                          value={Math.max(1, action.recurrence_config?.count || 1)}
+                                          onChange={(event) =>
+                                            handleActionDraftChange(selectedItem.id, action, {
+                                              recurrence_config: {
+                                                ...normalizeActionRecurrenceConfig(
+                                                  action.recurrence_rule || 'custom',
+                                                  action.recurrence_config
+                                                ),
+                                                count: Math.max(1, Number.parseInt(event.target.value || '1', 10))
+                                              }
+                                            })
+                                          }
+                                        />
+                                      </label>
+                                    )}
+                                    {normalizeActionRecurrenceConfig(
+                                      action.recurrence_rule || 'custom',
+                                      action.recurrence_config
+                                    ).limitType === 'until' && (
+                                      <label className="list-item-field list-item-field-compact">
+                                        <span>Until</span>
+                                        <input
+                                          type="date"
+                                          value={action.recurrence_config?.until || ''}
+                                          onChange={(event) =>
+                                            handleActionDraftChange(selectedItem.id, action, {
+                                              recurrence_config: {
+                                                ...normalizeActionRecurrenceConfig(
+                                                  action.recurrence_rule || 'custom',
+                                                  action.recurrence_config
+                                                ),
+                                                until: event.target.value || undefined
+                                              }
+                                            })
+                                          }
+                                        />
+                                      </label>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            )}
                             <p className="list-item-modal-action-editor-hint">Task fields are editable here. Comments stay in the right-side thread.</p>
                           </div>
                         )}
                       </div>
                     ))}
+                    {actionComposerByItem[selectedItem.id] ? (
+                      <form
+                        className="list-item-modal-action-add-form"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          void handleCreateAction(selectedItem.id);
+                        }}
+                      >
+                        <input
+                          value={actionDraftByItem[selectedItem.id] || ''}
+                          onChange={(event) =>
+                            setActionDraftByItem((prev) => ({ ...prev, [selectedItem.id]: event.target.value }))
+                          }
+                          onKeyDown={(event) => {
+                            if (event.key === 'Escape') {
+                              event.preventDefault();
+                              setActionComposerByItem((prev) => ({ ...prev, [selectedItem.id]: false }));
+                              setActionDraftByItem((prev) => ({ ...prev, [selectedItem.id]: '' }));
+                            }
+                          }}
+                          placeholder={`New ${actionTerm.slice(0, -1) || 'task'}`}
+                          autoFocus
+                        />
+                      </form>
+                    ) : (
+                      <button
+                        type="button"
+                        className="list-action-add list-item-modal-action-add-trigger"
+                        onClick={() => setActionComposerByItem((prev) => ({ ...prev, [selectedItem.id]: true }))}
+                      >
+                        <span className="list-inline-add-label">+ New</span>
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -3570,169 +4523,219 @@ export default function ListView(): JSX.Element {
         </div>
       )}
 
-      <StatusChangeDialog
-        open={statusDialog.open}
-        title={statusDialog.title}
-        currentStatusLabel={statusDialog.currentStatusLabel}
-        currentStatusKey={statusDialog.currentStatusKey}
-        statuses={statusDialog.entityType === 'item' ? statuses : subtaskStatuses}
-        saving={statusDialogSaving}
-        error={statusDialogError}
-        onClose={closeStatusDialog}
-        onSubmit={(status, note) => void submitStatusDialog(status, note)}
-      />
+      {inlineStatusComposer.open && inlineStatusComposer.anchor && (
+        <section className="list-inline-status-composer-panel" style={inlineStatusComposerPanelStyle}>
+          <div className="list-inline-status-composer-panel-head">
+            <div className="list-inline-status-composer-panel-copy">
+              <strong>{inlineStatusComposer.nextStatus?.name || 'Status update'}</strong>
+              <span>{inlineStatusComposer.title}</span>
+            </div>
+            <button
+              type="button"
+              className="list-inline-status-composer-panel-close"
+              onClick={closeInlineStatusComposer}
+              aria-label="Close status update panel"
+            >
+              <CloseIcon size={14} />
+            </button>
+          </div>
+          <div className="list-inline-status-composer-panel-fields">
+            <input
+              value={inlineStatusNoteDraft}
+              onChange={(event) => setInlineStatusNoteDraft(event.target.value)}
+              placeholder="add completion note / next step"
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  void submitInlineStatusComposer();
+                }
+                if (event.key === 'Escape') {
+                  event.preventDefault();
+                  closeInlineStatusComposer();
+                }
+              }}
+              autoFocus
+            />
+            <input
+              value={inlineStatusTaskDraft}
+              onChange={(event) => setInlineStatusTaskDraft(event.target.value)}
+              placeholder="next task (optional)"
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  void submitInlineStatusComposer();
+                }
+                if (event.key === 'Escape') {
+                  event.preventDefault();
+                  closeInlineStatusComposer();
+                }
+              }}
+            />
+          </div>
+          {inlineStatusError ? <div className="list-inline-status-error">{inlineStatusError}</div> : null}
+        </section>
+      )}
 
       {statusManagerOpen && (
-        <div className="list-status-manager-overlay" onClick={() => setStatusManagerOpen(false)}>
-          <section className="list-status-manager" onClick={(event) => event.stopPropagation()}>
-            <header className="list-status-manager-head">
-              <h2>{managerIsSubtask ? 'Manage Task Statuses' : 'Manage Item Statuses'}</h2>
-              <div className="list-status-manager-scope-toggle">
-                <button
-                  type="button"
-                  className={!managerIsSubtask ? 'active' : ''}
-                  onClick={() => {
-                    setStatusManagerScope('item');
-                    setStatusInlineCreateOpen(false);
-                  }}
-                >
-                  Items
-                </button>
-                <button
-                  type="button"
-                  className={managerIsSubtask ? 'active' : ''}
-                  onClick={() => {
-                    setStatusManagerScope('subtask');
-                    setStatusInlineCreateOpen(false);
-                  }}
-                >
-                  Tasks
-                </button>
-              </div>
-              <button type="button" onClick={() => setStatusManagerOpen(false)}>Close</button>
-            </header>
-
-            {!managerCanPersist && (
-              <p className="list-status-manager-note">
-                {managerMigrationHint}
-              </p>
-            )}
-
-            <div className="list-status-manager-list">
-              {managerStatuses.map((status) => (
-                <div
-                  key={status.id || status.key}
-                  className="list-status-manager-row"
-                  draggable={Boolean(status.id)}
-                  onDragStart={() => setDraggingManagerStatusId(status.id || null)}
-                  onDragEnd={() => setDraggingManagerStatusId(null)}
-                  onDragOver={(event) => {
-                    if (!draggingManagerStatusId || !status.id) return;
-                    event.preventDefault();
-                  }}
-                  onDrop={(event) => {
-                    event.preventDefault();
-                    void handleManagerStatusDrop(status.id || '');
-                    setDraggingManagerStatusId(null);
-                  }}
-                >
-                  <label
-                    className="list-status-color-trigger"
-                    style={{ '--status-color': status.color || '#94a3b8' } as CSSProperties}
-                  >
-                    <input
-                      type="color"
-                      value={status.color || '#94a3b8'}
-                      onChange={(event) =>
-                        void (managerIsSubtask ? handlePatchSubtaskStatus : handlePatchStatus)(status.id || '', {
-                          color: event.target.value
-                        })
-                      }
-                      disabled={!status.id}
-                      aria-label="Pick status color"
-                    />
-                  </label>
-                  <input
-                    value={status.name}
-                    onChange={(event) =>
-                      void (managerIsSubtask ? handlePatchSubtaskStatus : handlePatchStatus)(status.id || '', {
-                        name: event.target.value,
-                        key: normalizeStatusKey(event.target.value) || status.key
-                      })
-                    }
-                    disabled={!status.id}
-                  />
-                  {!managerIsSubtask && (
-                    <label className="list-status-overview-toggle" title="Show in Spaces overview">
-                      <input
-                        type="checkbox"
-                        checked={status.show_in_overview !== false}
-                        onChange={(event) =>
-                          void handlePatchStatus(status.id || '', { show_in_overview: event.target.checked })
-                        }
-                        disabled={!status.id}
-                      />
-                      <span>Show</span>
-                    </label>
-                  )}
-                  <button
-                    type="button"
-                    className="list-status-delete-btn"
-                    onClick={() => void (managerIsSubtask ? handleDeleteSubtaskStatus : handleDeleteStatus)(status)}
-                    disabled={!status.id || managerStatuses.length <= 1}
-                    aria-label={`Delete ${status.name}`}
-                    title="Delete status"
-                  >
-                    <Trash2 size={15} />
-                  </button>
-                </div>
-              ))}
-            </div>
-
-            {!statusInlineCreateOpen ? (
+        <section className="list-status-manager-panel" style={statusManagerPanelStyle}>
+          <header className="list-status-manager-head">
+            <h2>{managerIsSubtask ? 'Task statuses' : 'Item statuses'}</h2>
+            <div className="list-status-manager-scope-toggle">
               <button
                 type="button"
-                className="list-status-add-inline-btn"
-                onClick={() => setStatusInlineCreateOpen(true)}
-                disabled={!managerCanPersist}
-              >
-                Add Status
-              </button>
-            ) : (
-              <form
-                className="list-status-manager-create-inline"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void (managerIsSubtask ? handleCreateSubtaskStatus() : handleCreateStatus());
+                className={!managerIsSubtask ? 'active' : ''}
+                onClick={() => {
+                  setStatusManagerScope('item');
                   setStatusInlineCreateOpen(false);
+                }}
+                aria-label="Show item statuses"
+                title="Item statuses"
+              >
+                Items
+              </button>
+              <button
+                type="button"
+                className={managerIsSubtask ? 'active' : ''}
+                onClick={() => {
+                  setStatusManagerScope('subtask');
+                  setStatusInlineCreateOpen(false);
+                }}
+                aria-label="Show task statuses"
+                title="Task statuses"
+              >
+                Tasks
+              </button>
+            </div>
+            <button
+              type="button"
+              className="list-status-manager-icon-btn"
+              onClick={closeStatusManagerPanel}
+              aria-label="Close status manager"
+              title="Close"
+            >
+              <CloseIcon size={15} />
+            </button>
+          </header>
+
+          {!managerCanPersist && (
+            <p className="list-status-manager-note">
+              {managerMigrationHint}
+            </p>
+          )}
+
+          <div className="list-status-manager-list">
+            {managerStatuses.map((status) => (
+              <div
+                key={status.id || status.key}
+                className="list-status-manager-row"
+                draggable={Boolean(status.id)}
+                onDragStart={() => setDraggingManagerStatusId(status.id || null)}
+                onDragEnd={() => setDraggingManagerStatusId(null)}
+                onDragOver={(event) => {
+                  if (!draggingManagerStatusId || !status.id) return;
+                  event.preventDefault();
+                }}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  void handleManagerStatusDrop(status.id || '');
+                  setDraggingManagerStatusId(null);
                 }}
               >
                 <label
                   className="list-status-color-trigger"
-                  style={{ '--status-color': statusColorDraft || '#94a3b8' } as CSSProperties}
+                  style={{ '--status-color': status.color || '#94a3b8' } as CSSProperties}
                 >
                   <input
                     type="color"
-                    value={statusColorDraft}
-                    onChange={(event) => setStatusColorDraft(event.target.value)}
-                    disabled={!managerCanPersist}
-                    aria-label="Pick new status color"
+                    value={status.color || '#94a3b8'}
+                    onChange={(event) =>
+                      void (managerIsSubtask ? handlePatchSubtaskStatus : handlePatchStatus)(status.id || '', {
+                        color: event.target.value
+                      })
+                    }
+                    disabled={!status.id}
+                    aria-label="Pick status color"
                   />
                 </label>
                 <input
-                  value={statusNameDraft}
-                  onChange={(event) => setStatusNameDraft(event.target.value)}
-                  placeholder="Status name"
-                  disabled={!managerCanPersist}
-                  autoFocus
+                  value={status.name}
+                  onChange={(event) =>
+                    void (managerIsSubtask ? handlePatchSubtaskStatus : handlePatchStatus)(status.id || '', {
+                      name: event.target.value,
+                      key: normalizeStatusKey(event.target.value) || status.key
+                    })
+                  }
+                  disabled={!status.id}
                 />
-                <button type="submit" className="list-status-inline-save-btn" disabled={!managerCanPersist}>
-                  Save
+                {!managerIsSubtask && (
+                  <button
+                    type="button"
+                    className={`list-status-visibility-btn ${status.show_in_overview !== false ? 'active' : ''}`.trim()}
+                    onClick={() => void handlePatchStatus(status.id || '', { show_in_overview: status.show_in_overview === false })}
+                    disabled={!status.id}
+                    aria-label={status.show_in_overview !== false ? 'Hide in Spaces overview' : 'Show in Spaces overview'}
+                    title={status.show_in_overview !== false ? 'Hide in overview' : 'Show in overview'}
+                  >
+                    <Eye size={15} />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="list-status-delete-btn"
+                  onClick={() => void (managerIsSubtask ? handleDeleteSubtaskStatus : handleDeleteStatus)(status)}
+                  disabled={!status.id || managerStatuses.length <= 1}
+                  aria-label={`Delete ${status.name}`}
+                  title="Delete status"
+                >
+                  <Trash2 size={15} />
                 </button>
-              </form>
-            )}
-          </section>
-        </div>
+              </div>
+            ))}
+          </div>
+
+          {!statusInlineCreateOpen ? (
+            <button
+              type="button"
+              className="list-status-add-inline-btn"
+              onClick={() => setStatusInlineCreateOpen(true)}
+              disabled={!managerCanPersist}
+            >
+              Add Status
+            </button>
+          ) : (
+            <form
+              className="list-status-manager-create-inline"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void (managerIsSubtask ? handleCreateSubtaskStatus() : handleCreateStatus());
+                setStatusInlineCreateOpen(false);
+              }}
+            >
+              <label
+                className="list-status-color-trigger"
+                style={{ '--status-color': statusColorDraft || '#94a3b8' } as CSSProperties}
+              >
+                <input
+                  type="color"
+                  value={statusColorDraft}
+                  onChange={(event) => setStatusColorDraft(event.target.value)}
+                  disabled={!managerCanPersist}
+                  aria-label="Pick new status color"
+                />
+              </label>
+              <input
+                value={statusNameDraft}
+                onChange={(event) => setStatusNameDraft(event.target.value)}
+                placeholder="Status name"
+                disabled={!managerCanPersist}
+                autoFocus
+              />
+              <button type="submit" className="list-status-inline-save-btn" disabled={!managerCanPersist}>
+                Save
+              </button>
+            </form>
+          )}
+        </section>
       )}
     </div>
   );

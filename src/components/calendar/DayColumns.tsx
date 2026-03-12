@@ -1,11 +1,13 @@
 import { useState } from 'react';
-import type { CalendarEvent, HoursWindow } from './WeekCalendar';
+import type { CalendarEvent, CalendarViewMode, HoursWindow } from './WeekCalendar';
 import { addDays, isSameDay, normalizeToDate } from './calendarUtils';
 import DayColumn from './DayColumn';
 
 interface DayColumnsProps {
   startOfWeek: Date;
   events: CalendarEvent[];
+  daysCount?: number;
+  viewMode?: CalendarViewMode;
   hours: HoursWindow;
   pixelsPerMinute: number;
   onEventClick?: (event: CalendarEvent) => void;
@@ -80,6 +82,8 @@ interface DragPreviewState {
 export default function DayColumns({
   startOfWeek,
   events,
+  daysCount = 7,
+  viewMode = 'week',
   hours,
   pixelsPerMinute,
   onEventClick,
@@ -96,7 +100,7 @@ export default function DayColumns({
   onOccurrenceOpen
 }: DayColumnsProps): JSX.Element {
   const [dragPreview, setDragPreview] = useState<DragPreviewState | null>(null);
-  const days = Array.from({ length: 7 }, (_, index) => addDays(startOfWeek, index));
+  const days = Array.from({ length: daysCount }, (_, index) => addDays(startOfWeek, index));
 
   return (
     <section className="week-day-columns" aria-label="Week day columns">
@@ -111,8 +115,9 @@ export default function DayColumns({
             key={date.toISOString()}
             date={date}
             dayIndex={index}
-            maxForwardDays={6 - index}
+            maxForwardDays={daysCount - 1 - index}
             events={dayEvents}
+            viewMode={viewMode}
             hours={hours}
             pixelsPerMinute={pixelsPerMinute}
             onEventClick={onEventClick}

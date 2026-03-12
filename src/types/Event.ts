@@ -17,6 +17,27 @@ export interface EventTask {
   customRecurrenceConfig?: CustomRecurrenceConfig;
 }
 
+export interface BlockTaskLinkedItem {
+  id: string;
+  blockTaskItemId: string;
+  itemId: string;
+  title: string;
+  completedInContext: boolean;
+  completionNote?: string | null;
+  completedAt?: string | null;
+  sortOrder: number;
+}
+
+export interface BlockTask {
+  id: string;
+  timeBlockId: string;
+  title: string;
+  description?: string | null;
+  sortOrder: number;
+  isCompleted: boolean;
+  linkedItems: BlockTaskLinkedItem[];
+}
+
 export interface Event {
   id: string;
   title: string;
@@ -27,6 +48,7 @@ export interface Event {
   recurrenceConfig?: CustomRecurrenceConfig;
   includeWeekends?: boolean;
   tasks?: EventTask[];
+  blockTasks?: BlockTask[];
   projectIds?: string[];
   timezone: string;
   tags?: string[];

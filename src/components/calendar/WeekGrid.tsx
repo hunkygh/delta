@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import type { CalendarEvent, HoursWindow } from './WeekCalendar';
+import type { CalendarEvent, CalendarViewMode, HoursWindow } from './WeekCalendar';
 import TimeColumn from './TimeColumn';
 import DayColumns from './DayColumns';
 import { getMinutesFromStartOfDay, getStartMinute, getTotalVisibleMinutes } from './calendarUtils';
@@ -7,6 +7,8 @@ import { getMinutesFromStartOfDay, getStartMinute, getTotalVisibleMinutes } from
 interface WeekGridProps {
   startOfWeek: Date;
   events: CalendarEvent[];
+  daysCount?: number;
+  viewMode?: CalendarViewMode;
   hours: HoursWindow;
   pixelsPerMinute: number;
   onEventClick?: (event: CalendarEvent) => void;
@@ -73,6 +75,8 @@ interface WeekGridProps {
 export default function WeekGrid({
   startOfWeek,
   events,
+  daysCount = 7,
+  viewMode = 'week',
   hours,
   pixelsPerMinute,
   onEventClick,
@@ -129,6 +133,8 @@ export default function WeekGrid({
         <DayColumns
           startOfWeek={startOfWeek}
           events={events}
+          daysCount={daysCount}
+          viewMode={viewMode}
           hours={hours}
           pixelsPerMinute={pixelsPerMinute}
           onEventClick={onEventClick}

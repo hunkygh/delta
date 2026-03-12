@@ -1,16 +1,18 @@
 import { useState, useEffect } from 'react';
 import type { DragEvent as ReactDragEvent, KeyboardEvent, MouseEvent as ReactMouseEvent } from 'react';
-import type { CalendarEvent } from './WeekCalendar';
+import type { CalendarEvent, CalendarViewMode } from './WeekCalendar';
 import { formatTimeRange } from './calendarUtils';
 
 interface EventCardProps {
   event: CalendarEvent;
+  viewMode?: CalendarViewMode;
   top: number;
   height: number;
   leftPct: number;
   widthPct: number;
   isActive?: boolean;
   isOpen?: boolean;
+  isCurrentTimeBlock?: boolean;
   onClick?: () => void;
   onAddItem?: () => void;
   onReorderTasks?: (fromIndex: number, toIndex: number) => void;
@@ -42,12 +44,14 @@ interface EventCardProps {
 
 export default function EventCard({
   event,
+  viewMode = 'week',
   top,
   height,
   leftPct,
   widthPct,
   isActive = false,
   isOpen = false,
+  isCurrentTimeBlock = false,
   onClick,
   onAddItem,
   onReorderTasks,
@@ -61,6 +65,7 @@ export default function EventCard({
 
   const tasks = event.tasks ?? [];
   const occurrenceItems = event.occurrenceItems ?? [];
+  const blockTasks = event.blockTasks ?? [];
   const isCompact = height <= 46;
   const isTiny = height <= 18;
 
@@ -79,17 +84,37 @@ export default function EventCard({
   }, [isResizing]);
   const cardClassName = [
     'week-event-card',
+    viewMode === 'day' ? 'day-mode' : 'week-mode',
     isActive ? 'active' : '',
     isOpen ? 'open' : '',
+    isCurrentTimeBlock ? 'current-time-block' : '',
     isCompact ? 'compact' : '',
     isTiny ? 'tiny' : ''
   ]
     .filter(Boolean)
     .join(' ');
-  const interactiveRows = occurrenceItems.length > 0 ? occurrenceItems : tasks.map((task) => ({ ...task, kind: 'item' as const }));
+  const nestedBlockTaskItemIds = new Set(blockTasks.flatMap((task) => task.linkedItems.map((linked) => linked.itemId)));
+  const interactiveRows =
+    occurrenceItems.length > 0
+      ? occurrenceItems.filter((entry) => entry.kind !== 'item' || !nestedBlockTaskItemIds.has(entry.id))
+      : tasks
+          .map((task) => ({ ...task, kind: 'item' as const }))
+          .filter((entry) => !nestedBlockTaskItemIds.has(entry.id));
   const previewLimit = Math.max(1, Math.floor((Math.max(height, isOpen ? 66 : 54) - (isOpen ? 44 : 26)) / 22));
-  const visibleRows = interactiveRows.slice(0, previewLimit);
-  const hiddenCount = Math.max(0, interactiveRows.length - visibleRows.length);
+  const showBlockTaskHeaders = previewLimit > 3;
+  const blockTaskPreviewRows = blockTasks.flatMap((task) => [
+    ...(showBlockTaskHeaders ? [{ type: 'block-task' as const, id: task.id, title: task.title }] : []),
+    ...task.linkedItems.map((linked) => ({
+      type: 'block-task-item' as const,
+      id: linked.blockTaskItemId,
+      itemId: linked.itemId,
+      title: linked.title,
+      completed: Boolean(linked.completedInContext)
+    }))
+  ]);
+  const previewRows = [...blockTaskPreviewRows, ...interactiveRows.map((row) => ({ type: 'occurrence' as const, row }))];
+  const visibleRows = previewRows.slice(0, previewLimit);
+  const hiddenCount = Math.max(0, previewRows.length - visibleRows.length);
 
   return (
     <div
@@ -148,28 +173,62 @@ export default function EventCard({
       <span className="week-event-card-title">{event.title}</span>
       <span className="week-event-card-time">{formatTimeRange(event.start, event.end)}</span>
 
-      {!isTiny && interactiveRows.length > 0 && (
+      {!isTiny && previewRows.length > 0 && (
         <div className="week-event-task-preview" onClick={(eventMouse) => eventMouse.stopPropagation()}>
-          {visibleRows.map((entry) => (
-            <div key={`${entry.kind}:${entry.id}`} className={`week-event-task-row ${entry.completed ? 'completed' : ''}`.trim()}>
-              <input
-                type="checkbox"
-                checked={entry.completed}
-                onChange={(eventChange) => onOccurrenceToggle?.(entry, eventChange.target.checked)}
-                onClick={(eventMouse) => eventMouse.stopPropagation()}
-              />
-              <button
-                type="button"
-                className="week-event-task-link"
-                onClick={(eventMouse) => {
-                  eventMouse.stopPropagation();
-                  onOccurrenceOpen?.(entry);
-                }}
-              >
-                {entry.title}
-              </button>
-            </div>
-          ))}
+          {visibleRows.map((entry) => {
+            if (entry.type === 'block-task') {
+              return (
+                <div key={`block-task:${entry.id}`} className="week-event-block-task-row">
+                  <span className="week-event-block-task-pill">{entry.title}</span>
+                </div>
+              );
+            }
+
+            if (entry.type === 'block-task-item') {
+              return (
+                <div key={`block-task-item:${entry.id}`} className={`week-event-task-row nested ${entry.completed ? 'completed' : ''}`.trim()}>
+                  <span className={`week-event-task-bullet ${entry.completed ? 'done' : ''}`.trim()} aria-hidden="true" />
+                  <button
+                    type="button"
+                    className="week-event-task-link nested"
+                    onClick={(eventMouse) => {
+                      eventMouse.stopPropagation();
+                      onOccurrenceOpen?.({
+                        id: entry.itemId,
+                        title: entry.title,
+                        completed: entry.completed,
+                        kind: 'item'
+                      });
+                    }}
+                  >
+                    {entry.title}
+                  </button>
+                </div>
+              );
+            }
+
+            const occurrenceEntry = entry.row;
+            return (
+              <div key={`${occurrenceEntry.kind}:${occurrenceEntry.id}`} className={`week-event-task-row ${occurrenceEntry.completed ? 'completed' : ''}`.trim()}>
+                <input
+                  type="checkbox"
+                  checked={occurrenceEntry.completed}
+                  onChange={(eventChange) => onOccurrenceToggle?.(occurrenceEntry, eventChange.target.checked)}
+                  onClick={(eventMouse) => eventMouse.stopPropagation()}
+                />
+                <button
+                  type="button"
+                  className="week-event-task-link"
+                  onClick={(eventMouse) => {
+                    eventMouse.stopPropagation();
+                    onOccurrenceOpen?.(occurrenceEntry);
+                  }}
+                >
+                  {occurrenceEntry.title}
+                </button>
+              </div>
+            );
+          })}
           {hiddenCount > 0 && (
             <button
               type="button"
@@ -208,7 +267,7 @@ export default function EventCard({
         </div>
       )}
 
-      {!isTiny && occurrenceItems.length > 0 && (
+      {!isTiny && (occurrenceItems.length > 0 || blockTasks.length > 0) && (
         <button
           type="button"
           className="week-event-task-add"

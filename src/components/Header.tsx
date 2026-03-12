@@ -776,7 +776,7 @@ export default function Header({
                   <button type="button" className="secondary" onClick={() => setCreatePanelOpen(false)}>
                     Close
                   </button>
-                  <button type="button" className="primary" onClick={() => void handleCreateSubmit()} disabled={createSubmitting}>
+                  <button type="button" className="primary-primary" onClick={() => void handleCreateSubmit()} disabled={createSubmitting}>
                     {createSubmitting ? 'Creating…' : 'Create'}
                   </button>
                 </div>

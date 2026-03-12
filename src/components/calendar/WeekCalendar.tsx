@@ -1,6 +1,6 @@
 import WeekHeader from './WeekHeader';
 import WeekGrid from './WeekGrid';
-import type { EventTask } from '../../types/Event';
+import type { BlockTask, EventTask } from '../../types/Event';
 
 export interface CalendarEvent {
   id: string;
@@ -9,6 +9,7 @@ export interface CalendarEvent {
   start: Date | string;
   end: Date | string;
   tasks?: EventTask[];
+  blockTasks?: BlockTask[];
   occurrenceItems?: Array<{
     id: string;
     title: string;
@@ -26,9 +27,13 @@ export interface HoursWindow {
   end: number;
 }
 
+export type CalendarViewMode = 'week' | 'day';
+
 interface WeekCalendarProps {
   startOfWeek: Date;
   events: CalendarEvent[];
+  daysCount?: number;
+  viewMode?: CalendarViewMode;
   onEventClick?: (event: CalendarEvent) => void;
   onTimeRangeSelect?: (range: { date: Date; start: Date; end: Date }) => void;
   onEventResizeStart?: (payload?: {
@@ -102,6 +107,8 @@ interface WeekCalendarProps {
 export default function WeekCalendar({
   startOfWeek,
   events,
+  daysCount = 7,
+  viewMode = 'week',
   onEventClick,
   onTimeRangeSelect,
   onEventResizeStart,
@@ -118,11 +125,13 @@ export default function WeekCalendar({
   pixelsPerMinute = 1
 }: WeekCalendarProps): JSX.Element {
   return (
-    <section className="week-calendar" aria-label="Week calendar">
-      <WeekHeader startOfWeek={startOfWeek} />
+    <section className={`week-calendar ${viewMode === 'day' ? 'day-mode' : 'week-mode'}`.trim()} aria-label="Week calendar">
+      <WeekHeader startOfWeek={startOfWeek} daysCount={daysCount} />
       <WeekGrid
         startOfWeek={startOfWeek}
         events={events}
+        daysCount={daysCount}
+        viewMode={viewMode}
         onEventClick={onEventClick}
         onTimeRangeSelect={onTimeRangeSelect}
         onEventResizeStart={onEventResizeStart}

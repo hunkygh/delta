@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Trash2, X } from 'lucide-react';
-import type { CustomRecurrenceConfig, RecurrenceRule } from '../../types/Event';
+import { Plus, Trash2, X } from 'lucide-react';
+import type { BlockTask, CustomRecurrenceConfig, RecurrenceRule } from '../../types/Event';
 import Button from '../Button';
 import ProposalReviewTable, { type ProposalReviewRow } from '../ProposalReviewTable';
+import type { StatusDialogOption } from '../StatusChangeDialog';
 
 interface EventDrawerProps {
   isCreateFlow: boolean;
@@ -55,6 +56,13 @@ interface EventDrawerProps {
   onContentModeChange: (mode: 'all' | 'weekday') => void;
   contentListOptions: Array<{ id: string; name: string }>;
   contentItemOptionsByList: Record<string, Array<{ id: string; title: string }>>;
+  contentRuleRows: Array<{
+    id?: string;
+    selector_type: 'all' | 'weekday';
+    selector_value: 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun' | null;
+    list_id: string;
+    item_ids: string[];
+  }>;
   contentFocalTree: Array<{
     id: string;
     name: string;
@@ -84,6 +92,29 @@ interface EventDrawerProps {
     title: string,
     options: { listId: string; weekday: 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun' | null }
   ) => Promise<void> | void;
+  onAttachExistingSearchItem?: (
+    itemId: string,
+    options: { listId: string; weekday: 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun' | null }
+  ) => Promise<void> | void;
+  onCreateBlockTask?: (title: string) => Promise<void> | void;
+  onUpdateBlockTask?: (blockTaskId: string, updates: { title?: string; description?: string }) => Promise<void> | void;
+  onDeleteBlockTask?: (blockTaskId: string) => Promise<void> | void;
+  onAttachItemToBlockTask?: (blockTaskId: string, itemId: string) => Promise<void> | void;
+  onDetachItemFromBlockTask?: (blockTaskItemId: string) => Promise<void> | void;
+  onSubmitBlockTaskItemCompletion?: (
+    payload: {
+      blockTaskId: string;
+      blockTaskItemId: string;
+      itemId: string;
+      checked: boolean;
+      note: string;
+      followUpTasks: string[];
+      statusUpdate?: StatusDialogOption | null;
+    }
+  ) => Promise<void> | void;
+  getBlockTaskItemStatusOptions?: (
+    itemId: string
+  ) => Promise<{ statuses: StatusDialogOption[]; currentStatusKey: string | null; currentStatusLabel: string }>;
   occurrenceWeekday: 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun' | null;
   occurrenceItems: Array<{
     id: string;
@@ -92,6 +123,7 @@ interface EventDrawerProps {
     kind: 'task' | 'item';
     parentItemId?: string;
   }>;
+  occurrenceBlockTasks?: BlockTask[];
   onToggleOccurrenceItem: (
     entry: { id: string; title: string; completed: boolean; kind: 'task' | 'item'; parentItemId?: string },
     checked: boolean
@@ -155,6 +187,7 @@ export default function EventDrawer({
   onContentModeChange,
   contentListOptions,
   contentItemOptionsByList,
+  contentRuleRows,
   contentAll,
   contentByWeekday,
   includeRecurringTasks,
@@ -166,8 +199,17 @@ export default function EventDrawer({
   onContentWeekdayListChange,
   onContentWeekdayItemsChange,
   onCreateAndAttachSearchItem,
+  onAttachExistingSearchItem,
+  onCreateBlockTask,
+  onUpdateBlockTask,
+  onDeleteBlockTask,
+  onAttachItemToBlockTask,
+  onDetachItemFromBlockTask,
+  onSubmitBlockTaskItemCompletion,
+  getBlockTaskItemStatusOptions,
   occurrenceWeekday,
   occurrenceItems,
+  occurrenceBlockTasks = [],
   onToggleOccurrenceItem,
   onRequestOccurrenceStatusChange,
   onOpenOccurrenceItem,
@@ -251,10 +293,26 @@ export default function EventDrawer({
     itemId: string;
     itemTitle: string;
   };
+  type BlockTaskAttachOption = {
+    listId: string;
+    listName: string;
+    itemId: string;
+    itemTitle: string;
+  };
   const [attachSearch, setAttachSearch] = useState('');
   const [activeWeekday, setActiveWeekday] = useState<'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun'>('mon');
   const [recurrenceExpanded, setRecurrenceExpanded] = useState(false);
   const [draftTitle, setDraftTitle] = useState('');
+  const [blockTaskDraft, setBlockTaskDraft] = useState('');
+  const [blockTaskTitleDrafts, setBlockTaskTitleDrafts] = useState<Record<string, string>>({});
+  const [openBlockTaskAttachId, setOpenBlockTaskAttachId] = useState<string | null>(null);
+  const [blockTaskAttachQuery, setBlockTaskAttachQuery] = useState('');
+  const [openBlockTaskCompletionId, setOpenBlockTaskCompletionId] = useState<string | null>(null);
+  const [blockTaskCompletionNote, setBlockTaskCompletionNote] = useState('');
+  const [blockTaskCompletionTasks, setBlockTaskCompletionTasks] = useState('');
+  const [blockTaskCompletionStatuses, setBlockTaskCompletionStatuses] = useState<StatusDialogOption[]>([]);
+  const [blockTaskCompletionSelectedStatusId, setBlockTaskCompletionSelectedStatusId] = useState('');
+  const [blockTaskCompletionStatusLoading, setBlockTaskCompletionStatusLoading] = useState(false);
   const [openDraftAssignId, setOpenDraftAssignId] = useState<string | null>(null);
   const [optimizePrompt, setOptimizePrompt] = useState('');
   const [optimizePromptOpen, setOptimizePromptOpen] = useState(false);
@@ -315,6 +373,10 @@ export default function EventDrawer({
       setRecurrenceExpanded(false);
     }
   }, [recurrenceEnabled]);
+
+  useEffect(() => {
+    setBlockTaskTitleDrafts(Object.fromEntries(occurrenceBlockTasks.map((task) => [task.id, task.title])));
+  }, [occurrenceBlockTasks]);
   const filterItemsForList = (listId: string): Array<{ id: string; title: string }> => {
     const source = contentItemOptionsByList[listId] || [];
     const query = attachSearch.trim();
@@ -325,61 +387,79 @@ export default function EventDrawer({
   };
 
   const attachedItemsRows = useMemo(() => {
-    if ((occurrenceItems || []).length > 0) {
-      return occurrenceItems.map((entry) => ({
+    const byListId = new Map(contentListOptions.map((entry) => [entry.id, entry.name]));
+    const scopedRules =
+      contentMode === 'all'
+        ? (contentRuleRows || []).filter((rule) => rule.selector_type === 'all')
+        : (contentRuleRows || []).filter(
+            (rule) => rule.selector_type === 'weekday' && rule.selector_value === activeWeekday
+          );
+
+    const rowsByKey = new Map<string, {
+      itemId: string;
+      listId: string;
+      listName: string;
+      title: string;
+      removable: boolean;
+      completed: boolean;
+      kind: 'item' | 'task';
+      parentItemId?: string;
+    }>();
+
+    scopedRules.forEach((rule) => {
+      const listId = rule.list_id;
+      if (!listId || !(rule.item_ids || []).length) return;
+      const listName = byListId.get(listId) || 'List';
+      const source = contentItemOptionsByList[listId] || [];
+      const itemById = new Map(source.map((entry) => [entry.id, entry.title]));
+      (rule.item_ids || []).forEach((itemId) => {
+        rowsByKey.set(`item:${itemId}`, {
+          itemId,
+          listId,
+          listName,
+          title: itemById.get(itemId) || 'Item',
+          removable: true,
+          completed: false,
+          kind: 'item',
+          parentItemId: undefined
+        });
+      });
+    });
+
+    (occurrenceItems || []).forEach((entry) => {
+      const key = `${entry.kind}:${entry.id}`;
+      const existing = rowsByKey.get(key);
+      rowsByKey.set(key, {
         itemId: entry.id,
-        listId: '',
+        listId: existing?.listId || '',
         listName:
-          entry.kind === 'task'
+          existing?.listName ||
+          (entry.kind === 'task'
             ? entry.parentItemId
               ? parentItemTitleById?.[entry.parentItemId] || 'Task'
               : 'Task'
-            : 'Item',
-        title: entry.title,
-        removable: entry.kind === 'item',
-        completed: entry.completed,
+            : 'Attached'),
+        title: entry.title || existing?.title || 'Item',
+        removable: entry.kind === 'item' ? existing?.removable ?? false : false,
+        completed: Boolean(entry.completed),
         kind: entry.kind,
         parentItemId: entry.parentItemId
-      }));
-    }
-
-    const byListId = new Map(contentListOptions.map((entry) => [entry.id, entry.name]));
-    const currentSelection =
-      contentMode === 'all'
-        ? { listId: contentAll.listId, itemIds: contentAll.itemIds || [] }
-        : contentByWeekday[activeWeekday] || { listId: '', itemIds: [] };
-
-    if (!currentSelection.listId || !currentSelection.itemIds?.length) {
-      const fallbackRows = (occurrenceItems || [])
-        .filter((entry) => entry.kind === 'item')
-        .map((entry) => ({
-          itemId: entry.id,
-          listId: '',
-          listName: 'Attached',
-          title: entry.title,
-          removable: false,
-          completed: entry.completed,
-          kind: entry.kind,
-          parentItemId: entry.parentItemId
-        }));
-      return fallbackRows;
-    }
-    const listId = currentSelection.listId;
-    const listName = byListId.get(listId) || 'List';
-    const source = contentItemOptionsByList[listId] || [];
-    const itemById = new Map(source.map((entry) => [entry.id, entry.title]));
-
-    return currentSelection.itemIds.map((itemId) => ({
-      itemId,
-      listId,
-      listName,
-      title: itemById.get(itemId) || 'Item',
-      removable: true,
-      completed: false,
-      kind: 'item' as const,
-      parentItemId: undefined
-    }));
-  }, [activeWeekday, contentAll.itemIds, contentAll.listId, contentByWeekday, contentItemOptionsByList, contentListOptions, contentMode, occurrenceItems, parentItemTitleById]);
+      });
+    });
+    const nestedItemIds = new Set(
+      (occurrenceBlockTasks || []).flatMap((task) => task.linkedItems.map((linked) => linked.itemId))
+    );
+    return Array.from(rowsByKey.values()).filter((row) => row.kind !== 'item' || !nestedItemIds.has(row.itemId));
+  }, [
+    activeWeekday,
+    contentItemOptionsByList,
+    contentListOptions,
+    contentMode,
+    contentRuleRows,
+    occurrenceBlockTasks,
+    occurrenceItems,
+    parentItemTitleById
+  ]);
 
   const inferredAttachListId = useMemo(() => {
     const attachedListIds = [...new Set(attachedItemsRows.map((row) => row.listId).filter(Boolean))];
@@ -395,6 +475,31 @@ export default function EventDrawer({
     contentListOptions[0]?.id ||
     '';
   const activeAttachListName = listNameById.get(activeAttachListId) || contentListOptions[0]?.name || 'List';
+
+  const blockTaskAttachOptions = useMemo<BlockTaskAttachOption[]>(() => {
+    const rows: BlockTaskAttachOption[] = [];
+    for (const list of contentListOptions) {
+      const items = contentItemOptionsByList[list.id] || [];
+      for (const item of items) {
+        rows.push({
+          listId: list.id,
+          listName: list.name,
+          itemId: item.id,
+          itemTitle: item.title
+        });
+      }
+    }
+    const query = blockTaskAttachQuery.trim();
+    if (!query) return rows.slice(0, 12);
+    return rows
+      .filter((row) => fuzzyTokenMatch(query, row.itemTitle) || fuzzyTokenMatch(query, row.listName))
+      .sort(
+        (a, b) =>
+          Math.max(fuzzyScore(query, b.itemTitle), fuzzyScore(query, b.listName)) -
+          Math.max(fuzzyScore(query, a.itemTitle), fuzzyScore(query, a.listName))
+      )
+      .slice(0, 20);
+  }, [blockTaskAttachQuery, contentItemOptionsByList, contentListOptions]);
 
   const slashAttachOptions = useMemo<SlashAttachOption[]>(() => {
     const rows: SlashAttachOption[] = [];
@@ -452,6 +557,15 @@ export default function EventDrawer({
     setSlashTokenStart(null);
   };
 
+  const commitBlockTaskTitle = async (task: BlockTask): Promise<void> => {
+    const nextTitle = (blockTaskTitleDrafts[task.id] ?? task.title).trim();
+    if (!nextTitle || nextTitle === task.title) {
+      setBlockTaskTitleDrafts((prev) => ({ ...prev, [task.id]: task.title }));
+      return;
+    }
+    await onUpdateBlockTask?.(task.id, { title: nextTitle });
+  };
+
   const applySlashAttach = async (row: SlashAttachOption): Promise<void> => {
     if (row.kind === 'create') {
       if (!row.itemTitle.trim() || !row.listId) return;
@@ -462,7 +576,12 @@ export default function EventDrawer({
       closeSlashAttach();
       return;
     }
-    if (contentMode === 'all') {
+    if (onAttachExistingSearchItem) {
+      await onAttachExistingSearchItem(row.itemId, {
+        listId: row.listId,
+        weekday: contentMode === 'weekday' ? activeWeekday : null
+      });
+    } else if (contentMode === 'all') {
       if (contentAll.listId !== row.listId) {
         onContentAllListChange(row.listId);
         onContentAllItemsChange([row.itemId]);
@@ -813,81 +932,343 @@ export default function EventDrawer({
         </section>
 
         <section className="calendar-event-task-link-block">
+          {onCreateBlockTask ? (
+            <form
+              className="calendar-event-block-task-create"
+              onSubmit={(event) => {
+                event.preventDefault();
+                const value = blockTaskDraft.trim();
+                if (!value) return;
+                void onCreateBlockTask(value);
+                setBlockTaskDraft('');
+              }}
+            >
+              <input
+                type="text"
+                value={blockTaskDraft}
+                onChange={(event) => setBlockTaskDraft(event.target.value)}
+                className="calendar-event-list-picker-search"
+                placeholder="Add block task"
+              />
+              <button type="submit" className="calendar-event-link-tasks-btn">
+                Add
+              </button>
+            </form>
+          ) : null}
           <div className="calendar-event-task-link-row">
             <div className="calendar-event-attach-inline">
-              {attachedItemsRows.length === 0 ? (
+              {occurrenceBlockTasks.length === 0 && attachedItemsRows.length === 0 ? (
                 <span className="calendar-event-attach-empty">no items attached</span>
               ) : (
-                attachedItemsRows.map((row, index) => (
-                  <div key={`${row.listId || 'attached'}:${row.itemId}:${index}`} className="calendar-event-attach-row-wrap">
-                    <div className="calendar-event-attach-row">
-                      <span className="calendar-event-attach-caret placeholder" aria-hidden="true" />
-                      <input
-                        type="checkbox"
-                        className="calendar-event-attach-check"
-                        checked={Boolean(row.completed)}
-                        onChange={(event) => {
-                          const entry = {
-                            id: row.itemId,
-                            title: row.title,
-                            completed: Boolean(row.completed),
-                            kind: row.kind,
-                            parentItemId: row.parentItemId
-                          };
-                          if (onRequestOccurrenceStatusChange) {
-                            onRequestOccurrenceStatusChange(entry);
-                            return;
-                          }
-                          onToggleOccurrenceItem(entry, event.target.checked);
-                        }}
-                      />
-                      <button
-                        type="button"
-                        className={`calendar-event-attach-title ${row.completed ? 'completed' : ''}`.trim()}
-                        onClick={() =>
-                          onOpenOccurrenceItem?.({
-                            id: row.itemId,
-                            title: row.title,
-                            completed: Boolean(row.completed),
-                            kind: row.kind,
-                            parentItemId: row.parentItemId
-                          })
-                        }
-                      >
-                        {row.title}
-                      </button>
-                      <span className="calendar-event-attach-listname">{row.listName}</span>
-                      {row.removable !== false && row.kind === 'item' && (
-                        <button
-                          type="button"
-                          className="calendar-event-attach-remove"
-                          onClick={() => {
-                            if (contentMode === 'all') {
-                              onContentAllItemsChange((contentAll.itemIds || []).filter((entry) => entry !== row.itemId));
-                              return;
+                <>
+                  {occurrenceBlockTasks.map((task) => (
+                    <div key={task.id} className="calendar-event-block-task">
+                      <div className="calendar-event-block-task-head">
+                        <span className="calendar-event-block-task-kicker">Block task</span>
+                        <div className="calendar-event-block-task-title-row">
+                          <input
+                            type="text"
+                            value={blockTaskTitleDrafts[task.id] ?? task.title}
+                            onChange={(event) =>
+                              setBlockTaskTitleDrafts((prev) => ({ ...prev, [task.id]: event.target.value }))
                             }
-                            const weekdayRow = contentByWeekday[activeWeekday];
-                            const next = (weekdayRow?.itemIds || []).filter((entry) => entry !== row.itemId);
-                            onContentWeekdayItemsChange(activeWeekday, next);
-                          }}
-                          aria-label="Remove item"
-                        >
-                          −
-                        </button>
-                      )}
-                      {recurrenceEnabled && includeRecurringTasks && row.kind === 'item' && (
-                        <button
-                          type="button"
-                          className={`calendar-switch calendar-switch-inline ${repeatTasksByItemId[row.itemId] === false ? 'off' : 'on'}`.trim()}
-                          aria-label={`Repeat tasks for ${row.title} ${(repeatTasksByItemId[row.itemId] === false) ? 'off' : 'on'}`}
-                          onClick={() => onRepeatTasksForItemChange(row.itemId, repeatTasksByItemId[row.itemId] === false)}
-                        >
-                          <span className="calendar-switch-thumb" />
-                        </button>
+                            onBlur={() => void commitBlockTaskTitle(task)}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
+                                void commitBlockTaskTitle(task);
+                              }
+                              if (event.key === 'Escape') {
+                                event.preventDefault();
+                                setBlockTaskTitleDrafts((prev) => ({ ...prev, [task.id]: task.title }));
+                              }
+                            }}
+                            className="calendar-event-block-task-title-input"
+                          />
+                          {onDeleteBlockTask ? (
+                            <button
+                              type="button"
+                              className="calendar-event-block-task-delete"
+                              onClick={() => void onDeleteBlockTask(task.id)}
+                              aria-label="Delete block task"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          ) : null}
+                        </div>
+                        {task.description ? <span>{task.description}</span> : null}
+                      </div>
+                      <div className="calendar-event-block-task-actions">
+                        {onAttachItemToBlockTask ? (
+                          <button
+                            type="button"
+                            className="calendar-event-block-task-attach-btn"
+                            onClick={() => {
+                              setOpenBlockTaskAttachId((prev) => (prev === task.id ? null : task.id));
+                              setBlockTaskAttachQuery('');
+                            }}
+                            aria-label="Attach item to block task"
+                          >
+                            <Plus size={14} />
+                          </button>
+                        ) : null}
+                      </div>
+                      {openBlockTaskAttachId === task.id && onAttachItemToBlockTask ? (
+                        <div className="calendar-event-block-task-attach-menu">
+                          <input
+                            type="text"
+                            value={blockTaskAttachQuery}
+                            onChange={(event) => setBlockTaskAttachQuery(event.target.value)}
+                            className="calendar-event-list-picker-search"
+                            placeholder="Attach item to this block task"
+                          />
+                          <div className="calendar-event-block-task-attach-results">
+                            {blockTaskAttachOptions
+                              .filter((row) => !task.linkedItems.some((linked) => linked.itemId === row.itemId))
+                              .map((row) => (
+                                <button
+                                  key={`${task.id}:${row.listId}:${row.itemId}`}
+                                  type="button"
+                                  className="calendar-event-block-task-attach-result"
+                                  onClick={() => {
+                                    void onAttachItemToBlockTask(task.id, row.itemId);
+                                    setOpenBlockTaskAttachId(null);
+                                    setBlockTaskAttachQuery('');
+                                  }}
+                                >
+                                  <span className="calendar-event-block-task-attach-copy">
+                                    <strong>{row.itemTitle}</strong>
+                                    <small>{row.listName}</small>
+                                  </span>
+                                  <Plus size={12} />
+                                </button>
+                              ))}
+                          </div>
+                        </div>
+                      ) : null}
+                      {task.linkedItems.length > 0 ? (
+                        <div className="calendar-event-block-task-items">
+                          {task.linkedItems.map((linked) => (
+                            <div key={linked.blockTaskItemId} className="calendar-event-attach-row block-task-child">
+                              <span className="calendar-event-attach-caret placeholder" aria-hidden="true" />
+                              <input
+                                type="checkbox"
+                                className="calendar-event-attach-check"
+                                checked={Boolean(linked.completedInContext)}
+                                onChange={(event) => {
+                                  if (!event.target.checked) {
+                                    void onSubmitBlockTaskItemCompletion?.({
+                                      blockTaskId: task.id,
+                                      blockTaskItemId: linked.blockTaskItemId,
+                                      itemId: linked.itemId,
+                                      checked: false,
+                                      note: '',
+                                      followUpTasks: []
+                                    });
+                                    return;
+                                  }
+                                  setOpenBlockTaskCompletionId(linked.blockTaskItemId);
+                                  setBlockTaskCompletionNote('');
+                                  setBlockTaskCompletionTasks('');
+                                  setBlockTaskCompletionStatuses([]);
+                                  setBlockTaskCompletionSelectedStatusId('');
+                                  if (getBlockTaskItemStatusOptions) {
+                                    setBlockTaskCompletionStatusLoading(true);
+                                    void getBlockTaskItemStatusOptions(linked.itemId)
+                                      .then((result) => {
+                                        setBlockTaskCompletionStatuses(result.statuses || []);
+                                        setBlockTaskCompletionSelectedStatusId('');
+                                      })
+                                      .finally(() => setBlockTaskCompletionStatusLoading(false));
+                                  }
+                                }}
+                              />
+                              <button
+                                type="button"
+                                className={`calendar-event-attach-title ${linked.completedInContext ? 'completed' : ''}`.trim()}
+                                onClick={() =>
+                                  onOpenOccurrenceItem?.({
+                                    id: linked.itemId,
+                                    title: linked.title,
+                                    completed: Boolean(linked.completedInContext),
+                                    kind: 'item'
+                                  })
+                                }
+                              >
+                                {linked.title}
+                              </button>
+                              {onDetachItemFromBlockTask ? (
+                                <button
+                                  type="button"
+                                  className="calendar-event-attach-remove"
+                                  onClick={() => void onDetachItemFromBlockTask(linked.blockTaskItemId)}
+                                  aria-label="Remove nested item"
+                                >
+                                  −
+                                </button>
+                              ) : null}
+                            </div>
+                          ))}
+                          {task.linkedItems.map((linked) =>
+                            openBlockTaskCompletionId === linked.blockTaskItemId ? (
+                              <form
+                                key={`${linked.blockTaskItemId}:completion`}
+                                className="calendar-event-block-task-completion"
+                                onSubmit={(event) => {
+                                  event.preventDefault();
+                                  const followUpTasks = blockTaskCompletionTasks
+                                    .split('\n')
+                                    .map((entry) => entry.trim())
+                                    .filter(Boolean);
+                                  void onSubmitBlockTaskItemCompletion?.({
+                                    blockTaskId: task.id,
+                                    blockTaskItemId: linked.blockTaskItemId,
+                                    itemId: linked.itemId,
+                                    checked: true,
+                                    note: blockTaskCompletionNote.trim(),
+                                    followUpTasks,
+                                    statusUpdate:
+                                      blockTaskCompletionStatuses.find((status) => status.id === blockTaskCompletionSelectedStatusId) ||
+                                      blockTaskCompletionStatuses.find((status) => status.key === blockTaskCompletionSelectedStatusId) ||
+                                      null
+                                  });
+                                  setOpenBlockTaskCompletionId(null);
+                                  setBlockTaskCompletionNote('');
+                                  setBlockTaskCompletionTasks('');
+                                  setBlockTaskCompletionStatuses([]);
+                                  setBlockTaskCompletionSelectedStatusId('');
+                                }}
+                              >
+                                <input
+                                  type="text"
+                                  value={blockTaskCompletionNote}
+                                  onChange={(event) => setBlockTaskCompletionNote(event.target.value)}
+                                  className="calendar-event-list-picker-search"
+                                  placeholder="Completion note"
+                                  autoFocus
+                                />
+                                <textarea
+                                  value={blockTaskCompletionTasks}
+                                  onChange={(event) => setBlockTaskCompletionTasks(event.target.value)}
+                                  className="calendar-event-description-input calendar-event-block-task-completion-tasks"
+                                  placeholder="Follow-up tasks, one per line"
+                                  rows={3}
+                                />
+                                <label className="calendar-event-block-task-status-branch">
+                                  <span>Optional status update</span>
+                                  <select
+                                    value={blockTaskCompletionSelectedStatusId}
+                                    onChange={(event) => setBlockTaskCompletionSelectedStatusId(event.target.value)}
+                                    disabled={blockTaskCompletionStatusLoading || blockTaskCompletionStatuses.length === 0}
+                                  >
+                                    <option value="">
+                                      {blockTaskCompletionStatusLoading ? 'Loading statuses…' : 'Keep current status'}
+                                    </option>
+                                    {blockTaskCompletionStatuses.map((status) => (
+                                      <option key={status.id || status.key} value={status.id || status.key}>
+                                        {status.name}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </label>
+                                <div className="calendar-event-block-task-completion-actions">
+                                  <button
+                                    type="button"
+                                    className="calendar-event-secondary-btn block-task-inline-cancel"
+                                    onClick={() => {
+                                      setOpenBlockTaskCompletionId(null);
+                                      setBlockTaskCompletionNote('');
+                                      setBlockTaskCompletionTasks('');
+                                      setBlockTaskCompletionStatuses([]);
+                                      setBlockTaskCompletionSelectedStatusId('');
+                                    }}
+                                  >
+                                    Cancel
+                                  </button>
+                                  <button type="submit" className="calendar-event-link-tasks-btn">
+                                    Save
+                                  </button>
+                                </div>
+                              </form>
+                            ) : null
+                          )}
+                        </div>
+                      ) : (
+                        <span className="calendar-event-block-task-empty">no linked items yet</span>
                       )}
                     </div>
-                  </div>
-                ))
+                  ))}
+                  {attachedItemsRows.map((row, index) => (
+                    <div key={`${row.listId || 'attached'}:${row.itemId}:${index}`} className="calendar-event-attach-row-wrap">
+                      <div className="calendar-event-attach-row">
+                        <span className="calendar-event-attach-caret placeholder" aria-hidden="true" />
+                        <input
+                          type="checkbox"
+                          className="calendar-event-attach-check"
+                          checked={Boolean(row.completed)}
+                          onChange={(event) => {
+                            const entry = {
+                              id: row.itemId,
+                              title: row.title,
+                              completed: Boolean(row.completed),
+                              kind: row.kind,
+                              parentItemId: row.parentItemId
+                            };
+                            if (onRequestOccurrenceStatusChange) {
+                              onRequestOccurrenceStatusChange(entry);
+                              return;
+                            }
+                            onToggleOccurrenceItem(entry, event.target.checked);
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className={`calendar-event-attach-title ${row.completed ? 'completed' : ''}`.trim()}
+                          onClick={() =>
+                            onOpenOccurrenceItem?.({
+                              id: row.itemId,
+                              title: row.title,
+                              completed: Boolean(row.completed),
+                              kind: row.kind,
+                              parentItemId: row.parentItemId
+                            })
+                          }
+                        >
+                          {row.title}
+                        </button>
+                        <span className="calendar-event-attach-listname">{row.listName}</span>
+                        {row.removable !== false && row.kind === 'item' && (
+                          <button
+                            type="button"
+                            className="calendar-event-attach-remove"
+                            onClick={() => {
+                              if (contentMode === 'all') {
+                                onContentAllItemsChange((contentAll.itemIds || []).filter((entry) => entry !== row.itemId));
+                                return;
+                              }
+                              const weekdayRow = contentByWeekday[activeWeekday];
+                              const next = (weekdayRow?.itemIds || []).filter((entry) => entry !== row.itemId);
+                              onContentWeekdayItemsChange(activeWeekday, next);
+                            }}
+                            aria-label="Remove item"
+                          >
+                            −
+                          </button>
+                        )}
+                        {recurrenceEnabled && includeRecurringTasks && row.kind === 'item' && (
+                          <button
+                            type="button"
+                            className={`calendar-switch calendar-switch-inline ${repeatTasksByItemId[row.itemId] === false ? 'off' : 'on'}`.trim()}
+                            aria-label={`Repeat tasks for ${row.title} ${(repeatTasksByItemId[row.itemId] === false) ? 'off' : 'on'}`}
+                            onClick={() => onRepeatTasksForItemChange(row.itemId, repeatTasksByItemId[row.itemId] === false)}
+                          >
+                            <span className="calendar-switch-thumb" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </>
               )}
             </div>
           </div>

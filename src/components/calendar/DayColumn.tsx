@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
-import type { CalendarEvent, HoursWindow } from './WeekCalendar';
+import type { CalendarEvent, CalendarViewMode, HoursWindow } from './WeekCalendar';
 import {
   clamp,
   dayDateAtMinutes,
@@ -20,6 +20,7 @@ interface DayColumnProps {
   dayIndex: number;
   maxForwardDays: number;
   events: CalendarEvent[];
+  viewMode?: CalendarViewMode;
   hours: HoursWindow;
   pixelsPerMinute: number;
   onEventClick?: (event: CalendarEvent) => void;
@@ -109,6 +110,7 @@ export default function DayColumn({
   dayIndex,
   maxForwardDays,
   events,
+  viewMode = 'week',
   hours,
   pixelsPerMinute,
   onEventClick,
@@ -581,16 +583,24 @@ export default function DayColumn({
 
       <div className="week-column-events">
         {eventLayouts.map((layout) => {
+          const eventStart = normalizeToDate(layout.event.start);
+          const eventEnd = normalizeToDate(layout.event.end);
+          const isCurrentTimeBlock =
+            isTodayColumn &&
+            eventStart.getTime() <= Date.now() &&
+            eventEnd.getTime() >= Date.now();
           return (
             <EventCard
               key={layout.event.id}
               event={layout.event}
+              viewMode={viewMode}
               top={layout.top}
               height={layout.height}
               leftPct={layout.leftPct}
               widthPct={layout.widthPct}
               isActive={(layout.event.sourceEventId ?? layout.event.id) === resizeDraft?.eventId}
               isOpen={selectedEventId === (layout.event.sourceEventId ?? layout.event.id)}
+              isCurrentTimeBlock={isCurrentTimeBlock}
               onClick={() => {
                 if (suppressNextEventClick) {
                   setSuppressNextEventClick(false);

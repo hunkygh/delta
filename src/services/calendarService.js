@@ -50,6 +50,12 @@ const isMissingItemOccurrencesTableError = (error) =>
 
 const isMissingActionOccurrencesTableError = (error) =>
   isMissingTableOrSchemaCacheError(error, 'action_occurrences');
+const isMissingBlockTasksTableError = (error) =>
+  isMissingTableOrSchemaCacheError(error, 'block_tasks');
+const isMissingBlockTaskItemsTableError = (error) =>
+  isMissingTableOrSchemaCacheError(error, 'block_task_items');
+const isMissingBlockTaskItemOccurrencesTableError = (error) =>
+  isMissingTableOrSchemaCacheError(error, 'block_task_item_occurrences');
 
 const WEEKDAY_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 
@@ -141,6 +147,36 @@ const cloneRuleForTimeBlock = (rule, timeBlockId, userId) => ({
   item_ids: Array.isArray(rule.item_ids) ? [...rule.item_ids] : []
 });
 
+const rowToBlockTask = (row) => ({
+  id: row.id,
+  timeBlockId: row.time_block_id,
+  title: row.title,
+  description: row.description || '',
+  sortOrder: row.sort_order ?? 0,
+  isCompleted: Boolean(row.is_completed),
+  linkedItems: []
+});
+
+const rowToBlockTaskItem = (row) => ({
+  id: row.id,
+  blockTaskItemId: row.id,
+  itemId: row.item_id,
+  title: row.item_title || row.title || '',
+  completedInContext: (row.completion_state || 'pending') === 'completed',
+  completionNote: row.completion_note || null,
+  completedAt: row.completed_at || null,
+  sortOrder: row.sort_order ?? 0
+});
+
+const normalizeLinkedEntityId = (value) => {
+  if (!value) return '';
+  const raw = String(value).trim();
+  if (!raw) return '';
+  if (!raw.includes('|')) return raw;
+  const parts = raw.split('|').map((entry) => entry.trim()).filter(Boolean);
+  return parts[parts.length - 1] || raw;
+};
+
 const copyContentRulesToTimeBlock = async (sourceTimeBlockId, targetTimeBlockId, userId) => {
   if (!sourceTimeBlockId || !targetTimeBlockId || sourceTimeBlockId === targetTimeBlockId) return;
   const { data, error } = await supabase
@@ -164,6 +200,77 @@ const copyContentRulesToTimeBlock = async (sourceTimeBlockId, targetTimeBlockId,
         return;
       }
       throw upsertError;
+    }
+  }
+};
+
+const copyBlockTasksToTimeBlock = async (sourceTimeBlockId, targetTimeBlockId, userId) => {
+  if (!sourceTimeBlockId || !targetTimeBlockId || sourceTimeBlockId === targetTimeBlockId) return;
+  const { data: taskRows, error: taskError } = await supabase
+    .from('block_tasks')
+    .select('*')
+    .eq('time_block_id', sourceTimeBlockId)
+    .order('sort_order', { ascending: true });
+
+  if (taskError) {
+    if (isMissingBlockTasksTableError(taskError)) return;
+    throw taskError;
+  }
+
+  const sourceTasks = taskRows || [];
+  if (sourceTasks.length === 0) return;
+
+  const sourceTaskIds = sourceTasks.map((row) => row.id);
+  const { data: taskItemRows, error: taskItemError } = await supabase
+    .from('block_task_items')
+    .select('*')
+    .in('block_task_id', sourceTaskIds)
+    .order('sort_order', { ascending: true });
+
+  if (taskItemError) {
+    if (isMissingBlockTaskItemsTableError(taskItemError)) return;
+    throw taskItemError;
+  }
+
+  const taskIdMap = new Map();
+  for (const taskRow of sourceTasks) {
+    const clonedTask = {
+      user_id: userId,
+      time_block_id: targetTimeBlockId,
+      title: taskRow.title,
+      description: taskRow.description || '',
+      sort_order: taskRow.sort_order ?? 0,
+      is_completed: Boolean(taskRow.is_completed),
+      updated_at: new Date().toISOString()
+    };
+    const { data: savedTask, error: saveTaskError } = await supabase
+      .from('block_tasks')
+      .insert(clonedTask)
+      .select('*')
+      .single();
+    if (saveTaskError) {
+      if (isMissingBlockTasksTableError(saveTaskError)) return;
+      throw saveTaskError;
+    }
+    taskIdMap.set(taskRow.id, savedTask.id);
+  }
+
+  for (const taskItemRow of taskItemRows || []) {
+    const targetBlockTaskId = taskIdMap.get(taskItemRow.block_task_id);
+    if (!targetBlockTaskId) continue;
+    const clonedTaskItem = {
+      user_id: userId,
+      block_task_id: targetBlockTaskId,
+      item_id: taskItemRow.item_id,
+      sort_order: taskItemRow.sort_order ?? 0,
+      updated_at: new Date().toISOString()
+    };
+    const { error: saveTaskItemError } = await supabase
+      .from('block_task_items')
+      .upsert(clonedTaskItem, { onConflict: 'block_task_id,item_id' });
+    if (saveTaskItemError) {
+      if (isMissingBlockTaskItemsTableError(saveTaskItemError)) return;
+      throw saveTaskItemError;
     }
   }
 };
@@ -605,6 +712,7 @@ export const calendarService = {
       const saved = await this.upsertTimeBlock(userId, eventToCreate);
       await this.syncTimeBlockLinks(userId, saved.id, saved.tags || [], saved);
       await copyContentRulesToTimeBlock(baseEvent.id, saved.id, userId);
+      await copyBlockTasksToTimeBlock(baseEvent.id, saved.id, userId);
       createdEvents.push(saved);
       return saved;
     };
@@ -682,6 +790,157 @@ export const calendarService = {
   async deleteTimeBlock(userId, eventId) {
     const { error } = await supabase.from('time_blocks').delete().eq('id', eventId).eq('user_id', userId);
     if (error) throw error;
+  },
+
+  async getBlockTasks(timeBlockId) {
+    if (!timeBlockId) {
+      throw new Error('timeBlockId is required');
+    }
+    const { data, error } = await supabase
+      .from('block_tasks')
+      .select('*')
+      .eq('time_block_id', timeBlockId)
+      .order('sort_order', { ascending: true });
+    if (error) {
+      if (isMissingBlockTasksTableError(error)) {
+        return [];
+      }
+      throw error;
+    }
+    return (data || []).map(rowToBlockTask);
+  },
+
+  async createBlockTask({ userId, timeBlockId, title, description = '', sortOrder = 0 }) {
+    if (!timeBlockId || !title?.trim()) {
+      throw new Error('timeBlockId and title are required');
+    }
+    const resolvedUserId = userId || (await getAuthedUserId());
+    const row = {
+      user_id: resolvedUserId,
+      time_block_id: timeBlockId,
+      title: title.trim(),
+      description,
+      sort_order: sortOrder,
+      is_completed: false
+    };
+    const { data, error } = await supabase.from('block_tasks').insert(row).select('*').single();
+    if (error) {
+      if (isMissingBlockTasksTableError(error)) {
+        throw new Error('Block tasks table does not exist. Run the latest migration.');
+      }
+      throw error;
+    }
+    return rowToBlockTask(data);
+  },
+
+  async updateBlockTask(blockTaskId, updates) {
+    if (!blockTaskId || !updates || typeof updates !== 'object') {
+      throw new Error('blockTaskId and updates are required');
+    }
+    const payload = {
+      ...(updates.title !== undefined ? { title: updates.title } : {}),
+      ...(updates.description !== undefined ? { description: updates.description } : {}),
+      ...(updates.sortOrder !== undefined ? { sort_order: updates.sortOrder } : {}),
+      ...(updates.isCompleted !== undefined ? { is_completed: updates.isCompleted } : {}),
+      updated_at: new Date().toISOString()
+    };
+    const { data, error } = await supabase
+      .from('block_tasks')
+      .update(payload)
+      .eq('id', blockTaskId)
+      .select('*')
+      .single();
+    if (error) {
+      if (isMissingBlockTasksTableError(error)) {
+        throw new Error('Block tasks table does not exist. Run the latest migration.');
+      }
+      throw error;
+    }
+    return rowToBlockTask(data);
+  },
+
+  async deleteBlockTask(blockTaskId) {
+    if (!blockTaskId) {
+      throw new Error('blockTaskId is required');
+    }
+    const { error } = await supabase.from('block_tasks').delete().eq('id', blockTaskId);
+    if (error) {
+      if (isMissingBlockTasksTableError(error)) {
+        throw new Error('Block tasks table does not exist. Run the latest migration.');
+      }
+      throw error;
+    }
+  },
+
+  async getBlockTaskItems(blockTaskIds) {
+    if (!Array.isArray(blockTaskIds) || blockTaskIds.length === 0) {
+      return [];
+    }
+    const { data, error } = await supabase
+      .from('block_task_items')
+      .select('id,block_task_id,item_id,sort_order,items:item_id(title)')
+      .in('block_task_id', blockTaskIds)
+      .order('sort_order', { ascending: true });
+    if (error) {
+      if (isMissingBlockTaskItemsTableError(error)) {
+        return [];
+      }
+      throw error;
+    }
+    return (data || []).map((row) =>
+      rowToBlockTaskItem({
+        ...row,
+        item_title: row.items?.title || ''
+      })
+    ).map((row, index) => ({
+      ...row,
+      blockTaskId: (data || [])[index]?.block_task_id
+    }));
+  },
+
+  async attachItemToBlockTask({ userId, blockTaskId, itemId, sortOrder = 0 }) {
+    if (!blockTaskId || !itemId) {
+      throw new Error('blockTaskId and itemId are required');
+    }
+    const resolvedUserId = userId || (await getAuthedUserId());
+    const row = {
+      user_id: resolvedUserId,
+      block_task_id: blockTaskId,
+      item_id: itemId,
+      sort_order: sortOrder,
+      updated_at: new Date().toISOString()
+    };
+    const { data, error } = await supabase
+      .from('block_task_items')
+      .upsert(row, { onConflict: 'block_task_id,item_id' })
+      .select('id,block_task_id,item_id,sort_order,items:item_id(title)')
+      .single();
+    if (error) {
+      if (isMissingBlockTaskItemsTableError(error)) {
+        throw new Error('Block task items table does not exist. Run the latest migration.');
+      }
+      throw error;
+    }
+    return {
+      ...rowToBlockTaskItem({
+        ...data,
+        item_title: data.items?.title || ''
+      }),
+      blockTaskId: data.block_task_id
+    };
+  },
+
+  async detachItemFromBlockTask(blockTaskItemId) {
+    if (!blockTaskItemId) {
+      throw new Error('blockTaskItemId is required');
+    }
+    const { error } = await supabase.from('block_task_items').delete().eq('id', blockTaskItemId);
+    if (error) {
+      if (isMissingBlockTaskItemsTableError(error)) {
+        throw new Error('Block task items table does not exist. Run the latest migration.');
+      }
+      throw error;
+    }
   },
 
   async getTimeBlockContentRules(timeBlockId) {
@@ -770,6 +1029,104 @@ export const calendarService = {
       }
       throw error;
     }
+  },
+
+  async repairTimeBlockContentRulesForItem(userId, itemId) {
+    if (!userId) {
+      throw new Error('userId is required');
+    }
+    const normalizedItemId = normalizeLinkedEntityId(itemId);
+    if (!normalizedItemId) {
+      throw new Error('itemId is required');
+    }
+
+    const { data: itemRow, error: itemError } = await supabase
+      .from('items')
+      .select('id,lane_id')
+      .eq('user_id', userId)
+      .eq('id', normalizedItemId)
+      .single();
+
+    if (itemError) throw itemError;
+    if (!itemRow?.lane_id) return { repaired: 0, removed: 0 };
+
+    const { data: candidateRules, error: rulesError } = await supabase
+      .from('time_block_content_rules')
+      .select('*')
+      .eq('user_id', userId)
+      .contains('item_ids', [normalizedItemId]);
+
+    if (rulesError) {
+      if (isMissingTimeBlockContentRulesTableError(rulesError)) {
+        return { repaired: 0, removed: 0 };
+      }
+      throw rulesError;
+    }
+
+    const staleRules = (candidateRules || []).filter((rule) => {
+      const itemIds = Array.isArray(rule.item_ids) ? rule.item_ids.map((entry) => normalizeLinkedEntityId(entry)) : [];
+      return itemIds.includes(normalizedItemId) && rule.list_id !== itemRow.lane_id;
+    });
+
+    let repaired = 0;
+    let removed = 0;
+
+    for (const rule of staleRules) {
+      const sourceIds = Array.isArray(rule.item_ids) ? rule.item_ids.map((entry) => normalizeLinkedEntityId(entry)).filter(Boolean) : [];
+      const remainingIds = sourceIds.filter((entry) => entry !== normalizedItemId);
+      const selectorValue = rule.selector_type === 'weekday' ? rule.selector_value || null : null;
+
+      let targetQuery = supabase
+        .from('time_block_content_rules')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('time_block_id', rule.time_block_id)
+        .eq('selector_type', rule.selector_type)
+        .eq('list_id', itemRow.lane_id);
+      targetQuery =
+        rule.selector_type === 'weekday'
+          ? targetQuery.eq('selector_value', selectorValue)
+          : targetQuery.is('selector_value', null);
+      const { data: resolvedTargetRule, error: targetError } = await targetQuery.maybeSingle();
+
+      if (targetError && targetError.code !== 'PGRST116') {
+        if (isMissingTimeBlockContentRulesTableError(targetError)) {
+          return { repaired, removed };
+        }
+        throw targetError;
+      }
+
+      const mergedTargetIds = [...new Set([...(resolvedTargetRule?.item_ids || []).map((entry) => normalizeLinkedEntityId(entry)).filter(Boolean), normalizedItemId])];
+
+      await this.upsertTimeBlockContentRule({
+        id: resolvedTargetRule?.id,
+        user_id: userId,
+        time_block_id: rule.time_block_id,
+        selector_type: rule.selector_type,
+        selector_value: selectorValue,
+        list_id: itemRow.lane_id,
+        item_ids: mergedTargetIds
+      });
+
+      repaired += 1;
+
+      if (remainingIds.length > 0) {
+        await this.upsertTimeBlockContentRule({
+          id: rule.id,
+          user_id: userId,
+          time_block_id: rule.time_block_id,
+          selector_type: rule.selector_type,
+          selector_value: selectorValue,
+          list_id: rule.list_id,
+          item_ids: remainingIds
+        });
+      } else {
+        await this.deleteTimeBlockContentRule(rule.id);
+        removed += 1;
+      }
+    }
+
+    return { repaired, removed };
   },
 
   async getOccurrenceCompletionRows({ timeBlockIds, rangeStartUtc, rangeEndUtc, itemIds }) {
@@ -1038,6 +1395,104 @@ export const calendarService = {
       throw error;
     }
     return data;
+  },
+
+  async setBlockTaskItemCompletion({
+    userId,
+    blockTaskItemId,
+    timeBlockId,
+    scheduledStartUtc,
+    scheduledEndUtc,
+    checked,
+    completionNote = null
+  }) {
+    if (!blockTaskItemId || !timeBlockId || !scheduledStartUtc || !scheduledEndUtc) {
+      throw new Error('blockTaskItemId, timeBlockId, scheduledStartUtc, and scheduledEndUtc are required');
+    }
+    const resolvedUserId = userId || (await getAuthedUserId());
+    const row = {
+      user_id: resolvedUserId,
+      block_task_item_id: blockTaskItemId,
+      time_block_id: timeBlockId,
+      scheduled_start: new Date(scheduledStartUtc).toISOString(),
+      scheduled_end: new Date(scheduledEndUtc).toISOString(),
+      completion_state: checked ? 'completed' : 'pending',
+      completion_note: completionNote,
+      completed_at: checked ? new Date().toISOString() : null,
+      updated_at: new Date().toISOString()
+    };
+
+    const { data, error } = await supabase
+      .from('block_task_item_occurrences')
+      .upsert(row, { onConflict: 'block_task_item_id,time_block_id,scheduled_start' })
+      .select('*')
+      .single();
+
+    if (error) {
+      if (isMissingBlockTaskItemOccurrencesTableError(error)) {
+        throw new Error('Block task item occurrences table does not exist. Run the latest migration.');
+      }
+      throw error;
+    }
+    return data;
+  },
+
+  async getBlockTaskItemCompletionStates({ timeBlockId, scheduledStartUtc, blockTaskItemIds }) {
+    if (!timeBlockId || !scheduledStartUtc || !Array.isArray(blockTaskItemIds)) {
+      throw new Error('timeBlockId, scheduledStartUtc, and blockTaskItemIds are required');
+    }
+    if (blockTaskItemIds.length === 0) {
+      return {};
+    }
+    const normalizedStart = new Date(scheduledStartUtc).toISOString();
+    const { data, error } = await supabase
+      .from('block_task_item_occurrences')
+      .select('block_task_item_id,completion_state,completion_note,completed_at')
+      .eq('time_block_id', timeBlockId)
+      .eq('scheduled_start', normalizedStart)
+      .in('block_task_item_id', blockTaskItemIds);
+    if (error) {
+      if (isMissingBlockTaskItemOccurrencesTableError(error)) {
+        return {};
+      }
+      throw error;
+    }
+    const stateMap = {};
+    for (const row of data || []) {
+      stateMap[row.block_task_item_id] = {
+        completionState: row.completion_state || 'pending',
+        completionNote: row.completion_note || null,
+        completedAt: row.completed_at || null
+      };
+    }
+    return stateMap;
+  },
+
+  async getBlockTasksWithItems({ timeBlockId, scheduledStartUtc = null }) {
+    const blockTasks = await this.getBlockTasks(timeBlockId);
+    if (blockTasks.length === 0) {
+      return [];
+    }
+    const taskItems = await this.getBlockTaskItems(blockTasks.map((task) => task.id));
+    const completionStates = scheduledStartUtc
+      ? await this.getBlockTaskItemCompletionStates({
+          timeBlockId,
+          scheduledStartUtc,
+          blockTaskItemIds: taskItems.map((row) => row.blockTaskItemId)
+        })
+      : {};
+
+    return blockTasks.map((task) => ({
+      ...task,
+      linkedItems: taskItems
+        .filter((row) => row.blockTaskId === task.id)
+        .map((row) => ({
+          ...row,
+          completedInContext: completionStates[row.blockTaskItemId]?.completionState === 'completed',
+          completionNote: completionStates[row.blockTaskItemId]?.completionNote || null,
+          completedAt: completionStates[row.blockTaskItemId]?.completedAt || null
+        }))
+    }));
   },
 
   async getOccurrenceItemCompletionStates({ timeBlockId, scheduledStartUtc, itemIds }) {

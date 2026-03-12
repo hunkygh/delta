@@ -91,7 +91,7 @@ export default function StatusSelect({
               }`.trim()}
               onClick={(event) => {
                 event.stopPropagation();
-                onChange?.(status);
+                onChange?.(status, rootRef.current?.getBoundingClientRect?.() || null);
                 setOpen(false);
               }}
             >
@@ -104,8 +104,9 @@ export default function StatusSelect({
               <button
                 type="button"
                 className="status-select-manage"
-                onClick={() => {
-                  onManageStatuses();
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onManageStatuses?.(rootRef.current?.getBoundingClientRect?.() || null);
                   setOpen(false);
                 }}
               >
