@@ -4,6 +4,7 @@ import {
   CalendarDays,
   ChevronLeft,
   ChevronRight,
+  Minus,
   Plus,
   SlidersHorizontal,
   X
@@ -129,6 +130,30 @@ interface DraftLinkedItem {
   listId: string;
 }
 
+interface DraftBlockTask extends BlockTask {
+  isDraft?: boolean;
+}
+
+interface PendingDrawerEventSelection {
+  event: Event;
+  occurrence?: {
+    instanceId: string;
+    scheduledStartUtc: string;
+    scheduledEndUtc: string;
+  };
+}
+
+interface CardQuickAddState {
+  timeBlockId: string;
+  occurrence: OccurrenceContext;
+  title: string;
+  entryType: 'block_task' | 'linked_item';
+  focalId: string;
+  listId: string;
+  saving: boolean;
+  error: string | null;
+}
+
 interface AttachTreeNodeLike {
   id?: string;
   name?: string;
@@ -177,6 +202,7 @@ export default function Calendar({
   const navigate = useNavigate();
   const [eventList, setEventList] = useState<Event[]>(events);
   const [calendarViewMode, setCalendarViewMode] = useState<CalendarViewMode>('week');
+  const [calendarZoom, setCalendarZoom] = useState(1);
   const [weekAnchorMode, setWeekAnchorMode] = useState<WeekAnchorMode>('today_second');
   const [weekStart, setWeekStart] = useState<Date>(() => getStartForMode(new Date(), 'today_second'));
   const [dayDate, setDayDate] = useState<Date>(() => {
@@ -199,6 +225,9 @@ export default function Calendar({
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
   const [isDrawerRendered, setIsDrawerRendered] = useState(false);
   const [isDrawerVisible, setIsDrawerVisible] = useState(false);
+  const [cardQuickAdd, setCardQuickAdd] = useState<CardQuickAddState | null>(null);
+  const [isCardQuickAddRendered, setIsCardQuickAddRendered] = useState(false);
+  const [isCardQuickAddVisible, setIsCardQuickAddVisible] = useState(false);
   const [isOptimizingBlock, setIsOptimizingBlock] = useState(false);
   const [optimizeError, setOptimizeError] = useState<string | null>(null);
   const [optimizeResult, setOptimizeResult] = useState<{ source?: string } | null>(null);
@@ -259,6 +288,7 @@ export default function Calendar({
   const [includeRecurringTasks, setIncludeRecurringTasks] = useState(true);
   const [repeatTasksByItemId, setRepeatTasksByItemId] = useState<Record<string, boolean>>({});
   const [draftLinkedItems, setDraftLinkedItems] = useState<DraftLinkedItem[]>([]);
+  const [draftBlockTasks, setDraftBlockTasks] = useState<DraftBlockTask[]>([]);
   const [createdContentItemsByList, setCreatedContentItemsByList] = useState<Record<string, ListItemOption[]>>({});
   const [formState, setFormState] = useState<{
     title: string;
@@ -294,6 +324,8 @@ export default function Calendar({
   const resizeAffectedIdsRef = useRef<string[]>([]);
   const focusEventHandledRef = useRef<string | null>(null);
   const closeModalTimerRef = useRef<number | null>(null);
+  const pendingDrawerSelectionRef = useRef<PendingDrawerEventSelection | null>(null);
+  const closeCardQuickAddTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     setWeekStart(getStartForMode(new Date(), weekAnchorMode));
@@ -320,6 +352,17 @@ export default function Calendar({
   }, []);
 
   useEffect(() => {
+    if (closeCardQuickAddTimerRef.current) {
+      return () => {
+        if (closeCardQuickAddTimerRef.current) {
+          window.clearTimeout(closeCardQuickAddTimerRef.current);
+        }
+      };
+    }
+    return undefined;
+  }, []);
+
+  useEffect(() => {
     if (isModalOpen) {
       setIsDrawerRendered(true);
       const frame = window.requestAnimationFrame(() => {
@@ -329,11 +372,34 @@ export default function Calendar({
     }
     setIsDrawerVisible(false);
     if (isDrawerRendered) {
-      const timer = window.setTimeout(() => setIsDrawerRendered(false), 180);
+      const timer = window.setTimeout(() => {
+        setIsDrawerRendered(false);
+        const pendingSelection = pendingDrawerSelectionRef.current;
+        if (pendingSelection) {
+          pendingDrawerSelectionRef.current = null;
+          openEditModal(pendingSelection.event, pendingSelection.occurrence);
+        }
+      }, 120);
       return () => window.clearTimeout(timer);
     }
     return undefined;
   }, [isModalOpen, isDrawerRendered]);
+
+  useEffect(() => {
+    if (cardQuickAdd) {
+      setIsCardQuickAddRendered(true);
+      const frame = window.requestAnimationFrame(() => {
+        setIsCardQuickAddVisible(true);
+      });
+      return () => window.cancelAnimationFrame(frame);
+    }
+    setIsCardQuickAddVisible(false);
+    if (isCardQuickAddRendered) {
+      const timer = window.setTimeout(() => setIsCardQuickAddRendered(false), 120);
+      return () => window.clearTimeout(timer);
+    }
+    return undefined;
+  }, [cardQuickAdd, isCardQuickAddRendered]);
 
   useEffect(() => {
     if (!initialFocusEventId || focusEventHandledRef.current === initialFocusEventId || eventList.length === 0) {
@@ -637,6 +703,21 @@ export default function Calendar({
     return focals.length > 0 ? focals : fallbackFocalTree;
   }, [attachTree, fallbackFocalTree]);
 
+  const focalIdByListId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const focal of contentFocalTree) {
+      for (const list of focal.lists) {
+        map.set(list.id, focal.id);
+      }
+    }
+    return map;
+  }, [contentFocalTree]);
+
+  const cardQuickAddLists = useMemo(() => {
+    if (!cardQuickAdd?.focalId) return [];
+    return contentFocalTree.find((focal) => focal.id === cardQuickAdd.focalId)?.lists || [];
+  }, [cardQuickAdd?.focalId, contentFocalTree]);
+
   const listIdByItemId = useMemo(() => {
     const map = new Map<string, string>();
     for (const list of listOptions) {
@@ -916,7 +997,8 @@ export default function Calendar({
       }),
     [resolvedBlockTasksByOccurrence, resolvedItemsByOccurrence, visibleEvents]
   );
-  const calendarPixelsPerMinute = calendarViewMode === 'day' ? 1.65 : 1;
+  const calendarPixelsPerMinute = (calendarViewMode === 'day' ? 1.65 : 1) * calendarZoom;
+  const zoomPercentLabel = `${Math.round(calendarZoom * 100)}%`;
 
   const occurrenceParentItemTitleById = useMemo(
     () =>
@@ -1131,9 +1213,17 @@ export default function Calendar({
 
   const handleAttachExistingSearchItem = async (
     itemId: string,
-    options: { listId: string; weekday: 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun' | null }
+    options: {
+      listId: string;
+      weekday: 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun' | null;
+      blockTaskId?: string | null;
+    }
   ): Promise<void> => {
     if (!editingEventId || !itemId || !options.listId) return;
+    if (options.blockTaskId) {
+      await handleAttachItemToBlockTask(options.blockTaskId, itemId);
+      return;
+    }
     const selectorType = options.weekday ? 'weekday' : 'all';
     const selectorValue = options.weekday ?? null;
     const existing = timeBlockContentRules[editingEventId] || [];
@@ -1230,8 +1320,23 @@ export default function Calendar({
     });
   };
 
-  const handleCreateBlockTask = async (title: string): Promise<void> => {
-    if (!user?.id || !editingEventId || !title.trim()) return;
+  const handleCreateBlockTask = async (title: string): Promise<BlockTask | void> => {
+    if (!title.trim()) return;
+    if (!editingEventId) {
+      const draftTask: DraftBlockTask = {
+        id: `draft-block-task:${crypto.randomUUID()}`,
+        timeBlockId: '__draft__',
+        title: title.trim(),
+        description: '',
+        sortOrder: draftBlockTasks.length,
+        isCompleted: false,
+        linkedItems: [],
+        isDraft: true
+      };
+      setDraftBlockTasks((prev) => [...prev, draftTask]);
+      return draftTask;
+    }
+    if (!user?.id) return;
     const created = await calendarService.createBlockTask({
       userId: user.id,
       timeBlockId: editingEventId,
@@ -1239,12 +1344,19 @@ export default function Calendar({
       sortOrder: activeOccurrenceBlockTasks.length
     });
     applyBlockTaskPatchToResolvedState(editingEventId, (tasks) => [...tasks, created]);
+    return created;
   };
 
   const handleUpdateBlockTask = async (
     blockTaskId: string,
     updates: { title?: string; description?: string }
   ): Promise<void> => {
+    if (!editingEventId) {
+      setDraftBlockTasks((prev) =>
+        prev.map((task) => (task.id === blockTaskId ? { ...task, ...updates } : task))
+      );
+      return;
+    }
     if (!editingEventId || !blockTaskId) return;
     const saved = await calendarService.updateBlockTask(blockTaskId, updates);
     applyBlockTaskPatchToResolvedState(editingEventId, (tasks) =>
@@ -1253,6 +1365,10 @@ export default function Calendar({
   };
 
   const handleDeleteBlockTask = async (blockTaskId: string): Promise<void> => {
+    if (!editingEventId) {
+      setDraftBlockTasks((prev) => prev.filter((task) => task.id !== blockTaskId));
+      return;
+    }
     if (!editingEventId || !blockTaskId) return;
     await calendarService.deleteBlockTask(blockTaskId);
     applyBlockTaskPatchToResolvedState(editingEventId, (tasks) => tasks.filter((task) => task.id !== blockTaskId));
@@ -1606,41 +1722,27 @@ export default function Calendar({
   };
 
   const handleCardAddItem = async (event: CalendarEvent): Promise<void> => {
-    if (!user?.id) return;
     const context = getOccurrenceContextForEvent(event);
     const matchingRule = getMatchingRuleForOccurrence(context.sourceEventId, context.weekday);
-    if (!matchingRule?.list_id) {
-      window.alert('Attach this time block to a list before adding items from the calendar view.');
-      return;
-    }
-    const title = window.prompt('New item title');
-    if (!title?.trim()) return;
+    const defaultListId = matchingRule?.list_id || contentFocalTree[0]?.lists[0]?.id || '';
+    const defaultFocalId = (defaultListId && focalIdByListId.get(defaultListId)) || contentFocalTree[0]?.id || '';
 
-    try {
-      const created = await focalBoardService.createItem(matchingRule.list_id, user.id, title.trim(), null);
-      const nextItemIds = [...new Set([...(matchingRule.item_ids || []), created.id])];
-      await persistContentRuleForTimeBlock({
-        timeBlockId: context.sourceEventId,
-        selectorType: matchingRule.selector_type,
-        selectorValue: matchingRule.selector_type === 'weekday' ? matchingRule.selector_value : null,
-        listId: matchingRule.list_id,
-        itemIds: nextItemIds
-      });
-      setResolvedItemsByOccurrence((prev) => ({
-        ...prev,
-        [context.instanceId]: sortOccurrenceEntries([
-          ...(prev[context.instanceId] || []),
-          {
-            id: created.id,
-            title: created.title,
-            completed: false,
-            kind: 'item'
-          }
-        ])
-      }));
-    } catch (error) {
-      console.error('Failed to add item from calendar card:', error);
+    if (closeCardQuickAddTimerRef.current) {
+      window.clearTimeout(closeCardQuickAddTimerRef.current);
+      closeCardQuickAddTimerRef.current = null;
     }
+
+    setSelectedEventId(context.sourceEventId);
+    setCardQuickAdd({
+      timeBlockId: context.sourceEventId,
+      occurrence: context,
+      title: '',
+      entryType: 'linked_item',
+      focalId: defaultFocalId,
+      listId: defaultListId,
+      saving: false,
+      error: null
+    });
   };
 
   const openCreateModal = (range?: { start: Date; end: Date }): void => {
@@ -1679,6 +1781,7 @@ export default function Calendar({
     setIncludeRecurringTasks(true);
     setRepeatTasksByItemId({});
     setDraftLinkedItems([]);
+    setDraftBlockTasks([]);
     setEditScopeMode('this_event');
     setIsModalOpen(true);
   };
@@ -1687,6 +1790,10 @@ export default function Calendar({
     eventItem: Event,
     occurrence?: { instanceId: string; scheduledStartUtc: string; scheduledEndUtc: string }
   ): void => {
+    if (closeModalTimerRef.current) {
+      window.clearTimeout(closeModalTimerRef.current);
+      closeModalTimerRef.current = null;
+    }
     setEditingEventId(eventItem.id);
     setSelectedEventId(eventItem.id);
     const effectiveStart = occurrence?.scheduledStartUtc ?? eventItem.start;
@@ -1719,11 +1826,127 @@ export default function Calendar({
     setRepeatTasksByItemId(taskRepeatConfig.repeatTasksByItemId);
     hydrateContentDrafts(eventItem.id);
     setDraftLinkedItems([]);
+    setDraftBlockTasks([]);
     setEditScopeMode('this_event');
     setIsModalOpen(true);
   };
 
+  const openEventDrawer = (
+    eventItem: Event,
+    occurrence?: { instanceId: string; scheduledStartUtc: string; scheduledEndUtc: string }
+  ): void => {
+    if (closeCardQuickAddTimerRef.current) {
+      window.clearTimeout(closeCardQuickAddTimerRef.current);
+      closeCardQuickAddTimerRef.current = null;
+    }
+    setCardQuickAdd(null);
+    if (!isModalOpen) {
+      openEditModal(eventItem, occurrence);
+      return;
+    }
+
+    if (editingEventId === eventItem.id && selectedEventId === eventItem.id) {
+      openEditModal(eventItem, occurrence);
+      return;
+    }
+
+    pendingDrawerSelectionRef.current = { event: eventItem, occurrence };
+    setIsModalOpen(false);
+  };
+
+  const closeCardQuickAddPanel = (): void => {
+    setCardQuickAdd(null);
+    if (closeCardQuickAddTimerRef.current) {
+      window.clearTimeout(closeCardQuickAddTimerRef.current);
+    }
+    closeCardQuickAddTimerRef.current = window.setTimeout(() => {
+      setSelectedEventId(null);
+      closeCardQuickAddTimerRef.current = null;
+    }, 110);
+  };
+
+  const submitCardQuickAdd = async (): Promise<void> => {
+    if (!user?.id || !cardQuickAdd || !cardQuickAdd.title.trim()) {
+      return;
+    }
+
+    const trimmedTitle = cardQuickAdd.title.trim();
+    setCardQuickAdd((prev) => (prev ? { ...prev, saving: true, error: null } : prev));
+
+    try {
+      if (cardQuickAdd.entryType === 'block_task') {
+        const existingTasks = resolvedBlockTasksByOccurrence[cardQuickAdd.occurrence.instanceId] || [];
+        const created = await calendarService.createBlockTask({
+          userId: user.id,
+          timeBlockId: cardQuickAdd.timeBlockId,
+          title: trimmedTitle,
+          sortOrder: existingTasks.length
+        });
+        applyBlockTaskPatchToResolvedState(cardQuickAdd.timeBlockId, (tasks) => [...tasks, created]);
+        closeCardQuickAddPanel();
+        return;
+      }
+
+      if (!cardQuickAdd.listId) {
+        setCardQuickAdd((prev) =>
+          prev ? { ...prev, saving: false, error: 'Choose a list for this item.' } : prev
+        );
+        return;
+      }
+
+      const created = await focalBoardService.createItem(cardQuickAdd.listId, user.id, trimmedTitle, null);
+      const selectorType = cardQuickAdd.occurrence.weekday ? 'weekday' : 'all';
+      const selectorValue = cardQuickAdd.occurrence.weekday ?? null;
+      const existing = timeBlockContentRules[cardQuickAdd.timeBlockId] || [];
+      const matchingRule =
+        existing.find(
+          (rule) =>
+            rule.selector_type === selectorType &&
+            (selectorType === 'all' || rule.selector_value === selectorValue) &&
+            rule.list_id === cardQuickAdd.listId
+        ) || null;
+      const nextItemIds = [...new Set([...(matchingRule?.item_ids || []), created.id])];
+
+      await upsertScopedContentRuleForTimeBlock({
+        timeBlockId: cardQuickAdd.timeBlockId,
+        selectorType,
+        selectorValue,
+        listId: cardQuickAdd.listId,
+        itemIds: nextItemIds
+      });
+
+      setCreatedContentItemsByList((prev) => ({
+        ...prev,
+        [cardQuickAdd.listId]: [
+          ...(prev[cardQuickAdd.listId] || []),
+          { id: created.id, title: created.title }
+        ]
+      }));
+
+      setResolvedItemsByOccurrence((prev) => ({
+        ...prev,
+        [cardQuickAdd.occurrence.instanceId]: sortOccurrenceEntries([
+          ...(prev[cardQuickAdd.occurrence.instanceId] || []),
+          {
+            id: created.id,
+            title: created.title,
+            completed: false,
+            kind: 'item'
+          }
+        ])
+      }));
+
+      closeCardQuickAddPanel();
+    } catch (error: any) {
+      console.error('Failed to create calendar card entry:', error);
+      setCardQuickAdd((prev) =>
+        prev ? { ...prev, saving: false, error: error?.message || 'Failed to create entry.' } : prev
+      );
+    }
+  };
+
   const closeModal = (): void => {
+    pendingDrawerSelectionRef.current = null;
     setIsModalOpen(false);
     setEditScopeConfirm(null);
     closeCalendarStatusDialog();
@@ -1743,7 +1966,9 @@ export default function Calendar({
       setIncludeRecurringTasks(true);
       setRepeatTasksByItemId({});
       setDraftLinkedItems([]);
-    }, 170);
+      setDraftBlockTasks([]);
+      closeModalTimerRef.current = null;
+    }, 110);
   };
 
   const mergeUniqueIds = (base: string[], additional: string[]): string[] => [...new Set([...(base || []), ...(additional || [])])];
@@ -1782,6 +2007,19 @@ export default function Calendar({
         selectorValue: weekday.key,
         listId: row.listId,
         itemIds: mergedWeekday
+      });
+    }
+  };
+
+  const persistDraftBlockTasksForTimeBlock = async (timeBlockId: string): Promise<void> => {
+    if (!user?.id || draftBlockTasks.length === 0) return;
+    for (const [index, draftTask] of draftBlockTasks.entries()) {
+      await calendarService.createBlockTask({
+        userId: user.id,
+        timeBlockId,
+        title: draftTask.title,
+        description: draftTask.description || '',
+        sortOrder: draftTask.sortOrder ?? index
       });
     }
   };
@@ -1936,6 +2174,12 @@ export default function Calendar({
         await persistDraftContentForTimeBlock(persistedId);
       } catch (error) {
         console.error('Failed to persist content links for event:', error);
+      }
+
+      try {
+        await persistDraftBlockTasksForTimeBlock(persistedId);
+      } catch (error) {
+        console.error('Failed to persist block tasks for event:', error);
       }
 
       closeModal();
@@ -2632,8 +2876,12 @@ export default function Calendar({
 
   const handleCreateAndAttachSearchItem = async (
     title: string,
-    options: { listId: string; weekday: 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun' | null }
-  ): Promise<void> => {
+    options: {
+      listId: string;
+      weekday: 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun' | null;
+      blockTaskId?: string | null;
+    }
+  ): Promise<{ id: string; title?: string | null } | void> => {
     if (!user?.id || !title.trim() || !options.listId) return;
     const created = await focalBoardService.createItem(options.listId, user.id, title.trim(), null);
     if (!created?.id) return;
@@ -2645,6 +2893,11 @@ export default function Calendar({
         { id: created.id, title: created.title || title.trim() }
       ]
     }));
+
+    if (options.blockTaskId) {
+      await handleAttachItemToBlockTask(options.blockTaskId, created.id);
+      return created;
+    }
 
     if (options.weekday) {
       const currentRow = contentByWeekday[options.weekday] || { listId: '', itemIds: [] };
@@ -2666,7 +2919,7 @@ export default function Calendar({
         listId: options.listId,
         itemIds: nextItemIds
       });
-      return;
+      return created;
     }
 
     const nextItemIds = [...new Set([...(contentAll.listId === options.listId ? contentAll.itemIds : []), created.id])];
@@ -2684,6 +2937,7 @@ export default function Calendar({
       listId: options.listId,
       itemIds: nextItemIds
     });
+    return created;
   };
 
   return (
@@ -2730,6 +2984,25 @@ export default function Calendar({
           </div>
 
           <div className="calendar-tools-group">
+            <div className="calendar-zoom-group" aria-label="Calendar zoom">
+              <button
+                type="button"
+                className="calendar-nav-btn zoom"
+                aria-label="Zoom out calendar"
+                onClick={() => setCalendarZoom((prev) => Math.max(0.75, Number((prev - 0.5).toFixed(2))))}
+              >
+                <Minus size={14} />
+              </button>
+              <span className="calendar-zoom-label">{zoomPercentLabel}</span>
+              <button
+                type="button"
+                className="calendar-nav-btn zoom"
+                aria-label="Zoom in calendar"
+                onClick={() => setCalendarZoom((prev) => Math.min(3, Number((prev + 0.5).toFixed(2))))}
+              >
+                <Plus size={14} />
+              </button>
+            </div>
             <Button
               variant="secondary"
               className="calendar-today-btn"
@@ -2822,10 +3095,9 @@ export default function Calendar({
                 return;
               }
               const sourceId = eventItem.sourceEventId ?? eventItem.id;
-              setSelectedEventId(sourceId);
               const sourceEvent = eventList.find((record) => record.id === sourceId);
               if (sourceEvent) {
-                openEditModal(sourceEvent, {
+                openEventDrawer(sourceEvent, {
                   instanceId: eventItem.id,
                   scheduledStartUtc: new Date(eventItem.start).toISOString(),
                   scheduledEndUtc: new Date(eventItem.end).toISOString()
@@ -2973,7 +3245,7 @@ export default function Calendar({
             getBlockTaskItemStatusOptions={(itemId) => getBlockTaskItemStatusOptions(itemId)}
             occurrenceWeekday={occurrenceContext?.weekday || null}
             occurrenceItems={activeOccurrenceItems}
-            occurrenceBlockTasks={activeOccurrenceBlockTasks}
+            occurrenceBlockTasks={editingEventId ? activeOccurrenceBlockTasks : draftBlockTasks}
             onToggleOccurrenceItem={(entry, checked) => void handleToggleOccurrenceItem(entry, checked)}
             onRequestOccurrenceStatusChange={(entry) => void handleRequestOccurrenceStatusChange(entry)}
             onOpenOccurrenceItem={handleOpenOccurrenceItem}
@@ -2982,6 +3254,136 @@ export default function Calendar({
             onCancel={closeModal}
             onSave={saveEvent}
             />
+          </div>
+        )}
+
+        {isCardQuickAddRendered && cardQuickAdd && (
+          <div className={`calendar-drawer-overlay-shell ${isCardQuickAddVisible ? 'open' : 'closed'}`.trim()}>
+            <aside className="calendar-event-drawer-side calendar-card-quick-add-panel">
+              <div className="calendar-event-drawer-side-body calendar-card-quick-add-body">
+                <div className="calendar-card-quick-add-toprow">
+                  <div>
+                    <p className="calendar-card-quick-add-eyebrow">Add to time block</p>
+                    <h2>{eventList.find((item) => item.id === cardQuickAdd.timeBlockId)?.title || 'Time block'}</h2>
+                  </div>
+                  <button
+                    type="button"
+                    className="calendar-event-top-icon-btn"
+                    onClick={closeCardQuickAddPanel}
+                    aria-label="Close add panel"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+
+                <section className="calendar-event-drawer-section">
+                  <label className="calendar-event-label" htmlFor="calendar-card-quick-add-title">Name</label>
+                  <input
+                    id="calendar-card-quick-add-title"
+                    className="calendar-input"
+                    value={cardQuickAdd.title}
+                    onChange={(eventInput) =>
+                      setCardQuickAdd((prev) => (prev ? { ...prev, title: eventInput.target.value, error: null } : prev))
+                    }
+                    onKeyDown={(eventKey) => {
+                      if (eventKey.key === 'Enter') {
+                        eventKey.preventDefault();
+                        void submitCardQuickAdd();
+                      }
+                    }}
+                    placeholder={cardQuickAdd.entryType === 'block_task' ? 'Block task name' : 'Item name'}
+                    autoFocus
+                  />
+                </section>
+
+                <section className="calendar-event-drawer-section">
+                  <div className="calendar-card-quick-add-type-toggle" role="tablist" aria-label="Add entry type">
+                    <button
+                      type="button"
+                      className={cardQuickAdd.entryType === 'block_task' ? 'active' : ''}
+                      onClick={() =>
+                        setCardQuickAdd((prev) => (prev ? { ...prev, entryType: 'block_task', error: null } : prev))
+                      }
+                    >
+                      Time block task
+                    </button>
+                    <button
+                      type="button"
+                      className={cardQuickAdd.entryType === 'linked_item' ? 'active' : ''}
+                      onClick={() =>
+                        setCardQuickAdd((prev) => (prev ? { ...prev, entryType: 'linked_item', error: null } : prev))
+                      }
+                    >
+                      Real item
+                    </button>
+                  </div>
+                </section>
+
+                {cardQuickAdd.entryType === 'linked_item' && (
+                  <section className="calendar-event-drawer-section calendar-card-quick-add-routing">
+                    <div className="calendar-card-quick-add-grid">
+                      <div>
+                        <label className="calendar-event-label" htmlFor="calendar-card-quick-add-space">Space</label>
+                        <select
+                          id="calendar-card-quick-add-space"
+                          className="calendar-input"
+                          value={cardQuickAdd.focalId}
+                          onChange={(eventSelect) => {
+                            const nextFocalId = eventSelect.target.value;
+                            const nextLists = contentFocalTree.find((focal) => focal.id === nextFocalId)?.lists || [];
+                            setCardQuickAdd((prev) =>
+                              prev
+                                ? {
+                                    ...prev,
+                                    focalId: nextFocalId,
+                                    listId: nextLists[0]?.id || '',
+                                    error: null
+                                  }
+                                : prev
+                            );
+                          }}
+                        >
+                          {contentFocalTree.map((focal) => (
+                            <option key={focal.id} value={focal.id}>{focal.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="calendar-event-label" htmlFor="calendar-card-quick-add-list">List</label>
+                        <select
+                          id="calendar-card-quick-add-list"
+                          className="calendar-input"
+                          value={cardQuickAdd.listId}
+                          onChange={(eventSelect) =>
+                            setCardQuickAdd((prev) => (prev ? { ...prev, listId: eventSelect.target.value, error: null } : prev))
+                          }
+                        >
+                          {cardQuickAddLists.map((list) => (
+                            <option key={list.id} value={list.id}>{list.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                  </section>
+                )}
+
+                {cardQuickAdd.error && <p className="calendar-card-quick-add-error">{cardQuickAdd.error}</p>}
+              </div>
+
+              <footer className="calendar-event-drawer-side-footer calendar-card-quick-add-footer">
+                <button type="button" className="calendar-event-secondary-btn" onClick={closeCardQuickAddPanel}>
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="calendar-event-primary-btn"
+                  onClick={() => void submitCardQuickAdd()}
+                  disabled={cardQuickAdd.saving || !cardQuickAdd.title.trim()}
+                >
+                  {cardQuickAdd.saving ? 'Saving…' : 'Create'}
+                </button>
+              </footer>
+            </aside>
           </div>
         )}
 

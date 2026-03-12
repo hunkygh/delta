@@ -326,6 +326,20 @@ const defaultLaneSubtaskStatuses = (userId, laneId) => [
   }
 ];
 
+const sortStatusesByOrder = (statuses = []) =>
+  [...statuses].sort((a, b) => (a?.order_num ?? 0) - (b?.order_num ?? 0));
+
+const pickDefaultLaneStatus = (statuses = []) => {
+  const ordered = sortStatusesByOrder(statuses);
+  if (ordered.length === 0) return null;
+  return (
+    ordered.find((entry) => Boolean(entry?.is_default)) ||
+    ordered.find((entry) => String(entry?.group_key || '').toLowerCase() === 'todo') ||
+    ordered[0] ||
+    null
+  );
+};
+
 const stableHash = (value = '') => {
   let hash = 0;
   for (let i = 0; i < value.length; i += 1) {
@@ -860,21 +874,46 @@ export const focalBoardService = {
   async createItem(laneId, userId, title, description = null) {
     try {
       const nextOrder = 0;
+      let defaultStatus = null;
+
+      if (laneId) {
+        const statuses = await this.getLaneStatuses(laneId);
+        defaultStatus = pickDefaultLaneStatus(statuses);
+
+        if (!defaultStatus && userId) {
+          defaultStatus = pickDefaultLaneStatus(defaultLaneStatuses(userId, laneId));
+        }
+      }
 
       const itemData = {
         lane_id: laneId ?? null,
         user_id: userId,
         title,
         description,
-        status: 'pending',
+        status: defaultStatus?.key || 'pending',
         order_num: nextOrder
       };
 
-      const { data, error } = await supabase
+      if (defaultStatus?.id) {
+        itemData.status_id = defaultStatus.id;
+      }
+
+      let { data, error } = await supabase
         .from('items')
         .insert([itemData])
         .select()
         .single();
+
+      if (error && isMissingItemsStatusIdColumnError(error)) {
+        const { status_id, ...fallbackItemData } = itemData;
+        const fallback = await supabase
+          .from('items')
+          .insert([fallbackItemData])
+          .select()
+          .single();
+        data = fallback.data;
+        error = fallback.error;
+      }
 
       if (error) {
         if (error.message?.includes('does not exist')) {

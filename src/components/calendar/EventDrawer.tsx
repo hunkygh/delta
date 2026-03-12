@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Plus, Trash2, X } from 'lucide-react';
 import type { BlockTask, CustomRecurrenceConfig, RecurrenceRule } from '../../types/Event';
 import Button from '../Button';
+import MarkdownText from '../MarkdownText';
 import ProposalReviewTable, { type ProposalReviewRow } from '../ProposalReviewTable';
 import type { StatusDialogOption } from '../StatusChangeDialog';
 
@@ -90,13 +91,21 @@ interface EventDrawerProps {
   ) => void;
   onCreateAndAttachSearchItem?: (
     title: string,
-    options: { listId: string; weekday: 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun' | null }
-  ) => Promise<void> | void;
+    options: {
+      listId: string;
+      weekday: 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun' | null;
+      blockTaskId?: string | null;
+    }
+  ) => Promise<{ id: string; title?: string | null } | void> | void;
   onAttachExistingSearchItem?: (
     itemId: string,
-    options: { listId: string; weekday: 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun' | null }
+    options: {
+      listId: string;
+      weekday: 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun' | null;
+      blockTaskId?: string | null;
+    }
   ) => Promise<void> | void;
-  onCreateBlockTask?: (title: string) => Promise<void> | void;
+  onCreateBlockTask?: (title: string) => Promise<BlockTask | void> | void;
   onUpdateBlockTask?: (blockTaskId: string, updates: { title?: string; description?: string }) => Promise<void> | void;
   onDeleteBlockTask?: (blockTaskId: string) => Promise<void> | void;
   onAttachItemToBlockTask?: (blockTaskId: string, itemId: string) => Promise<void> | void;
@@ -320,6 +329,8 @@ export default function EventDrawer({
   const [slashAttachQuery, setSlashAttachQuery] = useState('');
   const [slashAttachIndex, setSlashAttachIndex] = useState(0);
   const [slashTokenStart, setSlashTokenStart] = useState<number | null>(null);
+  const [commandTrigger, setCommandTrigger] = useState<'/' | '+' | null>(null);
+  const [recentInlineBlockTaskId, setRecentInlineBlockTaskId] = useState<string | null>(null);
   const descriptionInputRef = useRef<HTMLTextAreaElement | null>(null);
   const recurrenceEnabled = recurrence !== 'none';
   const recurrenceUnit: CustomRecurrenceConfig['unit'] =
@@ -377,6 +388,14 @@ export default function EventDrawer({
   useEffect(() => {
     setBlockTaskTitleDrafts(Object.fromEntries(occurrenceBlockTasks.map((task) => [task.id, task.title])));
   }, [occurrenceBlockTasks]);
+
+  useEffect(() => {
+    if (!recentInlineBlockTaskId) return;
+    const stillExists = occurrenceBlockTasks.some((task) => task.id === recentInlineBlockTaskId);
+    if (!stillExists) {
+      setRecentInlineBlockTaskId(null);
+    }
+  }, [occurrenceBlockTasks, recentInlineBlockTaskId]);
   const filterItemsForList = (listId: string): Array<{ id: string; title: string }> => {
     const source = contentItemOptionsByList[listId] || [];
     const query = attachSearch.trim();
@@ -550,11 +569,15 @@ export default function EventDrawer({
     return deduped.slice(0, 20);
   }, [activeAttachListId, activeAttachListName, contentItemOptionsByList, contentListOptions, slashAttachQuery]);
 
+  const recentInlineBlockTask =
+    occurrenceBlockTasks.find((task) => task.id === recentInlineBlockTaskId) || null;
+
   const closeSlashAttach = (): void => {
     setSlashAttachOpen(false);
     setSlashAttachQuery('');
     setSlashAttachIndex(0);
     setSlashTokenStart(null);
+    setCommandTrigger(null);
   };
 
   const commitBlockTaskTitle = async (task: BlockTask): Promise<void> => {
@@ -567,11 +590,13 @@ export default function EventDrawer({
   };
 
   const applySlashAttach = async (row: SlashAttachOption): Promise<void> => {
+    const targetBlockTaskId = recentInlineBlockTask?.id || null;
     if (row.kind === 'create') {
       if (!row.itemTitle.trim() || !row.listId) return;
       await onCreateAndAttachSearchItem?.(row.itemTitle.trim(), {
         listId: row.listId,
-        weekday: contentMode === 'weekday' ? activeWeekday : null
+        weekday: contentMode === 'weekday' ? activeWeekday : null,
+        blockTaskId: targetBlockTaskId
       });
       closeSlashAttach();
       return;
@@ -579,7 +604,8 @@ export default function EventDrawer({
     if (onAttachExistingSearchItem) {
       await onAttachExistingSearchItem(row.itemId, {
         listId: row.listId,
-        weekday: contentMode === 'weekday' ? activeWeekday : null
+        weekday: contentMode === 'weekday' ? activeWeekday : null,
+        blockTaskId: targetBlockTaskId
       });
     } else if (contentMode === 'all') {
       if (contentAll.listId !== row.listId) {
@@ -621,24 +647,56 @@ export default function EventDrawer({
     closeSlashAttach();
   };
 
-  const syncSlashQueryFromTextarea = (value: string, caret: number): void => {
-    const slashIndex = value.lastIndexOf('/', Math.max(0, caret - 1));
-    if (slashIndex === -1) {
+  const applyInlineBlockTaskCommand = async (): Promise<void> => {
+    const title = slashAttachQuery.trim();
+    if (!title) return;
+    const created = (await onCreateBlockTask?.(title)) || null;
+    if (created?.id) {
+      setRecentInlineBlockTaskId(created.id);
+    }
+    if (slashTokenStart != null && descriptionInputRef.current) {
+      const textarea = descriptionInputRef.current;
+      const caret = textarea.selectionStart ?? description.length;
+      const prefix = description.slice(0, slashTokenStart);
+      const suffix = description.slice(caret);
+      const taskText = `+${title}`;
+      const needsLeadingSpace = prefix.length > 0 && !/\s$/.test(prefix);
+      const insertion = `${needsLeadingSpace ? ' ' : ''}${taskText} `;
+      const nextValue = `${prefix}${insertion}${suffix}`.replace(/[ \t]{2,}/g, ' ');
+      onDescriptionChange(nextValue);
+      window.requestAnimationFrame(() => {
+        if (!descriptionInputRef.current) return;
+        const nextCaret = (prefix + insertion).length;
+        descriptionInputRef.current.selectionStart = nextCaret;
+        descriptionInputRef.current.selectionEnd = nextCaret;
+      });
+    }
+    closeSlashAttach();
+  };
+
+  const syncCommandQueryFromTextarea = (value: string, caret: number): void => {
+    const searchStart = Math.max(0, caret - 1);
+    const slashIndex = value.lastIndexOf('/', searchStart);
+    const plusIndex = value.lastIndexOf('+', searchStart);
+    const commandIndex = Math.max(slashIndex, plusIndex);
+    if (commandIndex === -1) {
       closeSlashAttach();
       return;
     }
-    const token = value.slice(slashIndex + 1, caret);
+    const trigger = value[commandIndex] as '/' | '+';
+    const token = value.slice(commandIndex + 1, caret);
     if (token.includes('\n')) {
       closeSlashAttach();
       return;
     }
-    const hasBoundaryBefore = slashIndex === 0 || /\s/.test(value[slashIndex - 1] || '');
+    const hasBoundaryBefore = commandIndex === 0 || /\s/.test(value[commandIndex - 1] || '');
     if (!hasBoundaryBefore) {
       closeSlashAttach();
       return;
     }
     setSlashAttachOpen(true);
-    setSlashTokenStart(slashIndex);
+    setCommandTrigger(trigger);
+    setSlashTokenStart(commandIndex);
     setSlashAttachQuery(token.trim());
     setSlashAttachIndex(0);
   };
@@ -707,14 +765,23 @@ export default function EventDrawer({
             value={description}
             onChange={(event) => {
               onDescriptionChange(event.target.value);
-              syncSlashQueryFromTextarea(event.target.value, event.target.selectionStart ?? event.target.value.length);
+              syncCommandQueryFromTextarea(event.target.value, event.target.selectionStart ?? event.target.value.length);
             }}
             onKeyDown={(event) => {
               if (event.key === '/') {
                 window.requestAnimationFrame(() => {
                   if (!descriptionInputRef.current) return;
                   const input = descriptionInputRef.current;
-                  syncSlashQueryFromTextarea(input.value, input.selectionStart ?? input.value.length);
+                  syncCommandQueryFromTextarea(input.value, input.selectionStart ?? input.value.length);
+                });
+                return;
+              }
+
+              if (event.key === '+') {
+                window.requestAnimationFrame(() => {
+                  if (!descriptionInputRef.current) return;
+                  const input = descriptionInputRef.current;
+                  syncCommandQueryFromTextarea(input.value, input.selectionStart ?? input.value.length);
                 });
                 return;
               }
@@ -738,18 +805,47 @@ export default function EventDrawer({
                 return;
               }
               if (event.key === 'Enter' && !event.shiftKey) {
+                if (commandTrigger === '+') {
+                  event.preventDefault();
+                  void applyInlineBlockTaskCommand();
+                  return;
+                }
                 if (slashAttachOptions[slashAttachIndex]) {
                   event.preventDefault();
                   void applySlashAttach(slashAttachOptions[slashAttachIndex]);
                 }
               }
             }}
-            placeholder="Type notes… Press / to attach items"
+            placeholder="Type notes… Press / to attach items or + to add block tasks"
           />
+          {description.trim() ? <MarkdownText className="calendar-event-description-preview" text={description} /> : null}
           {slashAttachOpen && (
-            <div className="calendar-event-slash-popover" role="dialog" aria-label="Attach item">
+            <div
+              className="calendar-event-slash-popover"
+              role="dialog"
+              aria-label={commandTrigger === '+' ? 'Create block task' : 'Attach item'}
+            >
               <div className="calendar-event-slash-results">
-                {slashAttachOptions.length === 0 ? (
+                {commandTrigger === '+' ? (
+                  <button
+                    type="button"
+                    className="calendar-event-slash-result active enter-target"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => void applyInlineBlockTaskCommand()}
+                  >
+                    <span className="calendar-event-slash-result-copy">
+                      <strong>{slashAttachQuery.trim() ? `Create block task "${slashAttachQuery.trim()}"` : 'Type a block task name'}</strong>
+                      <small>
+                        {recentInlineBlockTask
+                          ? `Next /item commands attach under ${recentInlineBlockTask.title}`
+                          : 'Press Enter to add a block-scoped task'}
+                      </small>
+                    </span>
+                    <span className="calendar-event-slash-add" aria-hidden="true">
+                      ↵
+                    </span>
+                  </button>
+                ) : slashAttachOptions.length === 0 ? (
                   <p className="calendar-event-slash-empty">No matching items</p>
                 ) : (
                   slashAttachOptions.map((row, index) => (
@@ -773,9 +869,15 @@ export default function EventDrawer({
                 )}
               </div>
               <div className="calendar-event-slash-footer">
-                <button type="button" className="calendar-event-slash-advanced" onClick={onLinkTasks}>
-                  Advanced picker
-                </button>
+                {commandTrigger === '/' ? (
+                  <button type="button" className="calendar-event-slash-advanced" onClick={onLinkTasks}>
+                    Advanced picker
+                  </button>
+                ) : (
+                  <span className="calendar-event-slash-advanced">
+                    {recentInlineBlockTask ? `Target task: ${recentInlineBlockTask.title}` : 'Creates a block task only'}
+                  </span>
+                )}
               </div>
             </div>
           )}

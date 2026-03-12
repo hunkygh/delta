@@ -94,6 +94,7 @@ export default function WeekGrid({
 }: WeekGridProps): JSX.Element {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const didInitialAnchorRef = useRef(false);
+  const previousPixelsPerMinuteRef = useRef(pixelsPerMinute);
 
   useEffect(() => {
     if (didInitialAnchorRef.current) {
@@ -125,6 +126,22 @@ export default function WeekGrid({
     container.scrollTop = target;
     didInitialAnchorRef.current = true;
   }, [hours, pixelsPerMinute, startOfWeek]);
+
+  useEffect(() => {
+    const container = scrollRef.current;
+    const previousPixelsPerMinute = previousPixelsPerMinuteRef.current;
+    if (!container || previousPixelsPerMinute === pixelsPerMinute) {
+      previousPixelsPerMinuteRef.current = pixelsPerMinute;
+      return;
+    }
+
+    const centerOffset = container.scrollTop + container.clientHeight / 2;
+    const centerMinute = centerOffset / previousPixelsPerMinute;
+    const nextCenterOffset = centerMinute * pixelsPerMinute;
+    const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    container.scrollTop = Math.max(0, Math.min(maxScrollTop, nextCenterOffset - container.clientHeight / 2));
+    previousPixelsPerMinuteRef.current = pixelsPerMinute;
+  }, [pixelsPerMinute]);
 
   return (
     <div ref={scrollRef} className="week-grid-scroll" aria-label="Week schedule grid">

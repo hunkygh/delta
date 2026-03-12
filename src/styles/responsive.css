@@ -1060,6 +1060,23 @@
     max-width: calc(100% - 4px);
   }
 
+  .mobile-block-view-all {
+    margin-top: 6px;
+    width: 100%;
+    border: none;
+    background: transparent;
+    color: var(--color-text-muted);
+    font-size: 11px;
+    line-height: 1.2;
+    text-align: left;
+    padding: 0;
+  }
+
+  .mobile-block-view-all:hover,
+  .mobile-block-view-all:focus-visible {
+    color: var(--color-text-primary);
+  }
+
   .mobile-block-add-btn {
     width: 24px;
     height: 24px;
@@ -2496,11 +2513,13 @@
     background: var(--color-surface-panel);
     box-shadow: var(--shadow-elevated);
     padding: 8px 16px calc(12px + env(safe-area-inset-bottom));
-    animation: mobile-add-sheet-in 340ms cubic-bezier(0.2, 0.9, 0.2, 1);
+    animation: mobile-bottom-sheet-scroll-open 240ms cubic-bezier(0.2, 0.86, 0.18, 1);
     transition: transform 320ms cubic-bezier(0.2, 0.9, 0.2, 1), opacity 320ms cubic-bezier(0.22, 1, 0.36, 1);
     display: grid;
     grid-template-rows: auto 1fr auto;
     touch-action: none;
+    overflow: hidden;
+    clip-path: inset(100% 0 0 0 round 26px 26px 0 0);
   }
 
   .mobile-add-sheet.dragging {
@@ -2509,8 +2528,7 @@
   }
 
   .mobile-add-sheet.closing {
-    transform: translateY(26px);
-    opacity: 0;
+    animation: mobile-bottom-sheet-scroll-close 180ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
   }
 
   .mobile-add-sheet-grab {
@@ -2978,11 +2996,13 @@
     z-index: 26;
     box-shadow: var(--shadow-elevated);
     height: min(75svh, calc(100svh - 16px));
-    animation: mobile-add-sheet-in 320ms cubic-bezier(0.2, 0.9, 0.2, 1);
+    animation: mobile-bottom-sheet-scroll-open 240ms cubic-bezier(0.2, 0.86, 0.18, 1);
     display: grid;
     grid-template-rows: auto auto 1fr auto;
     transition: transform 260ms cubic-bezier(0.2, 0.9, 0.2, 1);
     will-change: transform;
+    overflow: hidden;
+    clip-path: inset(100% 0 0 0 round 26px 26px 0 0);
   }
 
   .mobile-drawer-overlay {
@@ -2995,9 +3015,7 @@
   }
 
   .mobile-drawer.closing {
-    transform: translateY(100%) !important;
-    opacity: 0;
-    transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1), opacity 220ms cubic-bezier(0.22, 1, 0.36, 1);
+    animation: mobile-bottom-sheet-scroll-close 180ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
   }
 
   .mobile-drawer.peek {
@@ -3013,6 +3031,7 @@
   }
 
   .mobile-drawer.dragging {
+    animation: none;
     transition: none;
   }
 
@@ -3431,6 +3450,11 @@
     line-height: 1.5;
   }
 
+  .mobile-drawer-description.delta-markdown {
+    display: grid;
+    gap: 0;
+  }
+
   .mobile-drawer-linked h4 {
     margin: 0;
     color: var(--color-text-primary);
@@ -3838,6 +3862,9 @@
     border: 1px solid rgba(214, 220, 228, 0.9);
     box-shadow: 0 26px 60px rgba(15, 23, 42, 0.18);
     padding: 10px 14px 16px;
+    overflow: hidden;
+    clip-path: inset(100% 0 0 0 round 22px);
+    animation: mobile-status-sheet-scroll-open 220ms cubic-bezier(0.2, 0.86, 0.18, 1) forwards;
   }
 
   .mobile-status-sheet-grab {
@@ -4360,14 +4387,36 @@
     border-top: none;
   }
 
-  @keyframes mobile-add-sheet-in {
-    from {
-      opacity: 0;
-      transform: translateY(28px);
+  @keyframes mobile-bottom-sheet-scroll-open {
+    0% {
+      clip-path: inset(100% 0 0 0 round 26px 26px 0 0);
+      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
     }
-    to {
+    100% {
+      clip-path: inset(0 0 0 0 round 26px 26px 0 0);
+      box-shadow: var(--shadow-elevated);
+    }
+  }
+
+  @keyframes mobile-bottom-sheet-scroll-close {
+    0% {
+      clip-path: inset(0 0 0 0 round 26px 26px 0 0);
       opacity: 1;
-      transform: translateY(0);
+    }
+    100% {
+      clip-path: inset(100% 0 0 0 round 26px 26px 0 0);
+      opacity: 1;
+    }
+  }
+
+  @keyframes mobile-status-sheet-scroll-open {
+    0% {
+      clip-path: inset(100% 0 0 0 round 22px);
+      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+    }
+    100% {
+      clip-path: inset(0 0 0 0 round 22px);
+      box-shadow: 0 26px 60px rgba(15, 23, 42, 0.18);
     }
   }
 

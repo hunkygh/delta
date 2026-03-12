@@ -24,6 +24,7 @@ import {
   Trash2
 } from 'lucide-react';
 import { Mountains } from '@phosphor-icons/react';
+import MarkdownText from '../MarkdownText';
 import { useAuth } from '../../context/AuthContext';
 import chatService from '../../services/chatService';
 import chatPersistence from '../../services/chatPersistence';
@@ -934,11 +935,18 @@ export default function MobileCalendarWireframe(): JSX.Element {
           (rules || []).map((rule: any) => rule?.list_id).filter(Boolean)
         )
       )];
-      const listRows = await Promise.all(
+      const initialListRows = await Promise.all(
         listIdsToHydrate.map(async (listId) => [listId, await focalBoardService.getItemsByListId(listId)] as const)
       );
-      const itemsByListId = new Map<string, any[]>(listRows);
       const resolvedAttachedRows = resolvedLookupIds.length > 0 ? await focalBoardService.getItemsByIds(user.id, resolvedLookupIds) : [];
+      const actualListIdsToHydrate = [...new Set(
+        resolvedAttachedRows.map((row: any) => row?.lane_id).filter((listId: string | null | undefined) => Boolean(listId) && !listIdsToHydrate.includes(listId))
+      )] as string[];
+      const extraListRows = await Promise.all(
+        actualListIdsToHydrate.map(async (listId) => [listId, await focalBoardService.getItemsByListId(listId)] as const)
+      );
+      const listRows = [...initialListRows, ...extraListRows];
+      const itemsByListId = new Map<string, any[]>(listRows);
       const resolvedItemById = new Map<string, any>();
       resolvedAttachedRows.forEach((row: any) => {
         const normalizedId = normalizeLinkedEntityId(row?.id);
@@ -4578,7 +4586,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                             }}
                           >
                             <ChevronDown size={14} className={expandedTasksByBlock[block.id] ? 'open' : ''} />
-                            {expandedTasksByBlock[block.id] ? 'Hide items' : `${totalInlineRowCount} more ↗`}
+                            {expandedTasksByBlock[block.id] ? 'Hide items' : `View ${totalInlineRowCount} items`}
                           </button>
                         )}
 
@@ -4818,6 +4826,19 @@ export default function MobileCalendarWireframe(): JSX.Element {
                               </button>
                             )}
                           </div>
+                        )}
+                        {totalInlineRowCount > 0 && (
+                          <button
+                            type="button"
+                            className="mobile-block-view-all"
+                            onPointerDown={(event) => event.stopPropagation()}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              openFullDrawer(block.id);
+                            }}
+                          >
+                            View all ↗
+                          </button>
                         )}
                       </article>
                     );
@@ -5782,9 +5803,11 @@ export default function MobileCalendarWireframe(): JSX.Element {
             )}
             {drawer.mode !== 'item' && drawer.mode !== 'addTask' && drawer.mode !== 'edit' && (
               <>
-                <p className="mobile-drawer-description">
-                  {activeDrawerBlock?.description?.trim() || 'No description yet.'}
-                </p>
+                {activeDrawerBlock?.description?.trim() ? (
+                  <MarkdownText className="mobile-drawer-description" text={activeDrawerBlock.description.trim()} />
+                ) : (
+                  <p className="mobile-drawer-description">No description yet.</p>
+                )}
                 <div className="mobile-drawer-linked">
                   <div className="mobile-drawer-linked-head">
                     <h4>Attached items</h4>

@@ -319,7 +319,11 @@ const normalizeItemsForStatuses = (rows: ListItem[], laneStatuses: LaneStatus[])
 
   const byId = new Map(laneStatuses.filter((entry) => Boolean(entry.id)).map((entry) => [entry.id as string, entry]));
   const byKey = new Map(laneStatuses.map((entry) => [entry.key, entry]));
-  const fallback = laneStatuses[0];
+  const ordered = [...laneStatuses].sort((a, b) => (a.order_num ?? 0) - (b.order_num ?? 0));
+  const fallback =
+    ordered.find((entry) => Boolean((entry as any).is_default)) ||
+    ordered.find((entry) => String((entry as any).group_key || '').toLowerCase() === 'todo') ||
+    ordered[0];
 
   return rows.map((item) => {
     if (item.status_id && byId.has(item.status_id)) return item;
