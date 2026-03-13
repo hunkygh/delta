@@ -94,6 +94,13 @@ type DrawerState = {
   itemId?: string | null;
 };
 
+type MobileFullDrawerOrigin = {
+  x: number;
+  y: number;
+  scaleX: number;
+  scaleY: number;
+};
+
 type MobileEditScopeMode = 'this_event' | 'all_future' | 'next_window';
 
 type MobileEditScopeConfirmState = {
@@ -314,6 +321,8 @@ export default function MobileCalendarWireframe(): JSX.Element {
   const { user } = useAuth();
   const [view, setView] = useState<'calendar' | 'ai'>('calendar');
   const [drawer, setDrawer] = useState<DrawerState>({ open: false, mode: 'peek', blockId: null });
+  const [editOverlayBlockId, setEditOverlayBlockId] = useState<string | null>(null);
+  const [fullDrawerOrigin, setFullDrawerOrigin] = useState<MobileFullDrawerOrigin | null>(null);
   const [editDrawerName, setEditDrawerName] = useState('');
   const [editDrawerDescription, setEditDrawerDescription] = useState('');
   const [editDrawerStart, setEditDrawerStart] = useState('09:00');
@@ -1747,20 +1756,44 @@ export default function MobileCalendarWireframe(): JSX.Element {
   const openPeekDrawer = (blockId: string): void => {
     drawerOpenedAtRef.current = Date.now();
     setDrawerClosing(false);
+    setEditOverlayBlockId(null);
+    setFullDrawerOrigin(null);
     setDrawer({ open: true, mode: 'peek', blockId });
   };
-  const openFullDrawer = (blockId: string): void => {
+  const openFullDrawer = (blockId: string, originRect?: DOMRect | null): void => {
     drawerOpenedAtRef.current = Date.now();
     setDrawerClosing(false);
+    setEditOverlayBlockId(null);
+    if (originRect) {
+      const viewportWidth = window.innerWidth || 1;
+      const viewportHeight = window.innerHeight || 1;
+      setFullDrawerOrigin({
+        x: originRect.left,
+        y: originRect.top,
+        scaleX: Math.max(0.08, originRect.width / viewportWidth),
+        scaleY: Math.max(0.08, originRect.height / viewportHeight)
+      });
+    } else {
+      setFullDrawerOrigin(null);
+    }
     setDrawer({ open: true, mode: 'full', blockId });
   };
   const openEditDrawer = (blockId: string): void => {
     drawerOpenedAtRef.current = Date.now();
     setDrawerClosing(false);
+    if (drawer.open && drawer.mode === 'full' && drawer.blockId === blockId) {
+      setEditOverlayBlockId(blockId);
+      return;
+    }
     setDrawer({ open: true, mode: 'edit', blockId });
   };
 
   const returnFromEditDrawer = (): void => {
+    if (editOverlayBlockId) {
+      drawerOpenedAtRef.current = Date.now();
+      setEditOverlayBlockId(null);
+      return;
+    }
     if (!drawer.blockId) return;
     drawerOpenedAtRef.current = Date.now();
     setDrawerClosing(false);
@@ -1838,27 +1871,33 @@ export default function MobileCalendarWireframe(): JSX.Element {
   };
 
   const closeDrawer = (): void => {
+    if (editOverlayBlockId) {
+      setEditOverlayBlockId(null);
+      return;
+    }
     setIsDrawerDragging(false);
     setDrawerDragY(0);
     setItemDrawerPanel('details');
+    setBlockDrawerPanel('details');
     setItemDrawerCommentDraft('');
     setDrawerClosing(true);
     window.setTimeout(() => {
       setDrawer({ open: false, mode: 'peek', blockId: null });
       setDrawerClosing(false);
       setEditDrawerSaving(false);
+      setFullDrawerOrigin(null);
     }, 220);
   };
 
   useEffect(() => {
-    if (!drawer.open || drawer.mode !== 'edit' || !activeDrawerBlock) return;
+    if (!drawer.open || (!editOverlayBlockId && drawer.mode !== 'edit') || !activeDrawerBlock) return;
     setEditDrawerName(activeDrawerBlock.name || '');
     setEditDrawerDescription(activeDrawerBlock.description || '');
     setEditDrawerStart(minutesToClock(activeDrawerBlock.startMin));
     setEditDrawerEnd(minutesToClock(activeDrawerBlock.endMin));
     setEditDrawerRecurrence(activeDrawerBlock.recurrence || 'none');
     setEditDrawerRecurrenceExpanded((activeDrawerBlock.recurrence || 'none') !== 'none');
-  }, [activeDrawerBlock, drawer.mode, drawer.open]);
+  }, [activeDrawerBlock, drawer.mode, drawer.open, editOverlayBlockId]);
 
   const onDrawerTouchStart = (event: TouchEvent): void => {
     if (!drawer.open) return;
@@ -4852,7 +4891,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                         key={block.id}
                         className={`mobile-time-block ${isCurrent ? 'current' : ''}`}
                         style={{ top: `${top}px`, height: `${height}px` }}
-                        onClick={() => openFullDrawer(block.id)}
+                        onClick={(event) => openFullDrawer(block.id, (event.currentTarget as HTMLElement).getBoundingClientRect())}
                       >
                         <div className="mobile-time-block-head">
                           <h3>{block.name}</h3>
@@ -5887,15 +5926,26 @@ export default function MobileCalendarWireframe(): JSX.Element {
 
       {drawer.open && (
         <div
-          className="mobile-drawer-overlay"
+          className={`mobile-drawer-overlay ${drawer.mode === 'full' ? 'full-open' : ''}`.trim()}
           onClick={() => {
             if (Date.now() - drawerOpenedAtRef.current < 180) return;
             closeDrawer();
           }}
         >
           <div
-            className={`mobile-drawer ${drawer.mode} ${isDrawerDragging ? 'dragging' : ''} ${drawerClosing ? 'closing' : ''}`.trim()}
-            style={isDrawerDragging ? { transform: `translateY(${drawerDragY}px)` } : undefined}
+            className={`mobile-drawer ${drawer.mode} ${fullDrawerOrigin && drawer.mode === 'full' ? 'from-block' : ''} ${isDrawerDragging ? 'dragging' : ''} ${drawerClosing ? 'closing' : ''}`.trim()}
+            style={
+              isDrawerDragging
+                ? { transform: `translateY(${drawerDragY}px)` }
+                : drawer.mode === 'full' && fullDrawerOrigin
+                  ? ({
+                      ['--drawer-origin-x' as any]: `${fullDrawerOrigin.x}px`,
+                      ['--drawer-origin-y' as any]: `${fullDrawerOrigin.y}px`,
+                      ['--drawer-origin-scale-x' as any]: `${fullDrawerOrigin.scaleX}`,
+                      ['--drawer-origin-scale-y' as any]: `${fullDrawerOrigin.scaleY}`
+                    } as React.CSSProperties)
+                  : undefined
+            }
             onClick={(event) => event.stopPropagation()}
           >
             <div
@@ -6622,6 +6672,120 @@ export default function MobileCalendarWireframe(): JSX.Element {
             )}
             </div>
           </div>
+          {editOverlayBlockId && (
+            <div className="mobile-drawer-edit-overlay" onClick={() => setEditOverlayBlockId(null)}>
+              <div className="mobile-drawer edit overlay-sheet" onClick={(event) => event.stopPropagation()}>
+                <div className="mobile-drawer-grab" />
+                <div className="mobile-drawer-head">
+                  <div className="mobile-drawer-head-drag">
+                    <Clock3 size={15} />
+                    <strong>{activeDrawerBlock?.name || 'Time Block'}</strong>
+                  </div>
+                  <div className="mobile-drawer-head-actions">
+                    <button
+                      type="button"
+                      aria-label="Delete event"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void deleteDrawerBlock();
+                      }}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Back to time block"
+                      className="mobile-drawer-close"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        returnFromEditDrawer();
+                      }}
+                    >
+                      <X size={15} />
+                    </button>
+                  </div>
+                </div>
+                <div className="mobile-drawer-body">
+                  <div className="mobile-drawer-edit">
+                    <label className="mobile-drawer-edit-field">
+                      <input
+                        type="text"
+                        value={editDrawerName}
+                        onChange={(event) => setEditDrawerName(event.target.value)}
+                        placeholder="Event name"
+                      />
+                    </label>
+                    <label className="mobile-drawer-edit-field">
+                      <textarea
+                        value={editDrawerDescription}
+                        onChange={(event) => setEditDrawerDescription(event.target.value)}
+                        placeholder="Description"
+                        rows={3}
+                      />
+                    </label>
+                    <div className="mobile-add-time-grid clean mobile-drawer-edit-times">
+                      <label className="mobile-drawer-edit-field">
+                        <span>Start time</span>
+                        <input
+                          type="time"
+                          value={editDrawerStart}
+                          onChange={(event) => setEditDrawerStart(event.target.value)}
+                        />
+                      </label>
+                      <span className="mobile-add-time-sep" aria-hidden="true">to</span>
+                      <label className="mobile-drawer-edit-field">
+                        <span>End time</span>
+                        <input
+                          type="time"
+                          value={editDrawerEnd}
+                          onChange={(event) => setEditDrawerEnd(event.target.value)}
+                        />
+                      </label>
+                    </div>
+                    <div className="mobile-add-inline-row repeat-row mobile-drawer-edit-repeat">
+                      <span className="mobile-add-inline-label">Repeat</span>
+                      <button
+                        type="button"
+                        className={`mobile-inline-toggle ${editDrawerRecurrence !== 'none' ? 'on' : ''}`.trim()}
+                        aria-pressed={editDrawerRecurrence !== 'none'}
+                        onClick={() => {
+                          const nextEnabled = editDrawerRecurrence === 'none';
+                          setEditDrawerRecurrence(nextEnabled ? 'weekly' : 'none');
+                          setEditDrawerRecurrenceExpanded(nextEnabled);
+                        }}
+                      >
+                        <span />
+                      </button>
+                    </div>
+                    {editDrawerRecurrence !== 'none' && editDrawerRecurrenceExpanded && (
+                      <div className="mobile-add-inline-options dropdown mobile-drawer-edit-recurrence">
+                        {(['none', 'daily', 'weekly', 'monthly'] as AddSheetRecurrence[]).map((value) => (
+                          <button
+                            key={value}
+                            type="button"
+                            className={editDrawerRecurrence === value ? 'active' : ''}
+                            onClick={() => setEditDrawerRecurrence(value)}
+                          >
+                            {value === 'none' ? 'None' : value[0].toUpperCase() + value.slice(1)}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    <div className="mobile-drawer-edit-actions">
+                      <button
+                        type="button"
+                        className="mobile-task-drawer-create"
+                        onClick={() => void saveDrawerEdits()}
+                        disabled={editDrawerSaving || !editDrawerName.trim()}
+                      >
+                        {editDrawerSaving ? 'Saving…' : 'Save'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
       {statusSheet.open && (
