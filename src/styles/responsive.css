@@ -3191,13 +3191,13 @@
   }
 
   .mobile-drawer.full .mobile-drawer-head button:not(.mobile-drawer-close) {
-    min-height: 30px;
+    min-height: 26px;
     border-radius: 999px;
     background: rgba(239, 242, 247, 0.95);
-    color: rgba(63, 74, 98, 0.92);
-    padding: 0 12px;
-    font-size: 12px;
-    font-weight: 600;
+    color: rgba(107, 114, 128, 0.92);
+    padding: 0 10px;
+    font-size: 11px;
+    font-weight: 500;
   }
 
   .mobile-drawer-back {
@@ -3223,8 +3223,8 @@
   .mobile-drawer.full .mobile-drawer-close {
     width: 38px;
     height: 38px;
-    background: rgba(229, 233, 240, 0.96);
-    color: rgba(91, 101, 118, 0.98);
+    background: rgba(209, 213, 219, 0.96);
+    color: rgba(107, 114, 128, 0.98);
     box-shadow: 0 6px 16px rgba(17, 24, 39, 0.08);
   }
 

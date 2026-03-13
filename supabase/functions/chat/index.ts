@@ -5,6 +5,7 @@
  *    NOTE: --no-verify-jwt is temporary; function still enforces bearer auth internally.
  */
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.49.4';
+import { aiGateway } from '../_shared/aiGateway.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -208,141 +209,6 @@ const extractUserIdFromGatewayHeaders = (req: Request): string | null => {
   return null;
 };
 
-
-const fetchGroqModelIds = async (
-  groqApiKey: string,
-  requestId: string,
-  forceRefresh = false
-): Promise<string[] | null> => {
-  if (!forceRefresh && groqModelCache && groqModelCache.expiresAt > Date.now()) {
-    return groqModelCache.ids;
-  }
-  try {
-    const response = await fetch('https://api.groq.com/openai/v1/models', {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${groqApiKey}`,
-        'Content-Type': 'application/json'
-      }
-    });
-    if (!response.ok) {
-      const errPayload = await safeJson(response);
-      console.warn(`[chat:${requestId}] models endpoint failed`, {
-        status: response.status,
-        error: errPayload
-      });
-      return null;
-    }
-    const parsed = await safeJson(response);
-    const ids = Array.isArray(parsed?.data)
-      ? parsed.data.map((entry: any) => String(entry?.id || '')).filter(Boolean)
-      : [];
-    groqModelCache = {
-      expiresAt: Date.now() + GROQ_MODEL_CACHE_TTL_MS,
-      ids
-    };
-    return ids;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.warn(`[chat:${requestId}] models endpoint exception`, { error: message });
-    return null;
-  }
-};
-
-const getGroqCandidateModels = async (
-  groqApiKey: string,
-  preferredModels: string[],
-  requestId: string,
-  forceRefresh = false
-): Promise<string[]> => {
-  const activeIds = await fetchGroqModelIds(groqApiKey, requestId, forceRefresh);
-  if (!activeIds || activeIds.length === 0) {
-    return [...preferredModels];
-  }
-  const activeSet = new Set(activeIds);
-  const selected = preferredModels.filter((model) => activeSet.has(model));
-  return selected.length ? selected : [...preferredModels];
-};
-
-const groqChatCompletionWithFallback = async (
-  groqApiKey: string,
-  preferredModels: string[],
-  bodyFactory: (model: string) => Record<string, unknown>,
-  requestId: string
-): Promise<{
-  ok: boolean;
-  model: string | null;
-  content: string;
-  status: number | null;
-  error: unknown;
-}> => {
-  const attempted = new Set<string>();
-  let models = await getGroqCandidateModels(groqApiKey, preferredModels, requestId);
-  let refreshedAfterModelError = false;
-  let lastStatus: number | null = null;
-  let lastError: unknown = null;
-
-  while (models.length > 0) {
-    const model = models.shift() as string;
-    if (attempted.has(model)) continue;
-    attempted.add(model);
-    try {
-      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${groqApiKey}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(bodyFactory(model))
-      });
-      if (!response.ok) {
-        const errPayload = await safeJson(response);
-        lastStatus = response.status;
-        lastError = errPayload;
-        console.warn(`[chat:${requestId}] model failed`, {
-          model,
-          status: response.status,
-          error: errPayload
-        });
-        if (!refreshedAfterModelError && isGroqModelUnavailableError(response.status, errPayload)) {
-          refreshedAfterModelError = true;
-          const refreshed = await getGroqCandidateModels(groqApiKey, preferredModels, requestId, true);
-          models = [...refreshed.filter((entry) => !attempted.has(entry)), ...models];
-        }
-        continue;
-      }
-
-      const json = await safeJson(response);
-      const content = json?.choices?.[0]?.message?.content?.trim?.() || '';
-      if (content) {
-        return {
-          ok: true,
-          model,
-          content,
-          status: response.status,
-          error: null
-        };
-      }
-      lastStatus = response.status;
-      lastError = 'empty_completion';
-      console.warn(`[chat:${requestId}] empty completion`, { model });
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : error;
-      console.warn(`[chat:${requestId}] model exception`, {
-        model,
-        error: lastError
-      });
-    }
-  }
-
-  return {
-    ok: false,
-    model: null,
-    content: '',
-    status: lastStatus,
-    error: lastError
-  };
-};
 
 const clip = (value: string, max = 160): string => (value.length > max ? `${value.slice(0, max)}…` : value);
 
@@ -831,69 +697,6 @@ const buildMessagePlan = (text: string): MessagePlan => {
   if (mutationRequested && !ambiguousAction) return { mode: 'act', confidence: 0.85, explicitInventoryAsk, mutationRequested, ambiguousAction };
   if (explicitInventoryAsk || hasAskVerb || inquiry) return { mode: 'ask', confidence: 0.8, explicitInventoryAsk, mutationRequested, ambiguousAction };
   return { mode: 'inform', confidence: 0.64, explicitInventoryAsk, mutationRequested, ambiguousAction };
-};
-
-const classifyMessagePlanWithModel = async (
-  message: string,
-  context: ChatContext,
-  snapshot: AccountContextSnapshot | null,
-  groqApiKey: string,
-  requestId = 'classifier'
-): Promise<MessagePlan> => {
-  const fallback = buildMessagePlan(message);
-  if (!message.trim()) return fallback;
-  const contextLine = friendlyContextLine(context, snapshot);
-  const completion = await groqChatCompletionWithFallback(
-    groqApiKey,
-    GROQ_MODELS_CLASSIFIER,
-    (model) => ({
-      model,
-      temperature: 0,
-      response_format: { type: 'json_object' },
-      messages: [
-        {
-          role: 'system',
-          content:
-            'Classify the user message intent for a workspace assistant. Return JSON only with keys: ' +
-            '{"mode":"act|ask|mixed|inform","confidence":0..1,"explicitInventoryAsk":boolean,"mutationRequested":boolean,"ambiguousAction":boolean}. ' +
-            'Use "act" only when user clearly wants workspace changes. Use "mixed" when message contains both question + action request.'
-        },
-        {
-          role: 'user',
-          content: JSON.stringify({
-            message,
-            context: contextLine || null
-          })
-        }
-      ]
-    }),
-    requestId
-  );
-  if (!completion.ok) return fallback;
-  const content = completion.content;
-  if (typeof content !== 'string' || !content.trim().startsWith('{')) return fallback;
-  try {
-    const json = JSON.parse(content);
-    const mode: MessageIntentMode =
-      json?.mode === 'act' || json?.mode === 'ask' || json?.mode === 'mixed' || json?.mode === 'inform'
-        ? json.mode
-        : fallback.mode;
-    const confidence = typeof json?.confidence === 'number' && Number.isFinite(json.confidence)
-      ? Math.max(0, Math.min(1, json.confidence))
-      : fallback.confidence;
-    const explicitInventoryAsk = typeof json?.explicitInventoryAsk === 'boolean'
-      ? json.explicitInventoryAsk
-      : fallback.explicitInventoryAsk;
-    const mutationRequested = typeof json?.mutationRequested === 'boolean'
-      ? json.mutationRequested
-      : fallback.mutationRequested;
-    const ambiguousAction = typeof json?.ambiguousAction === 'boolean'
-      ? json.ambiguousAction
-      : fallback.ambiguousAction;
-    return { mode, confidence, explicitInventoryAsk, mutationRequested, ambiguousAction };
-  } catch {
-    return fallback;
-  }
 };
 
 const parseOwnerCandidateFromText = (userText: string): string | null => {
@@ -2521,8 +2324,7 @@ Deno.serve(async (req) => {
     if (AI_API_KEY_PRIMARY && lastUserMessage) {
       try {
         // Use AI gateway for provider-agnostic completion
-        const aiGatewayModule = await import('https://deno.land/x/ai_gateway@0.1.0/mod.ts');
-        const completion = await aiGatewayModule.aiGateway.createCompletion({
+        const completion = await aiGateway.createCompletion({
           messages: [{ role: 'user', content: lastUserMessage }],
           responseFormat: 'json_object',
           modelProfile: 'delta-classifier'
@@ -2687,19 +2489,6 @@ Deno.serve(async (req) => {
       });
     }
 
-    if (!GROQ_API_KEY) {
-      console.error(`[chat:${requestId}] missing GROQ_API_KEY`);
-      return new Response(JSON.stringify({
-        ...heuristic(messages, context),
-        text: 'Delta AI is temporarily unavailable. Please try again in a moment.',
-        debug_reason: 'missing_groq_api_key',
-        debug_meta: buildDebugMeta(requestId, context, accountSnapshot, 'heuristic', 'missing_groq_api_key', undefined, undefined, snapshotWarnings)
-      }), {
-        status: 200,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      });
-    }
-
     const contextLine = friendlyContextLine(context, accountSnapshot);
 
     const promptMessages = [
@@ -2734,8 +2523,7 @@ Deno.serve(async (req) => {
     const llmAttempt = await (async () => {
       try {
         // Use AI gateway for provider-agnostic completion
-        const aiGatewayModule = await import('https://deno.land/x/ai_gateway@0.1.0/mod.ts');
-        const completion = await aiGatewayModule.aiGateway.createCompletion({
+        const completion = await aiGateway.createCompletion({
           messages: promptMessages,
           temperature: 0.2,
           maxTokens: 500,
