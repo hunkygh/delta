@@ -3119,11 +3119,11 @@
 
   .mobile-drawer.full .mobile-drawer-head {
     position: relative;
-    z-index: 2;
+    z-index: 5;
     align-items: center;
-    padding: calc(env(safe-area-inset-top) + 10px) 12px 0;
-    margin-bottom: -18px;
-    min-height: calc(46px + env(safe-area-inset-top));
+    padding: calc(env(safe-area-inset-top) + 14px) 16px 0;
+    margin-bottom: -6px;
+    min-height: calc(54px + env(safe-area-inset-top));
     color: rgb(32, 32, 32);
   }
 
@@ -3158,7 +3158,7 @@
   }
 
   .mobile-drawer.full .mobile-drawer-head-drag strong {
-    font-size: 18px;
+    font-size: 19px;
     font-weight: 600;
     letter-spacing: -0.02em;
     color: rgb(32, 32, 32);
@@ -3191,12 +3191,12 @@
   }
 
   .mobile-drawer.full .mobile-drawer-head button:not(.mobile-drawer-close) {
-    min-height: 26px;
-    border-radius: 999px;
-    background: rgba(239, 242, 247, 0.95);
+    min-height: 22px;
+    border-radius: 0;
+    background: transparent;
     color: rgba(107, 114, 128, 0.92);
-    padding: 0 10px;
-    font-size: 11px;
+    padding: 0 4px;
+    font-size: 12px;
     font-weight: 500;
   }
 
@@ -3221,8 +3221,8 @@
   }
 
   .mobile-drawer.full .mobile-drawer-close {
-    width: 38px;
-    height: 38px;
+    width: 42px;
+    height: 42px;
     background: rgba(209, 213, 219, 0.96);
     color: rgba(107, 114, 128, 0.98);
     box-shadow: 0 6px 16px rgba(17, 24, 39, 0.08);
@@ -3239,7 +3239,9 @@
 
   .mobile-drawer.full .mobile-drawer-body {
     margin-top: 0;
-    padding: 26px 0 calc(14px + env(safe-area-inset-bottom));
+    position: relative;
+    z-index: 2;
+    padding: 34px 0 calc(14px + env(safe-area-inset-bottom));
     background: rgba(255, 255, 255, 0.985);
     border-radius: 30px 30px 0 0;
     box-shadow:

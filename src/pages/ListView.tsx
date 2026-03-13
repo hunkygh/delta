@@ -427,6 +427,7 @@ export default function ListView(): JSX.Element {
   const [deletingItem, setDeletingItem] = useState(false);
   const itemAutosaveTimerRef = useRef<number | null>(null);
   const actionAutosaveTimersRef = useRef<Record<string, number>>({});
+  const selectedItemHydratedIdRef = useRef<string | null>(null);
   const fieldEditorActivationRef = useRef<{ key: string; until: number } | null>(null);
   const [itemModalExpandedActions, setItemModalExpandedActions] = useState<Record<string, boolean>>({});
   const [itemModalActionSaveState, setItemModalActionSaveState] = useState<Record<string, 'saved' | 'saving' | 'retrying'>>({});
@@ -579,6 +580,10 @@ export default function ListView(): JSX.Element {
     if (!selectedItem) {
       return;
     }
+    if (selectedItemHydratedIdRef.current === selectedItem.id) {
+      return;
+    }
+    selectedItemHydratedIdRef.current = selectedItem.id;
     setModalTitleDraft(selectedItem.title || '');
     setModalDescriptionDraft(selectedItem.description || '');
     setModalStatusValue(selectedItem.status_id ?? selectedItem.status ?? 'pending');
@@ -1391,6 +1396,11 @@ export default function ListView(): JSX.Element {
   };
 
   const closeItemModal = (): void => {
+    selectedItemHydratedIdRef.current = null;
+    if (itemAutosaveTimerRef.current != null) {
+      window.clearTimeout(itemAutosaveTimerRef.current);
+      itemAutosaveTimerRef.current = null;
+    }
     setSelectedItemId(null);
     setCommentDraft('');
     setCommentError(null);
@@ -1432,27 +1442,9 @@ export default function ListView(): JSX.Element {
       return;
     }
 
-    itemAutosaveTimerRef.current = window.setTimeout(async () => {
-      setItemModalSaveState('saving');
-      try {
-        const updated = await focalBoardService.updateItem(selectedItem.id, {
-          title: nextTitle,
-          description: nextDescription || null,
-          status: nextStatusKey,
-          status_id: nextStatusId
-        });
-        updateItemLocally(selectedItem.id, {
-          title: updated.title,
-          description: updated.description,
-          status: updated.status,
-          status_id: updated.status_id ?? null
-        });
-        setItemModalSaveState('saved');
-      } catch (err: any) {
-        setItemModalSaveState('retrying');
-        setError(err?.message || 'Failed to autosave item');
-      }
-    }, 280);
+    itemAutosaveTimerRef.current = window.setTimeout(() => {
+      void saveSelectedItemDrafts();
+    }, 3800);
     return () => {
       if (itemAutosaveTimerRef.current != null) {
         window.clearTimeout(itemAutosaveTimerRef.current);
@@ -1492,8 +1484,52 @@ export default function ListView(): JSX.Element {
     }
   };
 
+  async function saveSelectedItemDrafts(): Promise<void> {
+    if (!selectedItem) return;
+
+    const selectedStatus = statuses.find((status) => status.id === modalStatusValue || status.key === modalStatusValue);
+    const nextTitle = modalTitleDraft.trim() || selectedItem.title;
+    const nextDescription = modalDescriptionDraft.trim();
+    const selectedDescription = (selectedItem.description || '').trim();
+    const nextStatusId = selectedStatus?.id || null;
+    const nextStatusKey = selectedStatus?.key || 'pending';
+    const selectedStatusId = selectedItem.status_id ?? null;
+    const selectedStatusKey = selectedItem.status || 'pending';
+
+    const isUnchanged =
+      nextTitle === selectedItem.title &&
+      nextDescription === selectedDescription &&
+      nextStatusId === selectedStatusId &&
+      nextStatusKey === selectedStatusKey;
+
+    if (isUnchanged) {
+      setItemModalSaveState('saved');
+      return;
+    }
+
+    setItemModalSaveState('saving');
+    try {
+      const updated = await focalBoardService.updateItem(selectedItem.id, {
+        title: nextTitle,
+        description: nextDescription || null,
+        status: nextStatusKey,
+        status_id: nextStatusId
+      });
+      updateItemLocally(selectedItem.id, {
+        title: updated.title,
+        description: updated.description,
+        status: updated.status,
+        status_id: updated.status_id ?? null
+      });
+      setItemModalSaveState('saved');
+    } catch (err: any) {
+      setItemModalSaveState('retrying');
+      setError(err?.message || 'Failed to save item');
+    }
+  }
+
   const scheduleActionAutosave = useCallback(
-    (itemId: string, actionId: string, updates: Partial<ActionItem>): void => {
+    (itemId: string, actionId: string, updates: Partial<ActionItem>, delayMs = 3800): void => {
       const timerKey = `${itemId}:${actionId}`;
       const existingTimer = actionAutosaveTimersRef.current[timerKey];
       if (existingTimer != null) {
@@ -1514,9 +1550,9 @@ export default function ListView(): JSX.Element {
           setItemModalActionSaveState((prev) => ({ ...prev, [actionId]: 'saved' }));
         } catch (err: any) {
           setItemModalActionSaveState((prev) => ({ ...prev, [actionId]: 'retrying' }));
-          setError(err?.message || 'Failed to autosave task');
+          setError(err?.message || 'Failed to save task');
         }
-      }, 280);
+      }, delayMs);
     },
     [updateActionLocally]
   );
@@ -3616,6 +3652,7 @@ export default function ListView(): JSX.Element {
                       onKeyDown={(event) => {
                         if (event.key === 'Enter') {
                           event.preventDefault();
+                          void saveSelectedItemDrafts();
                           setIsModalTitleEditing(false);
                         }
                         if (event.key === 'Escape') {
@@ -3751,6 +3788,12 @@ export default function ListView(): JSX.Element {
                     className="list-item-description-editor"
                     value={modalDescriptionDraft}
                     onChange={(event) => setModalDescriptionDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+                        event.preventDefault();
+                        void saveSelectedItemDrafts();
+                      }
+                    }}
                     placeholder="Details, notes, and context"
                     rows={5}
                   />
@@ -4033,6 +4076,23 @@ export default function ListView(): JSX.Element {
                                 onChange={(event) =>
                                   handleActionDraftChange(selectedItem.id, action, { title: event.target.value })
                                 }
+                                onKeyDown={(event) => {
+                                  if (event.key === 'Enter') {
+                                    event.preventDefault();
+                                    void scheduleActionAutosave(
+                                      selectedItem.id,
+                                      action.id,
+                                      {
+                                        title: action.title,
+                                        description: action.description?.trim() ? action.description : null,
+                                        status: action.status || 'not_started',
+                                        subtask_status_id: action.subtask_status_id ?? null,
+                                        scheduled_at: action.scheduled_at || null
+                                      },
+                                      0
+                                    );
+                                  }
+                                }}
                                 placeholder="Task name"
                               />
                             </label>
