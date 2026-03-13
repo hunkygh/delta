@@ -3829,27 +3829,30 @@ p {
 
 .calendar-event-block-task-head {
   display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+}
+
+.calendar-event-block-task-head-main {
+  display: grid;
   gap: 2px;
 }
 
 .calendar-event-block-task-title-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
-  gap: 8px;
-}
-
-.calendar-event-block-task-actions {
-  display: flex;
-  justify-content: flex-end;
+  gap: 4px;
 }
 
 .calendar-event-block-task-kicker {
-  font-size: 10px;
+  font-size: 4px;
   font-weight: 700;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.18em;
   text-transform: uppercase;
   color: #7b8aa3;
+  opacity: 0.88;
 }
 
 .calendar-event-block-task-head strong {
@@ -3863,9 +3866,9 @@ p {
   border: none;
   background: transparent;
   color: #1f2937;
-  font-size: 13px;
+  font-size: 17px;
   font-weight: 600;
-  line-height: 1.25;
+  line-height: 1.2;
   padding: 0;
   outline: none;
   box-shadow: none;
@@ -3878,11 +3881,11 @@ p {
 }
 
 .calendar-event-block-task-delete {
-  width: 26px;
-  height: 26px;
+  width: 24px;
+  height: 24px;
   border: none;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.74);
+  background: transparent;
   color: #b02a37;
   display: inline-flex;
   align-items: center;
@@ -3897,21 +3900,24 @@ p {
 }
 
 .calendar-event-block-task-attach-btn {
-  width: 26px;
-  height: 26px;
   border: none;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.74);
+  border-radius: 8px;
+  background: transparent;
   color: #445673;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  align-self: start;
+  padding: 1px 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
   cursor: pointer;
 }
 
 .calendar-event-block-task-attach-btn:hover,
 .calendar-event-block-task-attach-btn:focus-visible {
-  background: rgba(233, 242, 255, 0.98);
+  background: rgba(241, 245, 249, 0.96);
   outline: none;
 }
 
@@ -3926,6 +3932,13 @@ p {
   gap: 4px;
   max-height: 184px;
   overflow: auto;
+}
+
+.calendar-event-block-task-error {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #b42318;
 }
 
 .calendar-event-block-task-attach-result {
@@ -3970,12 +3983,14 @@ p {
 .calendar-event-block-task-completion {
   display: grid;
   gap: 8px;
-  margin-left: 28px;
-  padding: 8px 0 2px;
+  margin-left: 0;
+  padding: 2px 0 0 34px;
+  border-left: 1px solid rgba(214, 220, 232, 0.9);
 }
 
 .calendar-event-block-task-completion-tasks {
-  min-height: 72px;
+  min-height: 42px;
+  max-height: 92px;
 }
 
 .calendar-event-block-task-completion-actions {
@@ -3986,13 +4001,15 @@ p {
 
 .calendar-event-block-task-status-branch {
   display: grid;
-  gap: 6px;
+  gap: 4px;
 }
 
 .calendar-event-block-task-status-branch span {
-  font-size: 0.76rem;
+  font-size: 10px;
   color: #6c7484;
   font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .calendar-event-block-task-status-branch select {
@@ -4000,9 +4017,10 @@ p {
   border: 1px solid rgba(193, 202, 222, 0.92);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.92);
-  padding: 10px 12px;
+  padding: 7px 10px;
   color: #223044;
   font: inherit;
+  font-size: 14px;
 }
 
 .block-task-inline-cancel {
@@ -4011,7 +4029,7 @@ p {
 
 .calendar-event-block-task-items {
   display: grid;
-  gap: 4px;
+  gap: 6px;
 }
 
 .calendar-event-attach-empty {
@@ -4032,14 +4050,60 @@ p {
 }
 
 .calendar-event-attach-row.block-task-child {
-  padding-left: 12px;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding-left: 2px;
   border: none;
   background: transparent;
 }
 
-.calendar-event-block-task-empty {
-  font-size: 11px;
-  color: #8a94a6;
+.calendar-event-attach-row.block-task-child .calendar-event-attach-caret.placeholder {
+  display: none;
+}
+
+.calendar-event-attach-row.block-task-child .calendar-event-attach-check {
+  width: 22px;
+  height: 22px;
+  margin: 0;
+}
+
+.calendar-event-attach-row.block-task-child .calendar-event-attach-title {
+  justify-self: start;
+  text-align: left;
+  font-size: 16px;
+  line-height: 1.2;
+  font-weight: 500;
+}
+
+.calendar-event-attach-row.block-task-child .calendar-event-attach-remove {
+  align-self: center;
+  font-size: 22px;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.calendar-event-block-task-completion .calendar-event-list-picker-search,
+.calendar-event-block-task-completion .calendar-event-description-input {
+  font-size: 14px;
+  padding: 10px 12px;
+  border-radius: 10px;
+}
+
+.calendar-event-block-task-completion .calendar-event-list-picker-search::placeholder,
+.calendar-event-block-task-completion .calendar-event-description-input::placeholder {
+  color: #8a90a0;
+}
+
+.calendar-event-block-task-completion-actions .calendar-event-primary-btn,
+.calendar-event-block-task-completion-actions .calendar-event-secondary-btn {
+  min-height: 30px;
+  font-size: 13px;
+}
+
+.calendar-event-block-task-footer {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .calendar-event-attach-caret {
@@ -9031,10 +9095,10 @@ textarea::placeholder {
   border: 1px solid rgba(199, 223, 245, 0.78) !important;
   border-radius: 14px !important;
   box-shadow:
-    0 0 0 1px rgba(163, 211, 255, 0.08),
-    0 0 10px rgba(88, 191, 255, 0.04),
-    0 0 18px rgba(88, 191, 255, 0.05),
-    0 12px 30px rgba(0, 122, 255, 0.05) !important;
+    0 0 0 1px rgba(163, 211, 255, 0.16),
+    0 0 16px rgba(88, 191, 255, 0.12),
+    0 0 34px rgba(88, 191, 255, 0.16),
+    0 18px 42px rgba(0, 122, 255, 0.1) !important;
   overflow: hidden !important;
   background-clip: padding-box !important;
 }
@@ -9042,28 +9106,28 @@ textarea::placeholder {
 .calendar-drawer-overlay-shell.open .calendar-event-drawer-side {
   border-color: rgba(170, 215, 255, 0.7) !important;
   box-shadow:
-    0 0 0 1px rgba(163, 211, 255, 0.18),
-    0 0 18px rgba(88, 191, 255, 0.16),
-    0 0 34px rgba(88, 191, 255, 0.18),
-    0 12px 30px rgba(0, 122, 255, 0.08) !important;
+    0 0 0 1px rgba(163, 211, 255, 0.24),
+    0 0 24px rgba(88, 191, 255, 0.22),
+    0 0 48px rgba(88, 191, 255, 0.24),
+    0 18px 42px rgba(0, 122, 255, 0.14) !important;
 }
 
 @keyframes calendar-drawer-scroll-open {
   0% {
     clip-path: inset(0 0 0 100% round 14px);
     box-shadow:
-      0 0 0 1px rgba(163, 211, 255, 0.04),
-      0 0 6px rgba(88, 191, 255, 0.02),
-      0 0 12px rgba(88, 191, 255, 0.02),
-      0 12px 30px rgba(0, 122, 255, 0.03);
+      0 0 0 1px rgba(163, 211, 255, 0.08),
+      0 0 10px rgba(88, 191, 255, 0.06),
+      0 0 18px rgba(88, 191, 255, 0.08),
+      0 18px 42px rgba(0, 122, 255, 0.06);
   }
   100% {
     clip-path: inset(0 0 0 0 round 14px);
     box-shadow:
-      0 0 0 1px rgba(163, 211, 255, 0.18),
-      0 0 18px rgba(88, 191, 255, 0.16),
-      0 0 34px rgba(88, 191, 255, 0.18),
-      0 12px 30px rgba(0, 122, 255, 0.08);
+      0 0 0 1px rgba(163, 211, 255, 0.24),
+      0 0 24px rgba(88, 191, 255, 0.22),
+      0 0 48px rgba(88, 191, 255, 0.24),
+      0 18px 42px rgba(0, 122, 255, 0.14);
   }
 }
 

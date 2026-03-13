@@ -303,6 +303,7 @@ export default function EventDrawer({
     itemTitle: string;
   };
   type BlockTaskAttachOption = {
+    kind: 'existing' | 'create';
     listId: string;
     listName: string;
     itemId: string;
@@ -313,6 +314,7 @@ export default function EventDrawer({
   const [recurrenceExpanded, setRecurrenceExpanded] = useState(false);
   const [draftTitle, setDraftTitle] = useState('');
   const [blockTaskDraft, setBlockTaskDraft] = useState('');
+  const [blockTaskCreateError, setBlockTaskCreateError] = useState<string | null>(null);
   const [blockTaskTitleDrafts, setBlockTaskTitleDrafts] = useState<Record<string, string>>({});
   const [openBlockTaskAttachId, setOpenBlockTaskAttachId] = useState<string | null>(null);
   const [blockTaskAttachQuery, setBlockTaskAttachQuery] = useState('');
@@ -501,6 +503,7 @@ export default function EventDrawer({
       const items = contentItemOptionsByList[list.id] || [];
       for (const item of items) {
         rows.push({
+          kind: 'existing',
           listId: list.id,
           listName: list.name,
           itemId: item.id,
@@ -510,7 +513,8 @@ export default function EventDrawer({
     }
     const query = blockTaskAttachQuery.trim();
     if (!query) return rows.slice(0, 12);
-    return rows
+    const normalizedQuery = normalizeSearchText(query);
+    const filtered = rows
       .filter((row) => fuzzyTokenMatch(query, row.itemTitle) || fuzzyTokenMatch(query, row.listName))
       .sort(
         (a, b) =>
@@ -518,6 +522,21 @@ export default function EventDrawer({
           Math.max(fuzzyScore(query, a.itemTitle), fuzzyScore(query, a.listName))
       )
       .slice(0, 20);
+    const exactMatch =
+      filtered.find((row) => normalizeSearchText(row.itemTitle) === normalizedQuery) ||
+      rows.find((row) => normalizeSearchText(row.itemTitle) === normalizedQuery) ||
+      null;
+    const topRow: BlockTaskAttachOption =
+      exactMatch
+        ? exactMatch
+        : {
+            kind: 'create',
+            listId: activeAttachListId,
+            listName: activeAttachListName,
+            itemId: `create:${normalizedQuery}`,
+            itemTitle: query
+          };
+    return [topRow, ...filtered.filter((row) => !(row.listId === topRow.listId && row.itemId === topRow.itemId))].slice(0, 20);
   }, [blockTaskAttachQuery, contentItemOptionsByList, contentListOptions]);
 
   const slashAttachOptions = useMemo<SlashAttachOption[]>(() => {
@@ -650,9 +669,15 @@ export default function EventDrawer({
   const applyInlineBlockTaskCommand = async (): Promise<void> => {
     const title = slashAttachQuery.trim();
     if (!title) return;
-    const created = (await onCreateBlockTask?.(title)) || null;
-    if (created?.id) {
-      setRecentInlineBlockTaskId(created.id);
+    try {
+      setBlockTaskCreateError(null);
+      const created = (await onCreateBlockTask?.(title)) || null;
+      if (created?.id) {
+        setRecentInlineBlockTaskId(created.id);
+      }
+    } catch (error: any) {
+      setBlockTaskCreateError(error?.message || 'Failed to create block task.');
+      return;
     }
     if (slashTokenStart != null && descriptionInputRef.current) {
       const textarea = descriptionInputRef.current;
@@ -879,6 +904,9 @@ export default function EventDrawer({
                   </span>
                 )}
               </div>
+              {blockTaskCreateError && commandTrigger === '+' ? (
+                <p className="calendar-event-block-task-error">{blockTaskCreateError}</p>
+              ) : null}
             </div>
           )}
         </section>
@@ -1035,27 +1063,37 @@ export default function EventDrawer({
 
         <section className="calendar-event-task-link-block">
           {onCreateBlockTask ? (
-            <form
-              className="calendar-event-block-task-create"
-              onSubmit={(event) => {
-                event.preventDefault();
-                const value = blockTaskDraft.trim();
-                if (!value) return;
-                void onCreateBlockTask(value);
-                setBlockTaskDraft('');
-              }}
-            >
-              <input
-                type="text"
-                value={blockTaskDraft}
-                onChange={(event) => setBlockTaskDraft(event.target.value)}
-                className="calendar-event-list-picker-search"
-                placeholder="Add block task"
-              />
-              <button type="submit" className="calendar-event-link-tasks-btn">
-                Add
-              </button>
-            </form>
+            <>
+              <form
+                className="calendar-event-block-task-create"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const value = blockTaskDraft.trim();
+                  if (!value) return;
+                  void (async () => {
+                    try {
+                      setBlockTaskCreateError(null);
+                      await onCreateBlockTask(value);
+                      setBlockTaskDraft('');
+                    } catch (error: any) {
+                      setBlockTaskCreateError(error?.message || 'Failed to create block task.');
+                    }
+                  })();
+                }}
+              >
+                <input
+                  type="text"
+                  value={blockTaskDraft}
+                  onChange={(event) => setBlockTaskDraft(event.target.value)}
+                  className="calendar-event-list-picker-search"
+                  placeholder="Add block task"
+                />
+                <button type="submit" className="calendar-event-link-tasks-btn">
+                  Add
+                </button>
+              </form>
+              {blockTaskCreateError ? <p className="calendar-event-block-task-error">{blockTaskCreateError}</p> : null}
+            </>
           ) : null}
           <div className="calendar-event-task-link-row">
             <div className="calendar-event-attach-inline">
@@ -1066,41 +1104,30 @@ export default function EventDrawer({
                   {occurrenceBlockTasks.map((task) => (
                     <div key={task.id} className="calendar-event-block-task">
                       <div className="calendar-event-block-task-head">
-                        <span className="calendar-event-block-task-kicker">Block task</span>
-                        <div className="calendar-event-block-task-title-row">
-                          <input
-                            type="text"
-                            value={blockTaskTitleDrafts[task.id] ?? task.title}
-                            onChange={(event) =>
-                              setBlockTaskTitleDrafts((prev) => ({ ...prev, [task.id]: event.target.value }))
-                            }
-                            onBlur={() => void commitBlockTaskTitle(task)}
-                            onKeyDown={(event) => {
-                              if (event.key === 'Enter') {
-                                event.preventDefault();
-                                void commitBlockTaskTitle(task);
+                        <div className="calendar-event-block-task-head-main">
+                          <span className="calendar-event-block-task-kicker">Block Task</span>
+                          <div className="calendar-event-block-task-title-row">
+                            <input
+                              type="text"
+                              value={blockTaskTitleDrafts[task.id] ?? task.title}
+                              onChange={(event) =>
+                                setBlockTaskTitleDrafts((prev) => ({ ...prev, [task.id]: event.target.value }))
                               }
-                              if (event.key === 'Escape') {
-                                event.preventDefault();
-                                setBlockTaskTitleDrafts((prev) => ({ ...prev, [task.id]: task.title }));
-                              }
-                            }}
-                            className="calendar-event-block-task-title-input"
-                          />
-                          {onDeleteBlockTask ? (
-                            <button
-                              type="button"
-                              className="calendar-event-block-task-delete"
-                              onClick={() => void onDeleteBlockTask(task.id)}
-                              aria-label="Delete block task"
-                            >
-                              <Trash2 size={14} />
-                            </button>
-                          ) : null}
+                              onBlur={() => void commitBlockTaskTitle(task)}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter') {
+                                  event.preventDefault();
+                                  void commitBlockTaskTitle(task);
+                                }
+                                if (event.key === 'Escape') {
+                                  event.preventDefault();
+                                  setBlockTaskTitleDrafts((prev) => ({ ...prev, [task.id]: task.title }));
+                                }
+                              }}
+                              className="calendar-event-block-task-title-input"
+                            />
+                          </div>
                         </div>
-                        {task.description ? <span>{task.description}</span> : null}
-                      </div>
-                      <div className="calendar-event-block-task-actions">
                         {onAttachItemToBlockTask ? (
                           <button
                             type="button"
@@ -1111,9 +1138,10 @@ export default function EventDrawer({
                             }}
                             aria-label="Attach item to block task"
                           >
-                            <Plus size={14} />
+                            + Add Item
                           </button>
                         ) : null}
+                        {task.description ? <span>{task.description}</span> : null}
                       </div>
                       {openBlockTaskAttachId === task.id && onAttachItemToBlockTask ? (
                         <div className="calendar-event-block-task-attach-menu">
@@ -1133,16 +1161,28 @@ export default function EventDrawer({
                                   type="button"
                                   className="calendar-event-block-task-attach-result"
                                   onClick={() => {
-                                    void onAttachItemToBlockTask(task.id, row.itemId);
-                                    setOpenBlockTaskAttachId(null);
-                                    setBlockTaskAttachQuery('');
+                                    void (async () => {
+                                      if (row.kind === 'create') {
+                                        await onCreateAndAttachSearchItem?.(row.itemTitle.trim(), {
+                                          listId: row.listId,
+                                          weekday: contentMode === 'weekday' ? activeWeekday : null,
+                                          blockTaskId: task.id
+                                        });
+                                      } else {
+                                        await onAttachItemToBlockTask?.(task.id, row.itemId);
+                                      }
+                                      setOpenBlockTaskAttachId(null);
+                                      setBlockTaskAttachQuery('');
+                                    })();
                                   }}
                                 >
                                   <span className="calendar-event-block-task-attach-copy">
-                                    <strong>{row.itemTitle}</strong>
-                                    <small>{row.listName}</small>
+                                    <strong>{row.kind === 'create' ? `Create "${row.itemTitle}"` : row.itemTitle}</strong>
+                                    <small>{row.kind === 'create' ? `Attach to ${row.listName}` : row.listName}</small>
                                   </span>
-                                  <Plus size={12} />
+                                  <span className="calendar-event-slash-add" aria-hidden="true">
+                                    {row.kind === 'create' ? '↵' : '+'}
+                                  </span>
                                 </button>
                               ))}
                           </div>
@@ -1295,9 +1335,19 @@ export default function EventDrawer({
                             ) : null
                           )}
                         </div>
-                      ) : (
-                        <span className="calendar-event-block-task-empty">no linked items yet</span>
-                      )}
+                      ) : null}
+                      {onDeleteBlockTask ? (
+                        <div className="calendar-event-block-task-footer">
+                          <button
+                            type="button"
+                            className="calendar-event-block-task-delete"
+                            onClick={() => void onDeleteBlockTask(task.id)}
+                            aria-label="Delete block task"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      ) : null}
                     </div>
                   ))}
                   {attachedItemsRows.map((row, index) => (

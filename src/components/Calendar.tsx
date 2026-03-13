@@ -1320,6 +1320,24 @@ export default function Calendar({
     });
   };
 
+  const refreshBlockTasksForTimeBlock = async (timeBlockId: string): Promise<void> => {
+    const matchingEvents = baseVisibleEvents.filter((event) => (event.sourceEventId ?? event.id) === timeBlockId);
+    if (matchingEvents.length === 0) return;
+    const entries = await Promise.all(
+      matchingEvents.map(async (event) => [
+        event.id,
+        await calendarService.getBlockTasksWithItems({
+          timeBlockId,
+          scheduledStartUtc: event.start
+        })
+      ] as const)
+    );
+    setResolvedBlockTasksByOccurrence((prev) => ({
+      ...prev,
+      ...Object.fromEntries(entries)
+    }));
+  };
+
   const handleCreateBlockTask = async (title: string): Promise<BlockTask | void> => {
     if (!title.trim()) return;
     if (!editingEventId) {
@@ -1344,6 +1362,7 @@ export default function Calendar({
       sortOrder: activeOccurrenceBlockTasks.length
     });
     applyBlockTaskPatchToResolvedState(editingEventId, (tasks) => [...tasks, created]);
+    await refreshBlockTasksForTimeBlock(editingEventId);
     return created;
   };
 
@@ -1883,6 +1902,7 @@ export default function Calendar({
           sortOrder: existingTasks.length
         });
         applyBlockTaskPatchToResolvedState(cardQuickAdd.timeBlockId, (tasks) => [...tasks, created]);
+        await refreshBlockTasksForTimeBlock(cardQuickAdd.timeBlockId);
         closeCardQuickAddPanel();
         return;
       }
