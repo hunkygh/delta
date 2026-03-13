@@ -527,6 +527,8 @@ export default function MobileCalendarWireframe(): JSX.Element {
     velocityY: 0
   });
   const drawerPointerIdRef = useRef<number | null>(null);
+  const drawerOpenedAtRef = useRef(0);
+  const addSheetOpenedAtRef = useRef(0);
   const itemDrawerGestureRef = useRef<{ startX: number; startY: number }>({ startX: 0, startY: 0 });
 
   const now = new Date();
@@ -1683,26 +1685,31 @@ export default function MobileCalendarWireframe(): JSX.Element {
   });
 
   const openPeekDrawer = (blockId: string): void => {
+    drawerOpenedAtRef.current = Date.now();
     setDrawerClosing(false);
     setDrawer({ open: true, mode: 'peek', blockId });
   };
   const openFullDrawer = (blockId: string): void => {
+    drawerOpenedAtRef.current = Date.now();
     setDrawerClosing(false);
     setDrawer({ open: true, mode: 'full', blockId });
   };
   const openEditDrawer = (blockId: string): void => {
+    drawerOpenedAtRef.current = Date.now();
     setDrawerClosing(false);
     setDrawer({ open: true, mode: 'edit', blockId });
   };
 
   const returnFromEditDrawer = (): void => {
     if (!drawer.blockId) return;
+    drawerOpenedAtRef.current = Date.now();
     setDrawerClosing(false);
     setDrawer({ open: true, mode: 'full', blockId: drawer.blockId });
   };
   const openItemDrawer = (blockId: string, itemId: string): void => {
     setItemDrawerPanel('details');
     setItemDrawerCommentDraft('');
+    drawerOpenedAtRef.current = Date.now();
     setDrawerClosing(false);
     setDrawer({ open: true, mode: 'item', blockId, itemId });
   };
@@ -1711,6 +1718,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
     if (!drawer.blockId) return;
     setItemDrawerPanel('details');
     setItemDrawerCommentDraft('');
+    drawerOpenedAtRef.current = Date.now();
     setDrawerClosing(false);
     setDrawer({ open: true, mode: 'full', blockId: drawer.blockId });
   };
@@ -1732,6 +1740,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
       focalId: next.focalId ?? mobileScope.focalId ?? focals[0]?.id ?? null,
       listId: next.listId ?? mobileScope.listId ?? null
     });
+    addSheetOpenedAtRef.current = Date.now();
     setCaptureMode('none');
   };
 
@@ -3089,6 +3098,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
   };
 
   const openAddTaskDrawer = (blockId: string): void => {
+    drawerOpenedAtRef.current = Date.now();
     setDrawerClosing(false);
     setTaskDrawerSearch('');
     setTaskDrawerPendingKey(null);
@@ -5230,10 +5240,16 @@ export default function MobileCalendarWireframe(): JSX.Element {
       )}
 
       {addSheet.open && (
-        <div className={`mobile-add-sheet-overlay ${addSheetClosing ? 'closing' : ''}`.trim()} onClick={closeAddSheet}>
+        <div
+          className={`mobile-add-sheet-overlay ${addSheetClosing ? 'closing' : ''}`.trim()}
+          onClick={() => {
+            if (Date.now() - addSheetOpenedAtRef.current < 180) return;
+            closeAddSheet();
+          }}
+        >
           <div
             className={`mobile-add-sheet ${addSheetClosing ? 'closing' : ''} ${isAddSheetDragging ? 'dragging' : ''}`.trim()}
-            style={{ transform: `translateY(${addSheetDragY}px)` }}
+            style={isAddSheetDragging ? { transform: `translateY(${addSheetDragY}px)` } : undefined}
             onClick={(event) => event.stopPropagation()}
           >
             <div
@@ -5564,10 +5580,16 @@ export default function MobileCalendarWireframe(): JSX.Element {
       )}
 
       {drawer.open && (
-        <div className="mobile-drawer-overlay" onClick={closeDrawer}>
+        <div
+          className="mobile-drawer-overlay"
+          onClick={() => {
+            if (Date.now() - drawerOpenedAtRef.current < 180) return;
+            closeDrawer();
+          }}
+        >
           <div
             className={`mobile-drawer ${drawer.mode} ${isDrawerDragging ? 'dragging' : ''} ${drawerClosing ? 'closing' : ''}`.trim()}
-            style={{ transform: `translateY(${drawerDragY}px)` }}
+            style={isDrawerDragging ? { transform: `translateY(${drawerDragY}px)` } : undefined}
             onClick={(event) => event.stopPropagation()}
           >
             <div

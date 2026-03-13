@@ -2519,7 +2519,10 @@
     grid-template-rows: auto 1fr auto;
     touch-action: none;
     overflow: hidden;
-    clip-path: inset(100% 0 0 0 round 26px 26px 0 0);
+    opacity: 1;
+    transform: translateY(0);
+    will-change: transform, opacity;
+    backface-visibility: hidden;
   }
 
   .mobile-add-sheet.dragging {
@@ -2999,10 +3002,12 @@
     animation: mobile-bottom-sheet-scroll-open 240ms cubic-bezier(0.2, 0.86, 0.18, 1);
     display: grid;
     grid-template-rows: auto auto 1fr auto;
-    transition: transform 260ms cubic-bezier(0.2, 0.9, 0.2, 1);
-    will-change: transform;
+    transition: transform 260ms cubic-bezier(0.2, 0.9, 0.2, 1), opacity 220ms cubic-bezier(0.22, 1, 0.36, 1);
+    will-change: transform, opacity;
     overflow: hidden;
-    clip-path: inset(100% 0 0 0 round 26px 26px 0 0);
+    opacity: 1;
+    transform: translateY(0);
+    backface-visibility: hidden;
   }
 
   .mobile-drawer-overlay {
@@ -4389,23 +4394,25 @@
 
   @keyframes mobile-bottom-sheet-scroll-open {
     0% {
-      clip-path: inset(100% 0 0 0 round 26px 26px 0 0);
+      opacity: 0;
+      transform: translateY(42px);
       box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
     }
     100% {
-      clip-path: inset(0 0 0 0 round 26px 26px 0 0);
+      opacity: 1;
+      transform: translateY(0);
       box-shadow: var(--shadow-elevated);
     }
   }
 
   @keyframes mobile-bottom-sheet-scroll-close {
     0% {
-      clip-path: inset(0 0 0 0 round 26px 26px 0 0);
       opacity: 1;
+      transform: translateY(0);
     }
     100% {
-      clip-path: inset(100% 0 0 0 round 26px 26px 0 0);
-      opacity: 1;
+      opacity: 0;
+      transform: translateY(42px);
     }
   }
 
