@@ -15,15 +15,13 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronDown,
-  FileText,
-  CalendarDays,
   CheckSquare,
   ArrowLeft,
   Folder,
   SlidersHorizontal,
   Trash2
 } from 'lucide-react';
-import { Mountains } from '@phosphor-icons/react';
+import { CalendarIcon, DatabaseIcon } from '../../icons';
 import MarkdownText from '../MarkdownText';
 import { useAuth } from '../../context/AuthContext';
 import chatService from '../../services/chatService';
@@ -777,8 +775,8 @@ export default function MobileCalendarWireframe(): JSX.Element {
     return rows;
   }, []);
 
-  const navOrder: Array<'docs' | 'focals' | 'calendar'> = ['docs', 'focals', 'calendar'];
-  const activeNavIndex = navOrder.indexOf(activeNav);
+  const navOrder: Array<'focals' | 'calendar'> = ['focals', 'calendar'];
+  const activeNavIndex = Math.max(0, navOrder.indexOf(activeNav as 'focals' | 'calendar'));
   const addSubitemParentOptions = useMemo(() => {
     return indexedLists.flatMap((list) =>
       list.items.map((item) => ({
@@ -2547,6 +2545,39 @@ export default function MobileCalendarWireframe(): JSX.Element {
     }
   };
 
+  const completeAllBlockTaskItems = async (blockId: string, blockTaskId: string): Promise<void> => {
+    const targetBlock = blocks.find((entry) => entry.id === blockId) || null;
+    const targetTask = targetBlock?.blockTasks?.find((entry) => entry.id === blockTaskId) || null;
+    if (!user?.id || !targetBlock || !targetTask) return;
+    const pendingLinkedItems = targetTask.linkedItems.filter((linked) => !linked.completedInContext);
+    for (const linked of pendingLinkedItems) {
+      await withPendingBlockTaskToggle(linked.blockTaskItemId, async () => {
+        await calendarService.setBlockTaskItemCompletion({
+          userId: user.id,
+          blockTaskItemId: linked.blockTaskItemId,
+          timeBlockId: blockId,
+          scheduledStartUtc: buildIsoFromViewedDate(minutesToClock(targetBlock.startMin)),
+          scheduledEndUtc: buildIsoFromViewedDate(minutesToClock(targetBlock.endMin)),
+          checked: true,
+          completionNote: null
+        });
+        syncBlockTaskLinkedItemLocalState(linked.itemId, linked.blockTaskItemId, {
+          completedInContext: true,
+          completionNote: null,
+          completedAt: new Date().toISOString()
+        });
+        await focalBoardService.createScopedComment(
+          'item',
+          linked.itemId,
+          user.id,
+          `Completed during "${targetTask.title}" in "${targetBlock.name}".`,
+          'system'
+        );
+      });
+    }
+    await loadCalendarBlocks();
+  };
+
   const submitItemDrawerComment = async (): Promise<void> => {
     if (!user?.id || !resolvedDrawerItem?.id) return;
     const body = itemDrawerCommentDraft.trim();
@@ -3220,7 +3251,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
     setTaskDrawerPendingKey(null);
     setTaskDrawerListPickerOpen(false);
     setTaskDrawerError('');
-    setTaskDrawerEntryType(blockTaskId ? 'linked_item' : 'linked_item');
+    setTaskDrawerEntryType(blockTaskId ? 'linked_item' : 'block_task');
     setTaskDrawerTargetBlockTaskId(blockTaskId);
     setTaskDrawerListId(inferListForBlock(blockId));
     setTaskDrawerExpandedFocals({});
@@ -3356,7 +3387,11 @@ export default function MobileCalendarWireframe(): JSX.Element {
           linkedItems: []
         });
         setTaskDrawerSearch('');
-        setDrawer({ open: true, mode: 'full', blockId });
+        setTaskDrawerEntryType('linked_item');
+        setTaskDrawerTargetBlockTaskId(createdTask.id);
+        setTaskDrawerError('');
+        setDrawer({ open: true, mode: 'addTask', blockId });
+        void ensureTaskDrawerIndexData();
         void loadCalendarBlocks();
         return;
       }
@@ -3622,17 +3657,31 @@ export default function MobileCalendarWireframe(): JSX.Element {
                 <span className="mobile-block-task-kicker">Block task</span>
                 <strong className="mobile-block-task-title">{task.title}</strong>
               </div>
-              <button
-                type="button"
-                className="mobile-block-task-inline-add"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  openAddTaskDrawer(blockId, task.id);
-                }}
-                aria-label="Add item to block task"
-              >
-                <Plus size={14} />
-              </button>
+              <div className="mobile-block-task-head-actions">
+                {task.linkedItems.some((linked) => !linked.completedInContext) && (
+                  <button
+                    type="button"
+                    className="mobile-block-task-complete-all"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void completeAllBlockTaskItems(blockId, task.id);
+                    }}
+                  >
+                    Complete all
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="mobile-block-task-inline-add"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    openAddTaskDrawer(blockId, task.id);
+                  }}
+                  aria-label="Add item to block task"
+                >
+                  <Plus size={14} />
+                </button>
+              </div>
             </div>
             {task.description?.trim() ? <p className="mobile-block-task-description">{task.description.trim()}</p> : null}
             {task.linkedItems.length > 0 ? (
@@ -5411,16 +5460,12 @@ export default function MobileCalendarWireframe(): JSX.Element {
                 className="mobile-bottom-pill-indicator"
                 style={{ transform: `translateX(${activeNavIndex * 100}%)` }}
               />
-              <button type="button" className={activeNav === 'docs' ? 'active' : ''} onClick={() => setActiveNav('docs')}>
-                <FileText size={15} />
-                <span>Notes</span>
-              </button>
               <button type="button" className={activeNav === 'focals' ? 'active' : ''} onClick={() => setActiveNav('focals')}>
-                <Mountains size={15} weight="regular" />
+                <DatabaseIcon size={15} />
                 <span>Spaces</span>
               </button>
               <button type="button" className={activeNav === 'calendar' ? 'active' : ''} onClick={() => setActiveNav('calendar')}>
-                <CalendarDays size={15} />
+                <CalendarIcon size={15} />
                 <span>Calendar</span>
               </button>
             </div>
@@ -6121,6 +6166,11 @@ export default function MobileCalendarWireframe(): JSX.Element {
                     onChange={(event) => setTaskDrawerSearch(event.target.value)}
                   />
                 </label>
+                {taskDrawerEntryType === 'linked_item' && taskDrawerTargetBlockTaskId && (
+                  <div className="mobile-task-drawer-empty compact">
+                    Add or create items for this task.
+                  </div>
+                )}
                 <div className="mobile-task-drawer-results">
                   {!!taskDrawerError && <div className="mobile-task-drawer-empty error">{taskDrawerError}</div>}
                   {taskDrawerEntryType === 'block_task' ? (
@@ -6256,36 +6306,65 @@ export default function MobileCalendarWireframe(): JSX.Element {
                 </div>
                 {blockDrawerPanel === 'details' ? (
                   <>
+                    <div className="mobile-block-section">
+                      <div className="mobile-block-section-head">
+                        <h4>Description</h4>
+                      </div>
+                    </div>
                     {activeDrawerBlock?.description?.trim() ? (
                       <MarkdownText className="mobile-drawer-description" text={activeDrawerBlock.description.trim()} />
                     ) : (
                       <p className="mobile-drawer-description">No description yet.</p>
                     )}
                     <div className="mobile-drawer-linked">
-                      <div className="mobile-drawer-linked-head">
-                        <h4>Attached items</h4>
-                        <button
-                          type="button"
-                          className="mobile-task-drawer-create"
-                          onClick={() => drawer.blockId && openAddTaskDrawer(drawer.blockId)}
-                        >
-                          Add items
-                        </button>
+                      <div className="mobile-block-section-divider" />
+                      <div className="mobile-block-section">
+                        <div className="mobile-drawer-linked-head">
+                          <h4>Tasks</h4>
+                          <button
+                            type="button"
+                            className="mobile-task-drawer-create"
+                            onClick={() => {
+                              if (!drawer.blockId) return;
+                              setTaskDrawerEntryType('block_task');
+                              openAddTaskDrawer(drawer.blockId);
+                            }}
+                          >
+                            Add
+                          </button>
+                        </div>
+                        {activeDrawerBlock?.blockTasks?.length ? (
+                          <div className="mobile-drawer-linked-block-tasks">
+                            {renderBlockTaskGroups(drawer.blockId as string, activeDrawerBlock.blockTasks)}
+                          </div>
+                        ) : (
+                          <div className="mobile-drawer-empty compact">No tasks in this block yet.</div>
+                        )}
                       </div>
-                      {activeDrawerBlock?.blockTasks?.length ? (
-                        <div className="mobile-drawer-linked-block-tasks">
-                          <h5>Block tasks</h5>
-                          {renderBlockTaskGroups(drawer.blockId as string, activeDrawerBlock.blockTasks)}
+                      <div className="mobile-block-section-divider" />
+                      <div className="mobile-block-section">
+                        <div className="mobile-drawer-linked-head">
+                          <h4>Attached items</h4>
+                          <button
+                            type="button"
+                            className="mobile-task-drawer-create secondary"
+                            onClick={() => {
+                              if (!drawer.blockId) return;
+                              setTaskDrawerEntryType('linked_item');
+                              openAddTaskDrawer(drawer.blockId);
+                            }}
+                          >
+                            Attach item
+                          </button>
                         </div>
-                      ) : null}
-                      {activeDrawerBlock?.items?.length ? (
-                        <div className="mobile-drawer-linked-direct">
-                          {activeDrawerBlock.blockTasks?.length ? <h5>Direct items</h5> : null}
-                          {renderBlockItemRows(drawer.blockId as string, activeDrawerBlock.items || [])}
-                        </div>
-                      ) : activeDrawerBlock?.blockTasks?.length ? null : (
-                        renderBlockItemRows(drawer.blockId as string, activeDrawerBlock?.items || [])
-                      )}
+                        {activeDrawerBlock?.items?.length ? (
+                          <div className="mobile-drawer-linked-direct">
+                            {renderBlockItemRows(drawer.blockId as string, activeDrawerBlock.items || [])}
+                          </div>
+                        ) : (
+                          renderBlockItemRows(drawer.blockId as string, activeDrawerBlock?.items || [])
+                        )}
+                      </div>
                     </div>
                   </>
                 ) : (

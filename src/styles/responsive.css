@@ -3075,7 +3075,7 @@
     min-height: 0;
     border: none;
     border-radius: 0;
-    background: linear-gradient(180deg, rgba(7, 10, 16, 0.98) 0, rgba(9, 12, 18, 0.98) 92px, rgba(255, 255, 255, 0) 92px);
+    background: linear-gradient(180deg, rgba(5, 8, 14, 0.995) 0, rgba(7, 10, 16, 0.992) 132px, rgba(255, 255, 255, 0) 132px);
     padding: 0;
     grid-template-rows: auto 1fr;
     box-shadow: none;
@@ -3118,10 +3118,13 @@
   }
 
   .mobile-drawer.full .mobile-drawer-head {
-    align-items: flex-start;
-    padding: calc(env(safe-area-inset-top) + 12px) 16px 10px;
+    position: relative;
+    z-index: 2;
+    align-items: center;
+    padding: calc(env(safe-area-inset-top) + 10px) 12px 0;
+    margin-bottom: -18px;
     min-height: calc(46px + env(safe-area-inset-top));
-    color: rgba(255, 255, 255, 0.96);
+    color: rgb(32, 32, 32);
   }
 
   .mobile-drawer-head-drag {
@@ -3155,10 +3158,10 @@
   }
 
   .mobile-drawer.full .mobile-drawer-head-drag strong {
-    font-size: 16px;
+    font-size: 18px;
     font-weight: 600;
-    letter-spacing: -0.01em;
-    color: rgba(255, 255, 255, 0.96);
+    letter-spacing: -0.02em;
+    color: rgb(32, 32, 32);
   }
 
   .mobile-drawer-head-actions {
@@ -3171,7 +3174,7 @@
 
   .mobile-drawer.full .mobile-drawer-head-actions {
     gap: 6px;
-    padding-top: 2px;
+    padding-top: 0;
   }
 
   .mobile-drawer-head button {
@@ -3188,11 +3191,11 @@
   }
 
   .mobile-drawer.full .mobile-drawer-head button:not(.mobile-drawer-close) {
-    min-height: 28px;
+    min-height: 30px;
     border-radius: 999px;
-    background: rgba(255, 255, 255, 0.08);
-    color: rgba(255, 255, 255, 0.78);
-    padding: 0 10px;
+    background: rgba(239, 242, 247, 0.95);
+    color: rgba(63, 74, 98, 0.92);
+    padding: 0 12px;
     font-size: 12px;
     font-weight: 600;
   }
@@ -3218,8 +3221,11 @@
   }
 
   .mobile-drawer.full .mobile-drawer-close {
-    background: rgba(255, 255, 255, 0.08);
-    color: rgba(255, 255, 255, 0.82);
+    width: 38px;
+    height: 38px;
+    background: rgba(229, 233, 240, 0.96);
+    color: rgba(91, 101, 118, 0.98);
+    box-shadow: 0 6px 16px rgba(17, 24, 39, 0.08);
   }
 
   .mobile-drawer-body {
@@ -3233,12 +3239,13 @@
 
   .mobile-drawer.full .mobile-drawer-body {
     margin-top: 0;
-    padding: 14px 16px calc(14px + env(safe-area-inset-bottom));
+    padding: 26px 0 calc(14px + env(safe-area-inset-bottom));
     background: rgba(255, 255, 255, 0.985);
-    border-radius: 24px 24px 0 0;
+    border-radius: 30px 30px 0 0;
     box-shadow:
-      0 -10px 30px rgba(0, 199, 255, 0.16),
-      inset 0 1px 0 rgba(0, 199, 255, 0.42);
+      0 -12px 34px rgba(0, 199, 255, 0.14),
+      inset 0 2px 0 rgba(0, 199, 255, 0.48);
+    overflow-x: hidden;
   }
 
   .mobile-drawer-edit {
@@ -3572,9 +3579,13 @@
   }
 
   .mobile-drawer.full .mobile-drawer-description {
-    margin-bottom: 16px;
+    margin-bottom: 0;
     font-size: 14px;
     line-height: 1.55;
+  }
+
+  .mobile-block-drawer-panel.details > .mobile-drawer-description {
+    padding: 0 16px;
   }
 
   .mobile-drawer-linked {
@@ -3585,6 +3596,7 @@
   .mobile-drawer.full .mobile-drawer-linked {
     min-height: 100%;
     align-content: start;
+    gap: 0;
   }
 
   .mobile-drawer-description.delta-markdown {
@@ -3609,7 +3621,7 @@
   }
 
   .mobile-drawer.full .mobile-drawer-linked-head {
-    margin-bottom: 2px;
+    margin-bottom: 0;
   }
 
   .mobile-drawer-linked-list {
@@ -3681,6 +3693,13 @@
     gap: 8px;
   }
 
+  .mobile-block-task-head-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex: 0 0 auto;
+  }
+
   .mobile-block-task-kicker {
     color: #6d7893;
     font-size: 10px;
@@ -3706,6 +3725,15 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    padding: 0;
+  }
+
+  .mobile-block-task-complete-all {
+    border: none;
+    background: transparent;
+    color: rgba(63, 74, 98, 0.92);
+    font-size: 12px;
+    font-weight: 600;
     padding: 0;
   }
 
@@ -3898,7 +3926,76 @@
   }
 
   .mobile-item-drawer-tabs.block-workspace {
-    margin-bottom: 4px;
+    margin-bottom: 0;
+    padding: 0 16px;
+    min-height: 54px;
+    align-items: center;
+    background: rgba(255, 255, 255, 0.985);
+    position: sticky;
+    top: 0;
+    z-index: 2;
+  }
+
+  .mobile-block-section {
+    display: grid;
+    gap: 10px;
+    padding: 16px 16px 0;
+  }
+
+  .mobile-block-section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .mobile-block-section-head h4 {
+    margin: 0;
+    color: var(--color-text-primary);
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+  }
+
+  .mobile-block-section-divider {
+    height: 1px;
+    margin: 16px 16px 0;
+    background: rgba(214, 220, 232, 0.92);
+  }
+
+  .mobile-block-section .mobile-task-drawer-create {
+    justify-self: start;
+    border-radius: 999px;
+    background: transparent;
+    color: rgba(63, 74, 98, 0.92);
+    font-size: 13px;
+    font-weight: 600;
+    padding: 0;
+  }
+
+  .mobile-block-section .mobile-task-drawer-create:hover,
+  .mobile-block-section .mobile-task-drawer-create:focus-visible {
+    background: transparent;
+    color: var(--color-text-primary);
+  }
+
+  .mobile-block-section .mobile-task-drawer-create.secondary {
+    color: var(--color-text-secondary);
+    font-weight: 500;
+  }
+
+  .mobile-block-section .mobile-task-drawer-create.secondary:hover,
+  .mobile-block-section .mobile-task-drawer-create.secondary:focus-visible {
+    color: rgba(63, 74, 98, 0.92);
+  }
+
+  .mobile-block-section .mobile-drawer-linked-block-tasks,
+  .mobile-block-section .mobile-drawer-linked-direct {
+    gap: 12px;
+  }
+
+  .mobile-block-section .mobile-drawer-empty.compact {
+    padding: 0;
   }
 
   .mobile-item-drawer-details h4 {

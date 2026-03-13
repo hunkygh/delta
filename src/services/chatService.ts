@@ -55,7 +55,7 @@ const invokeChatFunction = async (
 };
 
 const heuristicReply = (payload: ChatInvokePayload): ChatReply => {
-  const compact = 'Delta AI is unavailable right now. Please verify the chat edge function and Groq secret.';
+  const compact = 'Delta AI is unavailable right now. Please verify AI provider configuration.';
   const itemId = payload.context?.item_id;
   const wantsFollowUp = false;
   const proposals: ChatProposal[] = itemId && wantsFollowUp

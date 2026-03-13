@@ -208,42 +208,6 @@ const extractUserIdFromGatewayHeaders = (req: Request): string | null => {
   return null;
 };
 
-const GROQ_MODELS_FALLBACK = [
-  'llama-3.3-70b-versatile',
-  'llama-3.1-70b-versatile',
-  'llama-3.1-8b-instant',
-  'mixtral-8x7b-32768',
-  'gemma2-9b-it'
-];
-const GROQ_MODELS_CLASSIFIER = [
-  'llama-3.1-8b-instant',
-  ...GROQ_MODELS_FALLBACK
-];
-const GROQ_MODEL_CACHE_TTL_MS = 10 * 60 * 1000;
-let groqModelCache: { expiresAt: number; ids: string[] } | null = null;
-
-const extractGroqErrorMessage = (payload: any): string => {
-  if (!payload) return '';
-  if (typeof payload === 'string') return payload;
-  const nested = payload?.error?.message ?? payload?.message;
-  return typeof nested === 'string' ? nested : '';
-};
-
-const isGroqModelUnavailableError = (status: number, payload: any): boolean => {
-  if (status !== 400 && status !== 404) return false;
-  const message = extractGroqErrorMessage(payload).toLowerCase();
-  if (!message) return false;
-  return (
-    message.includes('model') &&
-    (
-      message.includes('decommission') ||
-      message.includes('not found') ||
-      message.includes('does not exist') ||
-      message.includes('unavailable') ||
-      message.includes('invalid')
-    )
-  );
-};
 
 const fetchGroqModelIds = async (
   groqApiKey: string,
@@ -2102,7 +2066,7 @@ const buildDeterministicAnswer = (
         return {
           text: 'I can create an item. Tell me the item name (for example: add item called "Tuesday Back & Biceps").',
           route: intent,
-          scopeLabels: { focal: resolvedList.focalName || focalName, list: resolvedList.name },
+          scopeLabels: { focal: resolvedList?.focalName || focalName, list: resolvedList?.name || undefined },
           confidence: { focal: entities.focal.confidence, list: entities.list.confidence },
           proposals: []
         };
@@ -2110,7 +2074,7 @@ const buildDeterministicAnswer = (
       return {
         text: `Ready to create item "${title}" in ${resolvedList.name}. Approve to apply.`,
         route: intent,
-        scopeLabels: { focal: resolvedList.focalName || focalName, list: resolvedList.name },
+        scopeLabels: { focal: resolvedList?.focalName || focalName, list: resolvedList?.name || undefined },
         confidence: { focal: entities.focal.confidence, list: entities.list.confidence },
         proposals: [{ id: crypto.randomUUID(), type: 'create_item', title, list_id: resolvedList.id }]
       };
@@ -2452,7 +2416,12 @@ Deno.serve(async (req) => {
     const requestId = crypto.randomUUID();
     const SUPABASE_URL = Deno.env.get('SUPABASE_URL');
     const SUPABASE_ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY');
-    const GROQ_API_KEY = Deno.env.get('GROQ_API_KEY');
+    const AI_PROVIDER_PRIMARY = Deno.env.get('AI_PROVIDER_PRIMARY');
+    const AI_API_KEY_PRIMARY = Deno.env.get('AI_API_KEY_PRIMARY');
+    const AI_PROVIDER_SECONDARY = Deno.env.get('AI_PROVIDER_SECONDARY');
+    const AI_API_KEY_SECONDARY = Deno.env.get('AI_API_KEY_SECONDARY');
+    const AI_PROVIDER_FALLBACK = Deno.env.get('AI_PROVIDER_FALLBACK');
+    const AI_API_KEY_FALLBACK = Deno.env.get('AI_API_KEY_FALLBACK');
     console.log(`[chat:${requestId}] inbound request`);
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
       console.error(`[chat:${requestId}] missing Supabase env`);
@@ -2549,9 +2518,48 @@ Deno.serve(async (req) => {
       accountSnapshotError = contextError instanceof Error ? contextError.message : String(contextError);
     }
 
-    if (GROQ_API_KEY && lastUserMessage) {
+    if (AI_API_KEY_PRIMARY && lastUserMessage) {
       try {
-        messagePlan = await classifyMessagePlanWithModel(lastUserMessage, context, accountSnapshot, GROQ_API_KEY, requestId);
+        // Use AI gateway for provider-agnostic completion
+        const aiGatewayModule = await import('https://deno.land/x/ai_gateway@0.1.0/mod.ts');
+        const completion = await aiGatewayModule.aiGateway.createCompletion({
+          messages: [{ role: 'user', content: lastUserMessage }],
+          responseFormat: 'json_object',
+          modelProfile: 'delta-classifier'
+        }, requestId);
+        
+        if (completion.fallbackOccurred) {
+          console.warn(`[chat:${requestId}] AI fallback occurred`, {
+            provider: completion.providerUsed,
+            model: completion.modelUsed
+          });
+        }
+        
+        if (completion.content) {
+          try {
+            const parsed = JSON.parse(completion.content);
+            messagePlan = {
+              mode: parsed.mode || 'inform',
+              confidence: parsed.confidence || 0.5,
+              explicitInventoryAsk: parsed.explicitInventoryAsk || false,
+              mutationRequested: parsed.mutationRequested || false,
+              ambiguousAction: parsed.ambiguousAction || false,
+              proposals: []
+            };
+          } catch {
+            // If JSON parsing fails, treat as inform mode
+            messagePlan = {
+              mode: 'inform',
+              confidence: 0.3,
+              explicitInventoryAsk: false,
+              mutationRequested: false,
+              ambiguousAction: false,
+              proposals: []
+            };
+          }
+        } else {
+          messagePlan = fallbackPlan;
+        }
       } catch {
         messagePlan = fallbackPlan;
       }
@@ -2666,6 +2674,19 @@ Deno.serve(async (req) => {
       }
     }
 
+    if (!AI_API_KEY_PRIMARY) {
+      console.error(`[chat:${requestId}] missing AI provider configuration`);
+      return new Response(JSON.stringify({
+        ...heuristic(messages, context),
+        text: 'Delta AI is temporarily unavailable. Please verify AI provider configuration.',
+        debug_reason: 'missing_ai_config',
+        debug_meta: buildDebugMeta(requestId, context, accountSnapshot, 'heuristic', 'missing_ai_config', undefined, undefined, snapshotWarnings)
+      }), {
+        status: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
     if (!GROQ_API_KEY) {
       console.error(`[chat:${requestId}] missing GROQ_API_KEY`);
       return new Response(JSON.stringify({
@@ -2707,56 +2728,73 @@ Deno.serve(async (req) => {
 
     let text = '';
     let usedModel: string | null = null;
-    let lastGroqStatus: number | null = null;
-    let lastGroqError: unknown = null;
+    let lastAiStatus: number | null = null;
+    let lastAiError: unknown = null;
 
-    const llmAttempt = await groqChatCompletionWithFallback(
-      GROQ_API_KEY,
-      GROQ_MODELS_FALLBACK,
-      (model) => ({
-        model,
-        temperature: 0.2,
-        max_tokens: 500,
-        messages: promptMessages
-      }),
-      requestId
-    );
+    const llmAttempt = await (async () => {
+      try {
+        // Use AI gateway for provider-agnostic completion
+        const aiGatewayModule = await import('https://deno.land/x/ai_gateway@0.1.0/mod.ts');
+        const completion = await aiGatewayModule.aiGateway.createCompletion({
+          messages: promptMessages,
+          temperature: 0.2,
+          maxTokens: 500,
+          modelProfile: 'delta-general'
+        }, requestId);
+        
+        if (completion.fallbackOccurred) {
+          console.warn(`[chat:${requestId}] AI fallback occurred`, {
+            provider: completion.providerUsed,
+            model: completion.modelUsed
+          });
+        }
+        
+        return {
+          ok: !!completion.content,
+          content: completion.content || '',
+          model: completion.modelUsed,
+          status: completion.content ? 200 : 500
+        };
+      } catch (error) {
+        console.warn(`[chat:${requestId}] AI gateway failed`, error);
+        return {
+          ok: false,
+          content: '',
+          model: null,
+          status: 500
+        };
+      }
+    })();
 
     if (llmAttempt.ok) {
       text = llmAttempt.content;
       usedModel = llmAttempt.model;
       console.log(`[chat:${requestId}] model success`, { model: usedModel });
     } else {
-      lastGroqStatus = llmAttempt.status;
-      lastGroqError = llmAttempt.error;
-    }
-
-    if (!text) {
-      const fallbackReason = lastGroqStatus ? `groq_http_${lastGroqStatus}` : 'groq_all_models_failed';
+      const fallbackReason = lastAiStatus ? `ai_http_${lastAiStatus}` : 'ai_all_providers_failed';
       const fallbackText =
-        lastGroqStatus === 429
+        llmAttempt.status === 429
           ? 'I hit a temporary AI rate limit, but I still captured this for you.'
-          : lastGroqStatus === 401 || lastGroqStatus === 403
+          : llmAttempt.status === 401 || llmAttempt.status === 403
             ? 'AI provider auth is temporarily failing, but I still captured this for you.'
-            : 'I’m having trouble reaching AI right now. I still captured this for you.';
-      console.warn(`[chat:${requestId}] llm_fallback`, {
+            : 'I\'m having trouble reaching AI right now. I still captured this for you.';
+      console.warn(`[chat:${requestId}] ai_fallback`, {
         reason: fallbackReason,
-        status: lastGroqStatus,
-        error: lastGroqError
+        status: llmAttempt.status,
+        error: null
       });
       return new Response(JSON.stringify({
         ...heuristic(messages, context),
         text: fallbackText,
         debug_reason: fallbackReason,
-        debug_error: lastGroqError,
+        debug_error: null,
         debug_meta: buildDebugMeta(
           requestId,
           context,
           accountSnapshot,
           'heuristic',
           fallbackReason,
-          undefined,
-          undefined,
+          usedModel,
           snapshotWarnings
         )
       }), {

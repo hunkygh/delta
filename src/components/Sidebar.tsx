@@ -1,10 +1,10 @@
-import { Calendar, Settings, FileText, Plus, LogOut, SlidersHorizontal } from 'lucide-react';
-import { Mountains } from '@phosphor-icons/react';
+import { Settings, Plus, LogOut, SlidersHorizontal } from 'lucide-react';
 import type { User as SupabaseUser } from '@supabase/supabase-js';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useState, useEffect, useRef } from 'react';
 import { authService } from '../services/authService';
 import { focalBoardService } from '../services/focalBoardService';
+import { CalendarIcon, DatabaseIcon } from '../icons';
 
 interface SidebarProps {
   user?: SupabaseUser | null;
@@ -312,7 +312,7 @@ export default function Sidebar({
         </button>
         <div className="sidebar-nav-items">
           <button className={`sidebar-nav-item ${isActivePath('/') ? 'active' : ''}`.trim()} onClick={() => navigate('/')}>
-            <Calendar size={14} />
+            <CalendarIcon size={14} />
             <span className="sidebar-nav-text">Calendar</span>
           </button>
           
@@ -368,7 +368,7 @@ export default function Sidebar({
                 }}
               >
                 <span className="focals-primary-icon" aria-hidden="true">
-                  <Mountains size={20} weight="regular" />
+                  <DatabaseIcon size={18} />
                 </span>
                 <span className="sidebar-nav-text">Spaces</span>
                 <span className={`focals-parent-toggle ${isFocalsDropdownVisible ? 'visible' : ''}`.trim()} aria-hidden="true">
@@ -502,15 +502,6 @@ export default function Sidebar({
               </div>
             )}
           </div>
-        </div>
-        
-        <div className="sidebar-divider-item" />
-        
-        <div className="sidebar-nav-items">
-          <button className={`sidebar-nav-item ${isActivePath('/docs') ? 'active' : ''}`.trim()} onClick={() => navigate('/docs')}>
-            <FileText size={14} />
-            <span className="sidebar-nav-text">Notes</span>
-          </button>
         </div>
         
         {/* Footer with settings */}

@@ -1511,6 +1511,24 @@ export default function Calendar({
     }
   };
 
+  const handleCompleteAllBlockTaskItems = async (blockTaskId: string): Promise<void> => {
+    if (!blockTaskId) return;
+    const blockTask = activeOccurrenceBlockTasks.find((task) => task.id === blockTaskId) || null;
+    if (!blockTask) return;
+    const pendingLinkedItems = blockTask.linkedItems.filter((linked) => !linked.completedInContext);
+    for (const linked of pendingLinkedItems) {
+      await handleSubmitBlockTaskItemCompletion({
+        blockTaskId,
+        blockTaskItemId: linked.blockTaskItemId,
+        itemId: linked.itemId,
+        checked: true,
+        note: '',
+        followUpTasks: [],
+        statusUpdate: null
+      });
+    }
+  };
+
   const getBlockTaskItemStatusOptions = async (
     itemId: string
   ): Promise<{ statuses: StatusDialogOption[]; currentStatusKey: string | null; currentStatusLabel: string }> => {
@@ -3261,6 +3279,7 @@ export default function Calendar({
             onDeleteBlockTask={(blockTaskId) => void handleDeleteBlockTask(blockTaskId)}
             onAttachItemToBlockTask={(blockTaskId, itemId) => void handleAttachItemToBlockTask(blockTaskId, itemId)}
             onDetachItemFromBlockTask={(blockTaskItemId) => void handleDetachItemFromBlockTask(blockTaskItemId)}
+            onCompleteAllBlockTaskItems={(blockTaskId) => void handleCompleteAllBlockTaskItems(blockTaskId)}
             onSubmitBlockTaskItemCompletion={(payload) => void handleSubmitBlockTaskItemCompletion(payload)}
             getBlockTaskItemStatusOptions={(itemId) => getBlockTaskItemStatusOptions(itemId)}
             occurrenceWeekday={occurrenceContext?.weekday || null}

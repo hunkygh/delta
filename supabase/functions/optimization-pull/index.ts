@@ -276,7 +276,8 @@ Deno.serve(async (req) => {
     const SUPABASE_URL = Deno.env.get('SUPABASE_URL');
     const SUPABASE_ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY');
     const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
-    const GROQ_API_KEY = Deno.env.get('GROQ_API_KEY');
+    const AI_PROVIDER_PRIMARY = Deno.env.get('AI_PROVIDER_PRIMARY');
+    const AI_API_KEY_PRIMARY = Deno.env.get('AI_API_KEY_PRIMARY');
 
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !SUPABASE_SERVICE_ROLE_KEY) {
       return new Response(JSON.stringify({ error: 'Supabase env vars are missing' }), {
@@ -452,20 +453,11 @@ Deno.serve(async (req) => {
 
     let proposal: ProposalContract | null = null;
 
-    if (GROQ_API_KEY) {
-      let models = await getGroqCandidateModels(GROQ_API_KEY);
-      const attempted = new Set<string>();
-      let refreshedAfterModelError = false;
-
-      while (!proposal && models.length > 0) {
-        const model = models.shift() as string;
-        if (attempted.has(model)) continue;
-        attempted.add(model);
-
-        const groqBody = {
-          model,
-          temperature: 0,
-          response_format: { type: 'json_object' },
+    if (AI_API_KEY_PRIMARY) {
+      try {
+        // Use AI gateway for provider-agnostic completion
+        const aiGatewayModule = await import('https://deno.land/x/ai_gateway@0.1.0/mod.ts');
+        const completion = await aiGatewayModule.aiGateway.createCompletion({
           messages: [
             {
               role: 'system',
@@ -474,57 +466,44 @@ Deno.serve(async (req) => {
                 '{"source":"ai|heuristic","confidence":0..1,"reasoning":"short",' +
                 '"field_updates":[{"entity":"item|action|list|time_block","id":"uuid","changes":{"k":"v"}}],' +
                 '"new_actions":[{"item_id":"uuid","title":"text","due_at_utc":null,"notes":null}],' +
-                '"calendar_proposals":[{"item_id":"uuid","action_id":"uuid","time_block_id":"uuid","scheduled_start_utc":"ISO","scheduled_end_utc":null,"title":"text","notes":null}]}. ' +
+                '"calendar_proposals":[{"item_id":"uuid","action_id":"uuid","time_block_id":"uuid","scheduled_start_utc":"ISO","scheduled_end_utc":null,"title":"text","notes":null}]. ' +
                 'Never mutate state. Operate only on provided context.'
             },
             { role: 'user', content: JSON.stringify(contextPayload) }
-          ]
-        };
-
-        try {
-          const groqResp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${GROQ_API_KEY}`,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(groqBody)
+          ],
+          temperature: 0,
+          responseFormat: 'json_object',
+          modelProfile: 'delta-reasoning'
+        }, requestId);
+        
+        if (completion.fallbackOccurred) {
+          console.warn(`[optimization:${requestId}] AI fallback occurred`, {
+            provider: completion.providerUsed,
+            model: completion.modelUsed
           });
-
-          if (!groqResp.ok) {
-            const errPayload = await safeJson(groqResp);
-            if (!refreshedAfterModelError && isGroqModelUnavailableError(groqResp.status, errPayload)) {
-              refreshedAfterModelError = true;
-              const refreshed = await getGroqCandidateModels(GROQ_API_KEY, true);
-              models = [...refreshed.filter((entry) => !attempted.has(entry)), ...models];
-            }
-            continue;
-          }
-
-          const groqJson = await safeJson(groqResp);
-          const content = groqJson?.choices?.[0]?.message?.content;
-          if (typeof content === 'string' && content.trim().startsWith('{')) {
-            try {
-              const parsed = JSON.parse(content);
-              const maybeContract = isPlainObject(parsed?.proposal) ? parsed.proposal : parsed;
-              const validated = validateAndNormalizeProposal(maybeContract, {
-                allowCalendarProposals,
-                defaultSource: 'ai'
-              });
-              proposal = validated;
-            } catch {
-              proposal = null;
-            }
-          }
-        } catch {
-          // noop, fall through to next model
         }
+        
+        if (completion.content) {
+          try {
+            const parsed = JSON.parse(completion.content);
+            const maybeContract = isPlainObject(parsed?.proposal) ? parsed.proposal : parsed;
+            const validated = validateAndNormalizeProposal(maybeContract, {
+              allowCalendarProposals,
+              defaultSource: 'ai'
+            });
+            proposal = validated;
+          } catch {
+            proposal = null;
+          }
+        }
+      } catch {
+        // noop, fall through to next model
       }
     }
 
     if (!proposal) {
       proposal = emptyHeuristicProposal(
-        GROQ_API_KEY ? 'AI proposal unavailable or invalid; using safe fallback.' : 'AI provider unavailable; using safe fallback.'
+        AI_API_KEY_PRIMARY ? 'AI proposal unavailable or invalid; using safe fallback.' : 'AI provider unavailable; using safe fallback.'
       );
     }
 

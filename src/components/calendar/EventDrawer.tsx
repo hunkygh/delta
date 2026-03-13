@@ -110,6 +110,7 @@ interface EventDrawerProps {
   onDeleteBlockTask?: (blockTaskId: string) => Promise<void> | void;
   onAttachItemToBlockTask?: (blockTaskId: string, itemId: string) => Promise<void> | void;
   onDetachItemFromBlockTask?: (blockTaskItemId: string) => Promise<void> | void;
+  onCompleteAllBlockTaskItems?: (blockTaskId: string) => Promise<void> | void;
   onSubmitBlockTaskItemCompletion?: (
     payload: {
       blockTaskId: string;
@@ -214,6 +215,7 @@ export default function EventDrawer({
   onDeleteBlockTask,
   onAttachItemToBlockTask,
   onDetachItemFromBlockTask,
+  onCompleteAllBlockTaskItems,
   onSubmitBlockTaskItemCompletion,
   getBlockTaskItemStatusOptions,
   occurrenceWeekday,
@@ -1190,6 +1192,17 @@ export default function EventDrawer({
                       ) : null}
                       {task.linkedItems.length > 0 ? (
                         <div className="calendar-event-block-task-items">
+                          {task.linkedItems.some((linked) => !linked.completedInContext) && onCompleteAllBlockTaskItems ? (
+                            <div className="calendar-event-block-task-bulk-actions">
+                              <button
+                                type="button"
+                                className="calendar-event-block-task-complete-all"
+                                onClick={() => void onCompleteAllBlockTaskItems(task.id)}
+                              >
+                                Complete all
+                              </button>
+                            </div>
+                          ) : null}
                           {task.linkedItems.map((linked) => (
                             <div key={linked.blockTaskItemId} className="calendar-event-attach-row block-task-child">
                               <span className="calendar-event-attach-caret placeholder" aria-hidden="true" />
