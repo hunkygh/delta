@@ -4,6 +4,8 @@ export interface ChatContext {
     scheduled_start_utc: string;
     scheduled_end_utc: string;
   };
+  planning_date?: string;
+  planning_timezone?: string;
   focal_id?: string;
   list_id?: string;
   item_id?: string;

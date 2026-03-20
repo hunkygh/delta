@@ -4,7 +4,8 @@ const CHAT_STORAGE_PREFIX = 'delta-chat-v1';
 const MAX_MESSAGES_DEFAULT = 60;
 const TTL_MS = 3 * 24 * 60 * 60 * 1000;
 
-const storageKeyForUser = (userId: string): string => `${CHAT_STORAGE_PREFIX}:${userId}`;
+const storageKeyForUser = (userId: string, scopeKey = 'general'): string =>
+  `${CHAT_STORAGE_PREFIX}:${userId}:${scopeKey}`;
 
 const safeParse = (raw: string | null): ChatThreadState | null => {
   if (!raw) return null;
@@ -43,8 +44,8 @@ const trimMessages = (messages: ChatMessage[], maxMessages: number): ChatMessage
 };
 
 export const chatPersistence = {
-  load(userId: string, maxMessages = MAX_MESSAGES_DEFAULT): ChatThreadState {
-    const key = storageKeyForUser(userId);
+  load(userId: string, maxMessages = MAX_MESSAGES_DEFAULT, scopeKey = 'general'): ChatThreadState {
+    const key = storageKeyForUser(userId, scopeKey);
     const parsed = safeParse(window.localStorage.getItem(key));
     if (!parsed) {
       return { last_activity_at: Date.now(), messages: [] };
@@ -65,8 +66,8 @@ export const chatPersistence = {
     return state;
   },
 
-  save(userId: string, messages: ChatMessage[], maxMessages = MAX_MESSAGES_DEFAULT): ChatThreadState {
-    const key = storageKeyForUser(userId);
+  save(userId: string, messages: ChatMessage[], maxMessages = MAX_MESSAGES_DEFAULT, scopeKey = 'general'): ChatThreadState {
+    const key = storageKeyForUser(userId, scopeKey);
     const state: ChatThreadState = {
       last_activity_at: Date.now(),
       messages: trimMessages(messages, maxMessages)
@@ -75,8 +76,8 @@ export const chatPersistence = {
     return state;
   },
 
-  clear(userId: string): void {
-    window.localStorage.removeItem(storageKeyForUser(userId));
+  clear(userId: string, scopeKey = 'general'): void {
+    window.localStorage.removeItem(storageKeyForUser(userId, scopeKey));
   }
 };
 

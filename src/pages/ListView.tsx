@@ -425,8 +425,6 @@ export default function ListView(): JSX.Element {
   const [peerLists, setPeerLists] = useState<Array<{ id: string; name: string; focalName: string }>>([]);
   const [movingItem, setMovingItem] = useState(false);
   const [deletingItem, setDeletingItem] = useState(false);
-  const itemAutosaveTimerRef = useRef<number | null>(null);
-  const actionAutosaveTimersRef = useRef<Record<string, number>>({});
   const selectedItemHydratedIdRef = useRef<string | null>(null);
   const fieldEditorActivationRef = useRef<{ key: string; until: number } | null>(null);
   const [itemModalExpandedActions, setItemModalExpandedActions] = useState<Record<string, boolean>>({});
@@ -595,12 +593,6 @@ export default function ListView(): JSX.Element {
     setItemModalExpandedActions({});
     setItemModalActionSaveState({});
   }, [selectedItem]);
-
-  useEffect(() => {
-    return () => {
-      Object.values(actionAutosaveTimersRef.current).forEach((timerId) => window.clearTimeout(timerId));
-    };
-  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1397,10 +1389,6 @@ export default function ListView(): JSX.Element {
 
   const closeItemModal = (): void => {
     selectedItemHydratedIdRef.current = null;
-    if (itemAutosaveTimerRef.current != null) {
-      window.clearTimeout(itemAutosaveTimerRef.current);
-      itemAutosaveTimerRef.current = null;
-    }
     setSelectedItemId(null);
     setCommentDraft('');
     setCommentError(null);
@@ -1412,45 +1400,7 @@ export default function ListView(): JSX.Element {
     setMoveTargetListId('');
     setItemModalExpandedActions({});
     setItemModalActionSaveState({});
-    Object.values(actionAutosaveTimersRef.current).forEach((timerId) => window.clearTimeout(timerId));
-    actionAutosaveTimersRef.current = {};
   };
-
-  useEffect(() => {
-    if (!selectedItem) return;
-    if (itemAutosaveTimerRef.current != null) {
-      window.clearTimeout(itemAutosaveTimerRef.current);
-    }
-
-    const selectedStatus = statuses.find((status) => status.id === modalStatusValue || status.key === modalStatusValue);
-    const nextTitle = modalTitleDraft.trim() || selectedItem.title;
-    const nextDescription = modalDescriptionDraft.trim();
-    const selectedDescription = (selectedItem.description || '').trim();
-    const nextStatusId = selectedStatus?.id || null;
-    const nextStatusKey = selectedStatus?.key || 'pending';
-    const selectedStatusId = selectedItem.status_id ?? null;
-    const selectedStatusKey = selectedItem.status || 'pending';
-
-    const isUnchanged =
-      nextTitle === selectedItem.title &&
-      nextDescription === selectedDescription &&
-      nextStatusId === selectedStatusId &&
-      nextStatusKey === selectedStatusKey;
-
-    if (isUnchanged) {
-      setItemModalSaveState('saved');
-      return;
-    }
-
-    itemAutosaveTimerRef.current = window.setTimeout(() => {
-      void saveSelectedItemDrafts();
-    }, 3800);
-    return () => {
-      if (itemAutosaveTimerRef.current != null) {
-        window.clearTimeout(itemAutosaveTimerRef.current);
-      }
-    };
-  }, [modalDescriptionDraft, modalStatusValue, modalTitleDraft, selectedItem, statuses]);
 
   const handleMoveItemToList = async (targetListIdArg?: string): Promise<void> => {
     const targetListId = targetListIdArg || moveTargetListId;
@@ -1528,51 +1478,34 @@ export default function ListView(): JSX.Element {
     }
   }
 
-  const scheduleActionAutosave = useCallback(
-    (itemId: string, actionId: string, updates: Partial<ActionItem>, delayMs = 3800): void => {
-      const timerKey = `${itemId}:${actionId}`;
-      const existingTimer = actionAutosaveTimersRef.current[timerKey];
-      if (existingTimer != null) {
-        window.clearTimeout(existingTimer);
+  const persistActionDraft = useCallback(
+    async (itemId: string, actionId: string, updates: Partial<ActionItem>): Promise<void> => {
+      setItemModalActionSaveState((prev) => ({ ...prev, [actionId]: 'saving' }));
+      try {
+        const persisted = await focalBoardService.updateAction(actionId, updates);
+        updateActionLocally(itemId, actionId, {
+          title: persisted.title,
+          description: persisted.description,
+          status: persisted.status,
+          subtask_status_id: persisted.subtask_status_id ?? null,
+          scheduled_at: persisted.scheduled_at,
+          recurrence_rule: persisted.recurrence_rule,
+          recurrence_config: persisted.recurrence_config
+        });
+        setItemModalActionSaveState((prev) => ({ ...prev, [actionId]: 'saved' }));
+      } catch (err: any) {
+        setItemModalActionSaveState((prev) => ({ ...prev, [actionId]: 'retrying' }));
+        setError(err?.message || 'Failed to save task');
       }
-
-      actionAutosaveTimersRef.current[timerKey] = window.setTimeout(async () => {
-        setItemModalActionSaveState((prev) => ({ ...prev, [actionId]: 'saving' }));
-        try {
-          const persisted = await focalBoardService.updateAction(actionId, updates);
-          updateActionLocally(itemId, actionId, {
-            title: persisted.title,
-            description: persisted.description,
-            status: persisted.status,
-            subtask_status_id: persisted.subtask_status_id ?? null,
-            scheduled_at: persisted.scheduled_at
-          });
-          setItemModalActionSaveState((prev) => ({ ...prev, [actionId]: 'saved' }));
-        } catch (err: any) {
-          setItemModalActionSaveState((prev) => ({ ...prev, [actionId]: 'retrying' }));
-          setError(err?.message || 'Failed to save task');
-        }
-      }, delayMs);
     },
     [updateActionLocally]
   );
 
   const handleActionDraftChange = useCallback(
     (itemId: string, action: ActionItem, updates: Partial<ActionItem>): void => {
-      const nextAction = {
-        ...action,
-        ...updates
-      };
       updateActionLocally(itemId, action.id, updates);
-      scheduleActionAutosave(itemId, action.id, {
-        title: nextAction.title,
-        description: nextAction.description?.trim() ? nextAction.description : null,
-        status: nextAction.status || 'not_started',
-        subtask_status_id: nextAction.subtask_status_id ?? null,
-        scheduled_at: nextAction.scheduled_at || null
-      });
     },
-    [scheduleActionAutosave, updateActionLocally]
+    [updateActionLocally]
   );
 
   const handleDeleteItemFromModal = async (): Promise<void> => {
@@ -3648,7 +3581,10 @@ export default function ListView(): JSX.Element {
                       className="list-item-modal-title-inline-input"
                       value={modalTitleDraft}
                       onChange={(event) => setModalTitleDraft(event.target.value)}
-                      onBlur={() => setIsModalTitleEditing(false)}
+                      onBlur={() => {
+                        void saveSelectedItemDrafts();
+                        setIsModalTitleEditing(false);
+                      }}
                       onKeyDown={(event) => {
                         if (event.key === 'Enter') {
                           event.preventDefault();
@@ -3788,6 +3724,7 @@ export default function ListView(): JSX.Element {
                     className="list-item-description-editor"
                     value={modalDescriptionDraft}
                     onChange={(event) => setModalDescriptionDraft(event.target.value)}
+                    onBlur={() => void saveSelectedItemDrafts()}
                     onKeyDown={(event) => {
                       if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
                         event.preventDefault();
@@ -4076,21 +4013,29 @@ export default function ListView(): JSX.Element {
                                 onChange={(event) =>
                                   handleActionDraftChange(selectedItem.id, action, { title: event.target.value })
                                 }
+                                onBlur={(event) =>
+                                  void persistActionDraft(selectedItem.id, action.id, {
+                                    title: event.target.value.trim() || action.title,
+                                    description: action.description?.trim() ? action.description : null,
+                                    status: action.status || 'not_started',
+                                    subtask_status_id: action.subtask_status_id ?? null,
+                                    scheduled_at: action.scheduled_at || null,
+                                    recurrence_rule: action.recurrence_rule || 'none',
+                                    recurrence_config: action.recurrence_config || null
+                                  })
+                                }
                                 onKeyDown={(event) => {
                                   if (event.key === 'Enter') {
                                     event.preventDefault();
-                                    void scheduleActionAutosave(
-                                      selectedItem.id,
-                                      action.id,
-                                      {
-                                        title: action.title,
-                                        description: action.description?.trim() ? action.description : null,
-                                        status: action.status || 'not_started',
-                                        subtask_status_id: action.subtask_status_id ?? null,
-                                        scheduled_at: action.scheduled_at || null
-                                      },
-                                      0
-                                    );
+                                    void persistActionDraft(selectedItem.id, action.id, {
+                                      title: (event.currentTarget.value || '').trim() || action.title,
+                                      description: action.description?.trim() ? action.description : null,
+                                      status: action.status || 'not_started',
+                                      subtask_status_id: action.subtask_status_id ?? null,
+                                      scheduled_at: action.scheduled_at || null,
+                                      recurrence_rule: action.recurrence_rule || 'none',
+                                      recurrence_config: action.recurrence_config || null
+                                    });
                                   }
                                 }}
                                 placeholder="Task name"
@@ -4103,6 +4048,17 @@ export default function ListView(): JSX.Element {
                                 onChange={(event) =>
                                   handleActionDraftChange(selectedItem.id, action, { description: event.target.value })
                                 }
+                                onBlur={(event) =>
+                                  void persistActionDraft(selectedItem.id, action.id, {
+                                    title: action.title,
+                                    description: event.target.value.trim() ? event.target.value : null,
+                                    status: action.status || 'not_started',
+                                    subtask_status_id: action.subtask_status_id ?? null,
+                                    scheduled_at: action.scheduled_at || null,
+                                    recurrence_rule: action.recurrence_rule || 'none',
+                                    recurrence_config: action.recurrence_config || null
+                                  })
+                                }
                                 placeholder="Details and execution notes"
                                 rows={3}
                               />
@@ -4113,15 +4069,23 @@ export default function ListView(): JSX.Element {
                                 <input
                                   type="date"
                                   value={toDateInputValue(action.scheduled_at)}
-                                  onChange={(event) =>
-                                    handleActionDraftChange(selectedItem.id, action, {
-                                      scheduled_at: mergeDateAndTimeInput(
-                                        action.scheduled_at,
-                                        event.target.value,
-                                        toTimeInputValue(action.scheduled_at) || '09:00'
-                                      )
-                                    })
-                                  }
+                                  onChange={(event) => {
+                                    const nextScheduledAt = mergeDateAndTimeInput(
+                                      action.scheduled_at,
+                                      event.target.value,
+                                      toTimeInputValue(action.scheduled_at) || '09:00'
+                                    );
+                                    handleActionDraftChange(selectedItem.id, action, { scheduled_at: nextScheduledAt });
+                                    void persistActionDraft(selectedItem.id, action.id, {
+                                      title: action.title,
+                                      description: action.description?.trim() ? action.description : null,
+                                      status: action.status || 'not_started',
+                                      subtask_status_id: action.subtask_status_id ?? null,
+                                      scheduled_at: nextScheduledAt,
+                                      recurrence_rule: action.recurrence_rule || 'none',
+                                      recurrence_config: action.recurrence_config || null
+                                    });
+                                  }}
                                 />
                               </label>
                               <label className="list-item-field list-item-field-compact">
@@ -4129,15 +4093,23 @@ export default function ListView(): JSX.Element {
                                 <input
                                   type="time"
                                   value={toTimeInputValue(action.scheduled_at)}
-                                  onChange={(event) =>
-                                    handleActionDraftChange(selectedItem.id, action, {
-                                      scheduled_at: mergeDateAndTimeInput(
-                                        action.scheduled_at,
-                                        toDateInputValue(action.scheduled_at) || new Date().toISOString().slice(0, 10),
-                                        event.target.value
-                                      )
-                                    })
-                                  }
+                                  onChange={(event) => {
+                                    const nextScheduledAt = mergeDateAndTimeInput(
+                                      action.scheduled_at,
+                                      toDateInputValue(action.scheduled_at) || new Date().toISOString().slice(0, 10),
+                                      event.target.value
+                                    );
+                                    handleActionDraftChange(selectedItem.id, action, { scheduled_at: nextScheduledAt });
+                                    void persistActionDraft(selectedItem.id, action.id, {
+                                      title: action.title,
+                                      description: action.description?.trim() ? action.description : null,
+                                      status: action.status || 'not_started',
+                                      subtask_status_id: action.subtask_status_id ?? null,
+                                      scheduled_at: nextScheduledAt,
+                                      recurrence_rule: action.recurrence_rule || 'none',
+                                      recurrence_config: action.recurrence_config || null
+                                    });
+                                  }}
                                 />
                               </label>
                               <div className="list-item-field list-item-field-compact">
@@ -4165,12 +4137,22 @@ export default function ListView(): JSX.Element {
                                       value={action.recurrence_rule || 'none'}
                                       onChange={(event) => {
                                         const nextRule = event.target.value as RecurrenceRule;
+                                        const nextRecurrenceConfig =
+                                          nextRule === 'none'
+                                            ? null
+                                            : normalizeActionRecurrenceConfig(nextRule, action.recurrence_config);
                                         handleActionDraftChange(selectedItem.id, action, {
                                           recurrence_rule: nextRule,
-                                          recurrence_config:
-                                            nextRule === 'none'
-                                              ? null
-                                              : normalizeActionRecurrenceConfig(nextRule, action.recurrence_config)
+                                          recurrence_config: nextRecurrenceConfig
+                                        });
+                                        void persistActionDraft(selectedItem.id, action.id, {
+                                          title: action.title,
+                                          description: action.description?.trim() ? action.description : null,
+                                          status: action.status || 'not_started',
+                                          subtask_status_id: action.subtask_status_id ?? null,
+                                          scheduled_at: action.scheduled_at || null,
+                                          recurrence_rule: nextRule,
+                                          recurrence_config: nextRecurrenceConfig
                                         });
                                       }}
                                     >
@@ -4201,6 +4183,24 @@ export default function ListView(): JSX.Element {
                                               }
                                             })
                                           }
+                                          onBlur={(event) => {
+                                            const nextRecurrenceConfig = {
+                                              ...normalizeActionRecurrenceConfig(
+                                                action.recurrence_rule || 'custom',
+                                                action.recurrence_config
+                                              ),
+                                              interval: Math.max(1, Number.parseInt(event.target.value || '1', 10))
+                                            };
+                                            void persistActionDraft(selectedItem.id, action.id, {
+                                              title: action.title,
+                                              description: action.description?.trim() ? action.description : null,
+                                              status: action.status || 'not_started',
+                                              subtask_status_id: action.subtask_status_id ?? null,
+                                              scheduled_at: action.scheduled_at || null,
+                                              recurrence_rule: action.recurrence_rule || 'custom',
+                                              recurrence_config: nextRecurrenceConfig
+                                            });
+                                          }}
                                         />
                                       </label>
                                       <label className="list-item-field list-item-field-compact">
@@ -4211,17 +4211,27 @@ export default function ListView(): JSX.Element {
                                             action.recurrence_config
                                           ).unit}
                                           disabled={(action.recurrence_rule || 'none') !== 'custom'}
-                                          onChange={(event) =>
+                                          onChange={(event) => {
+                                            const nextRecurrenceConfig = {
+                                              ...normalizeActionRecurrenceConfig(
+                                                action.recurrence_rule || 'custom',
+                                                action.recurrence_config
+                                              ),
+                                              unit: event.target.value as CustomRecurrenceConfig['unit']
+                                            };
                                             handleActionDraftChange(selectedItem.id, action, {
-                                              recurrence_config: {
-                                                ...normalizeActionRecurrenceConfig(
-                                                  action.recurrence_rule || 'custom',
-                                                  action.recurrence_config
-                                                ),
-                                                unit: event.target.value as CustomRecurrenceConfig['unit']
-                                              }
-                                            })
-                                          }
+                                              recurrence_config: nextRecurrenceConfig
+                                            });
+                                            void persistActionDraft(selectedItem.id, action.id, {
+                                              title: action.title,
+                                              description: action.description?.trim() ? action.description : null,
+                                              status: action.status || 'not_started',
+                                              subtask_status_id: action.subtask_status_id ?? null,
+                                              scheduled_at: action.scheduled_at || null,
+                                              recurrence_rule: action.recurrence_rule || 'custom',
+                                              recurrence_config: nextRecurrenceConfig
+                                            });
+                                          }}
                                         >
                                           <option value="day">Days</option>
                                           <option value="week">Weeks</option>
@@ -4241,17 +4251,27 @@ export default function ListView(): JSX.Element {
                                           action.recurrence_rule || 'custom',
                                           action.recurrence_config
                                         ).limitType}
-                                        onChange={(event) =>
+                                        onChange={(event) => {
+                                          const nextRecurrenceConfig = {
+                                            ...normalizeActionRecurrenceConfig(
+                                              action.recurrence_rule || 'custom',
+                                              action.recurrence_config
+                                            ),
+                                            limitType: event.target.value as CustomRecurrenceConfig['limitType']
+                                          };
                                           handleActionDraftChange(selectedItem.id, action, {
-                                            recurrence_config: {
-                                              ...normalizeActionRecurrenceConfig(
-                                                action.recurrence_rule || 'custom',
-                                                action.recurrence_config
-                                              ),
-                                              limitType: event.target.value as CustomRecurrenceConfig['limitType']
-                                            }
-                                          })
-                                        }
+                                            recurrence_config: nextRecurrenceConfig
+                                          });
+                                          void persistActionDraft(selectedItem.id, action.id, {
+                                            title: action.title,
+                                            description: action.description?.trim() ? action.description : null,
+                                            status: action.status || 'not_started',
+                                            subtask_status_id: action.subtask_status_id ?? null,
+                                            scheduled_at: action.scheduled_at || null,
+                                            recurrence_rule: action.recurrence_rule || 'custom',
+                                            recurrence_config: nextRecurrenceConfig
+                                          });
+                                        }}
                                       >
                                         <option value="indefinite">Never</option>
                                         <option value="count">After count</option>
@@ -4280,6 +4300,24 @@ export default function ListView(): JSX.Element {
                                               }
                                             })
                                           }
+                                          onBlur={(event) => {
+                                            const nextRecurrenceConfig = {
+                                              ...normalizeActionRecurrenceConfig(
+                                                action.recurrence_rule || 'custom',
+                                                action.recurrence_config
+                                              ),
+                                              count: Math.max(1, Number.parseInt(event.target.value || '1', 10))
+                                            };
+                                            void persistActionDraft(selectedItem.id, action.id, {
+                                              title: action.title,
+                                              description: action.description?.trim() ? action.description : null,
+                                              status: action.status || 'not_started',
+                                              subtask_status_id: action.subtask_status_id ?? null,
+                                              scheduled_at: action.scheduled_at || null,
+                                              recurrence_rule: action.recurrence_rule || 'custom',
+                                              recurrence_config: nextRecurrenceConfig
+                                            });
+                                          }}
                                         />
                                       </label>
                                     )}
@@ -4292,17 +4330,27 @@ export default function ListView(): JSX.Element {
                                         <input
                                           type="date"
                                           value={action.recurrence_config?.until || ''}
-                                          onChange={(event) =>
+                                          onChange={(event) => {
+                                            const nextRecurrenceConfig = {
+                                              ...normalizeActionRecurrenceConfig(
+                                                action.recurrence_rule || 'custom',
+                                                action.recurrence_config
+                                              ),
+                                              until: event.target.value || undefined
+                                            };
                                             handleActionDraftChange(selectedItem.id, action, {
-                                              recurrence_config: {
-                                                ...normalizeActionRecurrenceConfig(
-                                                  action.recurrence_rule || 'custom',
-                                                  action.recurrence_config
-                                                ),
-                                                until: event.target.value || undefined
-                                              }
-                                            })
-                                          }
+                                              recurrence_config: nextRecurrenceConfig
+                                            });
+                                            void persistActionDraft(selectedItem.id, action.id, {
+                                              title: action.title,
+                                              description: action.description?.trim() ? action.description : null,
+                                              status: action.status || 'not_started',
+                                              subtask_status_id: action.subtask_status_id ?? null,
+                                              scheduled_at: action.scheduled_at || null,
+                                              recurrence_rule: action.recurrence_rule || 'custom',
+                                              recurrence_config: nextRecurrenceConfig
+                                            });
+                                          }}
                                         />
                                       </label>
                                     )}

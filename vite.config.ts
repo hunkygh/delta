@@ -1,15 +1,15 @@
-import { defineConfig } from 'vitest/config';
-import react from '@vitejs/plugin-react';
+import { defineConfig } from 'vitest/config'
+import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
   server: {
-    host: '0.0.0.0',
+    host: 'localhost',
     port: 4000,
     strictPort: true
   },
   preview: {
-    host: '0.0.0.0',
+    host: 'localhost',
     port: 4000,
     strictPort: true
   },
@@ -17,4 +17,4 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: './tests/setupTests.ts'
   }
-});
+})

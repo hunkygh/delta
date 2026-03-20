@@ -36,6 +36,14 @@ export const MODEL_PROFILES: Record<string, ModelProfile[]> = {
     },
     {
       id: 'delta-general',
+      provider: 'groq',
+      capabilities: ['chat', 'reasoning'],
+      costTier: 'general',
+      providerModelId: 'llama-3.3-70b-versatile',
+      description: 'General purpose reasoning on Groq'
+    },
+    {
+      id: 'delta-general',
       provider: 'openai_compatible',
       capabilities: ['chat', 'reasoning', 'tool-calling'],
       costTier: 'general',
@@ -63,10 +71,18 @@ export const MODEL_PROFILES: Record<string, ModelProfile[]> = {
     },
     {
       id: 'delta-cheap',
+      provider: 'groq',
+      capabilities: ['chat'],
+      costTier: 'cheap',
+      providerModelId: 'llama-3.1-8b-instant',
+      description: 'Low-cost Groq chat model'
+    },
+    {
+      id: 'delta-cheap',
       provider: 'openai_compatible',
       capabilities: ['chat'],
       costTier: 'cheap',
-      providerModelId: 'gpt-3.5-turbo',
+      providerModelId: 'gpt-4o-mini',
       description: 'Budget-friendly model'
     }
   ],
@@ -87,6 +103,14 @@ export const MODEL_PROFILES: Record<string, ModelProfile[]> = {
       costTier: 'reasoning',
       providerModelId: 'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo',
       description: 'Strong reasoning performance'
+    },
+    {
+      id: 'delta-reasoning',
+      provider: 'groq',
+      capabilities: ['chat', 'reasoning', 'analysis'],
+      costTier: 'reasoning',
+      providerModelId: 'openai/gpt-oss-120b',
+      description: 'Groq-hosted reasoning model'
     },
     {
       id: 'delta-reasoning',
@@ -117,10 +141,18 @@ export const MODEL_PROFILES: Record<string, ModelProfile[]> = {
     },
     {
       id: 'delta-fast',
+      provider: 'groq',
+      capabilities: ['chat', 'quick-response'],
+      costTier: 'fast',
+      providerModelId: 'llama-3.1-8b-instant',
+      description: 'Fast Groq response model'
+    },
+    {
+      id: 'delta-fast',
       provider: 'openai_compatible',
       capabilities: ['chat', 'quick-response'],
       costTier: 'fast',
-      providerModelId: 'gpt-3.5-turbo',
+      providerModelId: 'gpt-4o-mini',
       description: 'Rapid responses'
     }
   ],
@@ -144,10 +176,18 @@ export const MODEL_PROFILES: Record<string, ModelProfile[]> = {
     },
     {
       id: 'delta-classifier',
+      provider: 'groq',
+      capabilities: ['chat', 'classification'],
+      costTier: 'cheap',
+      providerModelId: 'llama-3.1-8b-instant',
+      description: 'Efficient Groq classification model'
+    },
+    {
+      id: 'delta-classifier',
       provider: 'openai_compatible',
       capabilities: ['chat', 'classification'],
       costTier: 'cheap',
-      providerModelId: 'gpt-3.5-turbo',
+      providerModelId: 'gpt-4o-mini',
       description: 'Quick classification tasks'
     }
   ]

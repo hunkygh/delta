@@ -14,7 +14,6 @@ export default function AppShell(): JSX.Element {
   const [chatContext, setChatContext] = useState<ChatContext>({});
   const { user, loading } = useAuth();
 
-  // AI context effect - always runs, independent of auth state
   useEffect(() => {
     const handleOpenWithContext = (event: Event): void => {
       const custom = event as CustomEvent<{
@@ -38,11 +37,7 @@ export default function AppShell(): JSX.Element {
         }]`;
         nextTags.push(summary);
       }
-
-      if (tag) {
-        nextTags.push(tag);
-      }
-      // Context tags are scoped to current open action only; no accumulation.
+      if (tag) nextTags.push(tag);
       setAiContextTags(nextTags);
       if (eventContext?.id) {
         setChatContext((prev) => ({
@@ -79,9 +74,7 @@ export default function AppShell(): JSX.Element {
       setChatContext((prev) => {
         if (!keys || keys.length === 0) return {};
         const next: ChatContext = { ...prev };
-        for (const key of keys) {
-          delete next[key];
-        }
+        for (const key of keys) delete next[key];
         return next;
       });
     };
@@ -94,27 +87,9 @@ export default function AppShell(): JSX.Element {
     };
   }, []);
 
-  // Conditional rendering logic - moved outside of hooks
-  if (loading) {
-    return (
-      <div className="loading-screen">
-        <div className="loading-screen-mark" aria-label="Delta loading">
-          <img className="loading-screen-logo" src="/in-app-logo.png" alt="" aria-hidden="true" />
-          <div className="loading-screen-wordmark">
-            <span className="loading-screen-text">THE CLARITY OS</span>
-            <span className="loading-screen-cursor" aria-hidden="true">
-              _
-            </span>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  if (loading) return <div>Loading...</div>;
+  if (!user) return <Navigate to="/login" replace />;
 
-  if (!user) {
-    return <Navigate to="/login" replace />;
-  }
-  
   return (
     <section
       className={`app-shell ${isAiOpen ? 'ai-open' : ''} ${isSidebarExpanded ? 'sidebar-expanded' : ''}`}
@@ -127,10 +102,7 @@ export default function AppShell(): JSX.Element {
         onToggleAi={() =>
           setIsAiOpen((value) => {
             const nextOpen = !value;
-            // Opening from the header should start clean without inherited event context.
-            if (nextOpen) {
-              setAiContextTags([]);
-            }
+            if (nextOpen) setAiContextTags([]);
             return nextOpen;
           })
         }
@@ -153,7 +125,6 @@ export default function AppShell(): JSX.Element {
         sidebarWidth={sidebarWidth}
         setSidebarWidth={setSidebarWidth}
       />
-
       <main className="app-main-content">
         <Outlet />
       </main>

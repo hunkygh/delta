@@ -32,6 +32,8 @@ const modelCache = new Map<string, ProviderModelDiscoveryCache>();
 const DEFAULT_BASE_URLS: Record<string, string> = {
   openrouter: 'https://openrouter.ai/api/v1',
   together: 'https://api.together.xyz/v1',
+  groq: 'https://api.groq.com/openai/v1',
+  deepseek: 'https://api.deepseek.com',
   openai_compatible: 'https://api.openai.com/v1',
   openai: 'https://api.openai.com/v1'
 };
@@ -40,32 +42,52 @@ const DEFAULT_PROFILE_MODELS: Record<string, Record<string, string>> = {
   'delta-general': {
     openrouter: 'anthropic/claude-3.5-sonnet',
     together: 'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo',
+    groq: 'llama-3.3-70b-versatile',
+    deepseek: 'deepseek-chat',
     openai_compatible: 'gpt-4o',
     openai: 'gpt-4o'
   },
   'delta-cheap': {
     openrouter: 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo',
     together: 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo',
+    groq: 'llama-3.1-8b-instant',
+    deepseek: 'deepseek-chat',
     openai_compatible: 'gpt-4o-mini',
     openai: 'gpt-4o-mini'
   },
   'delta-reasoning': {
     openrouter: 'openai/gpt-4o',
     together: 'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo',
+    groq: 'openai/gpt-oss-120b',
+    deepseek: 'deepseek-reasoner',
     openai_compatible: 'gpt-4o',
     openai: 'gpt-4o'
   },
   'delta-fast': {
     openrouter: 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo',
     together: 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo',
+    groq: 'llama-3.1-8b-instant',
+    deepseek: 'deepseek-chat',
     openai_compatible: 'gpt-4o-mini',
     openai: 'gpt-4o-mini'
   },
   'delta-classifier': {
     openrouter: 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo',
     together: 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo',
+    groq: 'llama-3.1-8b-instant',
+    deepseek: 'deepseek-chat',
     openai_compatible: 'gpt-4o-mini',
     openai: 'gpt-4o-mini'
+  }
+};
+
+const PROVIDER_MODEL_FALLBACKS: Record<string, Record<string, string[]>> = {
+  groq: {
+    'delta-general': ['llama-3.3-70b-versatile', 'openai/gpt-oss-120b', 'qwen/qwen3-32b', 'llama-3.1-8b-instant'],
+    'delta-cheap': ['llama-3.1-8b-instant', 'qwen/qwen3-32b', 'openai/gpt-oss-20b'],
+    'delta-reasoning': ['openai/gpt-oss-120b', 'qwen/qwen3-32b', 'llama-3.3-70b-versatile'],
+    'delta-fast': ['llama-3.1-8b-instant', 'llama-3.3-70b-versatile'],
+    'delta-classifier': ['llama-3.1-8b-instant', 'qwen/qwen3-32b', 'openai/gpt-oss-20b']
   }
 };
 
@@ -99,6 +121,28 @@ const resolveModelForProfile = (profileId: string, providerName: string): string
   return profile[providerName] || null;
 };
 
+const resolveCandidateModelsForProfile = (
+  profileId: string,
+  providerName: string,
+  discoveredIds: string[]
+): string[] => {
+  const configured = resolveModelForProfile(profileId, providerName);
+  const preferred = PROVIDER_MODEL_FALLBACKS[providerName]?.[profileId] || [];
+  const candidates = [configured, ...preferred].filter(Boolean) as string[];
+  const uniqueCandidates = [...new Set(candidates)];
+  if (discoveredIds.length === 0) {
+    return uniqueCandidates;
+  }
+
+  const matched = uniqueCandidates.filter((candidate) => discoveredIds.includes(candidate));
+  if (matched.length > 0) {
+    return matched;
+  }
+
+  const discoveredFallback = discoveredIds[0];
+  return discoveredFallback ? [discoveredFallback] : uniqueCandidates;
+};
+
 const buildProviderConfig = (slot: 'PRIMARY' | 'SECONDARY' | 'FALLBACK'): AIProviderConfig | null => {
   const providerName = normalizeProviderName(Deno.env.get(`AI_PROVIDER_${slot}`));
   const apiKey = Deno.env.get(`AI_API_KEY_${slot}`)?.trim() || '';
@@ -114,6 +158,23 @@ const getProviderChain = (): AIProviderConfig[] =>
   [buildProviderConfig('PRIMARY'), buildProviderConfig('SECONDARY'), buildProviderConfig('FALLBACK')].filter(
     Boolean
   ) as AIProviderConfig[];
+
+export const hasConfiguredAiProviders = (): boolean => getProviderChain().length > 0;
+
+export const getAiProviderStatus = () => {
+  const primary = buildProviderConfig('PRIMARY');
+  const secondary = buildProviderConfig('SECONDARY');
+  const fallback = buildProviderConfig('FALLBACK');
+
+  return {
+    hasPrimary: Boolean(primary),
+    hasSecondary: Boolean(secondary),
+    hasFallback: Boolean(fallback),
+    primaryProvider: primary?.name || null,
+    secondaryProvider: secondary?.name || null,
+    fallbackProvider: fallback?.name || null
+  };
+};
 
 const safeJson = async (response: Response): Promise<any> => {
   try {
@@ -237,11 +298,8 @@ export const aiGateway = {
     const providers = getProviderChain();
     const models = await Promise.all(
       providers.map(async (provider) => {
-        const configured = resolveModelForProfile(profileId, provider.name);
-        if (!configured) return [];
         const discovered = await fetchProviderModelIds(provider, requestId);
-        if (discovered.ids.length === 0) return [configured];
-        return discovered.ids.includes(configured) ? [configured] : [];
+        return resolveCandidateModelsForProfile(profileId, provider.name, discovered.ids);
       })
     );
     return models.flat();
@@ -267,12 +325,9 @@ export const aiGateway = {
     let fallbackOccurred = false;
 
     for (const provider of providers) {
-      const configuredModel = resolveModelForProfile(profileId, provider.name);
-      if (!configuredModel) continue;
-
       const discovery = await fetchProviderModelIds(provider, requestId);
-      const candidates =
-        discovery.ids.length > 0 && discovery.ids.includes(configuredModel) ? [configuredModel] : [configuredModel];
+      const candidates = resolveCandidateModelsForProfile(profileId, provider.name, discovery.ids);
+      if (candidates.length === 0) continue;
 
       for (const modelId of candidates) {
         const result = await makeCompletionRequest(provider, modelId, request, requestId);

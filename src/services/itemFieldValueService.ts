@@ -62,6 +62,15 @@ export const itemFieldValueService = {
       map[row.item_id][row.field_id] = row as ItemFieldValue;
     }
     return map;
+  },
+
+  async deleteValue(itemId: string, fieldId: string): Promise<void> {
+    const { error } = await supabase
+      .from('item_field_values')
+      .delete()
+      .eq('item_id', itemId)
+      .eq('field_id', fieldId);
+    if (error) throw error;
   }
 };
 

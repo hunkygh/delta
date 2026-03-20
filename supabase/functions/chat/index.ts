@@ -5,7 +5,7 @@
  *    NOTE: --no-verify-jwt is temporary; function still enforces bearer auth internally.
  */
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.49.4';
-import { aiGateway } from '../_shared/aiGateway.ts';
+import { aiGateway, getAiProviderStatus, hasConfiguredAiProviders } from '../_shared/aiGateway.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -16,6 +16,8 @@ type ChatRole = 'user' | 'assistant' | 'system_marker';
 
 interface ChatContext {
   time_block_id?: string;
+  planning_date?: string;
+  planning_timezone?: string;
   focal_id?: string;
   list_id?: string;
   item_id?: string;
@@ -188,9 +190,13 @@ const decodeJwtPayload = (token: string): Record<string, unknown> | null => {
 const extractUserIdFromGatewayHeaders = (req: Request): string | null => {
   const candidates = [
     req.headers.get('x-supabase-auth-user'),
+    req.headers.get('x-supabase-auth-user-id'),
     req.headers.get('x-sb-auth-user'),
+    req.headers.get('x-sb-auth-user-id'),
     req.headers.get('x-supabase-user'),
-    req.headers.get('x-sb-user-id')
+    req.headers.get('x-sb-user-id'),
+    req.headers.get('x-auth-user'),
+    req.headers.get('x-user-id')
   ].filter(Boolean) as string[];
 
   for (const raw of candidates) {
@@ -206,6 +212,24 @@ const extractUserIdFromGatewayHeaders = (req: Request): string | null => {
       // noop
     }
   }
+  return null;
+};
+
+const extractBearerTokenFromHeaders = (req: Request): string | null => {
+  const explicit = req.headers.get('Authorization');
+  const explicitMatch = explicit?.match(/^Bearer\s+(.+)$/i) || null;
+  if (explicitMatch?.[1]?.trim()) {
+    return explicitMatch[1].trim();
+  }
+
+  for (const [key, value] of req.headers.entries()) {
+    if (!/authorization/i.test(key)) continue;
+    const match = value?.match(/^Bearer\s+(.+)$/i) || null;
+    if (match?.[1]?.trim()) {
+      return match[1].trim();
+    }
+  }
+
   return null;
 };
 
@@ -1490,12 +1514,12 @@ const runMutationTools = async (
 
   // Core item fields
   if (fieldAlias === 'title') {
-    const plan: MutationPlanContract = {
+    const titleUpdatePlan: MutationPlanContract = {
       idempotencyKey: buildMutationIdempotencyKey(userId, item.id, userText, 'update_title'),
       steps: [{ kind: 'update_core_item', summary: 'set title', payload: { title: rawValue } }]
     };
     if (normalize(item.title || '') === normalize(rawValue)) {
-      tools.push({ name: 'idempotency', status: 'applied', summary: `No-op (${plan.idempotencyKey}) title already set` });
+      tools.push({ name: 'idempotency', status: 'applied', summary: `No-op (${titleUpdatePlan.idempotencyKey}) title already set` });
       return {
         handled: true,
         text: `Already up to date. Title on ${item.title} is already "${rawValue}".`,
@@ -1505,7 +1529,7 @@ const runMutationTools = async (
         confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
       };
     }
-    const { error } = await client.from('items').update(plan.steps[0].payload).eq('id', item.id).eq('user_id', userId);
+    const { error } = await client.from('items').update(titleUpdatePlan.steps[0].payload).eq('id', item.id).eq('user_id', userId);
     if (error) {
       tools.push({ name: 'update_record', status: 'error', summary: error.message });
       return {
@@ -1517,7 +1541,7 @@ const runMutationTools = async (
         confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
       };
     }
-    tools.push({ name: 'idempotency', status: 'applied', summary: plan.idempotencyKey });
+    tools.push({ name: 'idempotency', status: 'applied', summary: titleUpdatePlan.idempotencyKey });
     tools.push({ name: 'update_record', status: 'applied', summary: 'Updated core field: title' });
     return {
       handled: true,
@@ -1530,12 +1554,12 @@ const runMutationTools = async (
   }
 
   if (fieldAlias === 'description' || fieldAlias === 'notes' || fieldAlias === 'note') {
-    const plan: MutationPlanContract = {
+    const descriptionUpdatePlan: MutationPlanContract = {
       idempotencyKey: buildMutationIdempotencyKey(userId, item.id, userText, 'update_description'),
       steps: [{ kind: 'update_core_item', summary: 'set description', payload: { description: rawValue } }]
     };
     if (normalize(item.description || '') === normalize(rawValue)) {
-      tools.push({ name: 'idempotency', status: 'applied', summary: `No-op (${plan.idempotencyKey}) description already set` });
+      tools.push({ name: 'idempotency', status: 'applied', summary: `No-op (${descriptionUpdatePlan.idempotencyKey}) description already set` });
       return {
         handled: true,
         text: `Already up to date. Notes on ${item.title} already include that value.`,
@@ -1545,7 +1569,7 @@ const runMutationTools = async (
         confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
       };
     }
-    const { error } = await client.from('items').update(plan.steps[0].payload).eq('id', item.id).eq('user_id', userId);
+    const { error } = await client.from('items').update(descriptionUpdatePlan.steps[0].payload).eq('id', item.id).eq('user_id', userId);
     if (error) {
       tools.push({ name: 'update_record', status: 'error', summary: error.message });
       return {
@@ -1557,7 +1581,7 @@ const runMutationTools = async (
         confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
       };
     }
-    tools.push({ name: 'idempotency', status: 'applied', summary: plan.idempotencyKey });
+    tools.push({ name: 'idempotency', status: 'applied', summary: descriptionUpdatePlan.idempotencyKey });
     tools.push({ name: 'update_record', status: 'applied', summary: 'Updated core field: description' });
     return {
       handled: true,
@@ -1571,12 +1595,12 @@ const runMutationTools = async (
 
   if (fieldAlias === 'status') {
     const statusValue = formatStatusLabel(rawValue);
-    const plan: MutationPlanContract = {
+    const statusUpdatePlan: MutationPlanContract = {
       idempotencyKey: buildMutationIdempotencyKey(userId, item.id, userText, 'update_status'),
       steps: [{ kind: 'update_core_item', summary: 'set status', payload: { status: statusValue } }]
     };
     if (normalize(item.status || '') === normalize(statusValue)) {
-      tools.push({ name: 'idempotency', status: 'applied', summary: `No-op (${plan.idempotencyKey}) status already set` });
+      tools.push({ name: 'idempotency', status: 'applied', summary: `No-op (${statusUpdatePlan.idempotencyKey}) status already set` });
       return {
         handled: true,
         text: `Already up to date. Status on ${item.title} is already ${statusValue}.`,
@@ -1586,7 +1610,7 @@ const runMutationTools = async (
         confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
       };
     }
-    const { error } = await client.from('items').update(plan.steps[0].payload).eq('id', item.id).eq('user_id', userId);
+    const { error } = await client.from('items').update(statusUpdatePlan.steps[0].payload).eq('id', item.id).eq('user_id', userId);
     if (error) {
       tools.push({ name: 'update_record', status: 'error', summary: error.message });
       return {
@@ -1598,7 +1622,7 @@ const runMutationTools = async (
         confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
       };
     }
-    tools.push({ name: 'idempotency', status: 'applied', summary: plan.idempotencyKey });
+    tools.push({ name: 'idempotency', status: 'applied', summary: statusUpdatePlan.idempotencyKey });
     tools.push({ name: 'update_record', status: 'applied', summary: `Updated core field: status=${statusValue}` });
     return {
       handled: true,
@@ -1700,7 +1724,7 @@ const runMutationTools = async (
     upsertRow.value_text = rawValue;
   }
 
-  const plan: MutationPlanContract = {
+  const customFieldUpdatePlan: MutationPlanContract = {
     idempotencyKey: buildMutationIdempotencyKey(userId, item.id, `${targetField.id}:${rawValue}`, 'update_custom_field'),
     steps: [{ kind: 'upsert_item_field_value', summary: `set ${targetField.name}`, payload: upsertRow }]
   };
@@ -1713,7 +1737,7 @@ const runMutationTools = async (
     value_boolean: (upsertRow.value_boolean as boolean | null | undefined) ?? null
   };
   if (currentField && JSON.stringify(currentField) === JSON.stringify(nextComparable)) {
-    tools.push({ name: 'idempotency', status: 'applied', summary: `No-op (${plan.idempotencyKey}) field already set` });
+    tools.push({ name: 'idempotency', status: 'applied', summary: `No-op (${customFieldUpdatePlan.idempotencyKey}) field already set` });
     return {
       handled: true,
       text: `Already up to date. ${item.title} already has ${targetField.name} set to "${rawValue}".`,
@@ -1726,7 +1750,7 @@ const runMutationTools = async (
 
   const { error } = await client
     .from('item_field_values')
-    .upsert(plan.steps[0].payload, { onConflict: 'item_id,field_id' });
+    .upsert(customFieldUpdatePlan.steps[0].payload, { onConflict: 'item_id,field_id' });
   if (error) {
     tools.push({ name: 'update_record', status: 'error', summary: error.message });
     return {
@@ -1739,7 +1763,7 @@ const runMutationTools = async (
     };
   }
 
-  tools.push({ name: 'idempotency', status: 'applied', summary: plan.idempotencyKey });
+  tools.push({ name: 'idempotency', status: 'applied', summary: customFieldUpdatePlan.idempotencyKey });
   tools.push({ name: 'update_record', status: 'applied', summary: `Updated custom field: ${targetField.name}` });
   return {
     handled: true,
@@ -2219,13 +2243,10 @@ Deno.serve(async (req) => {
     const requestId = crypto.randomUUID();
     const SUPABASE_URL = Deno.env.get('SUPABASE_URL');
     const SUPABASE_ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY');
-    const AI_PROVIDER_PRIMARY = Deno.env.get('AI_PROVIDER_PRIMARY');
-    const AI_API_KEY_PRIMARY = Deno.env.get('AI_API_KEY_PRIMARY');
-    const AI_PROVIDER_SECONDARY = Deno.env.get('AI_PROVIDER_SECONDARY');
-    const AI_API_KEY_SECONDARY = Deno.env.get('AI_API_KEY_SECONDARY');
-    const AI_PROVIDER_FALLBACK = Deno.env.get('AI_PROVIDER_FALLBACK');
-    const AI_API_KEY_FALLBACK = Deno.env.get('AI_API_KEY_FALLBACK');
+    const hasAiProviders = hasConfiguredAiProviders();
+    const aiProviderStatus = getAiProviderStatus();
     console.log(`[chat:${requestId}] inbound request`);
+    console.log(`[chat:${requestId}] provider status`, aiProviderStatus);
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
       console.error(`[chat:${requestId}] missing Supabase env`);
       return new Response(JSON.stringify({ error: 'Supabase env missing' }), {
@@ -2235,8 +2256,7 @@ Deno.serve(async (req) => {
     }
 
     const authHeader = req.headers.get('Authorization');
-    const bearerMatch = authHeader?.match(/^Bearer\s+(.+)$/i) || null;
-    const bearerToken = bearerMatch?.[1]?.trim() || null;
+    const bearerToken = extractBearerTokenFromHeaders(req);
 
     const authClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
       global: { headers: authHeader ? { Authorization: authHeader } : {} }
@@ -2321,7 +2341,7 @@ Deno.serve(async (req) => {
       accountSnapshotError = contextError instanceof Error ? contextError.message : String(contextError);
     }
 
-    if (AI_API_KEY_PRIMARY && lastUserMessage) {
+    if (hasAiProviders && lastUserMessage) {
       try {
         // Use AI gateway for provider-agnostic completion
         const completion = await aiGateway.createCompletion({
@@ -2476,12 +2496,102 @@ Deno.serve(async (req) => {
       }
     }
 
-    if (!AI_API_KEY_PRIMARY) {
-      console.error(`[chat:${requestId}] missing AI provider configuration`);
+    if (hasAiProviders && context.planning_date && lastUserMessage) {
+      try {
+        const planningCompletion = await aiGateway.createCompletion(
+          {
+            messages: [
+              {
+                role: 'system',
+                content:
+                  'You are Delta AI. Convert a rough plan for one day into JSON only. Return {"reply_text": string, "proposals": Array<{title: string, notes?: string, scheduled_start_utc: string, scheduled_end_utc?: string}>}. Use the provided planning date and timezone. Generate 1 to 3 realistic time blocks. scheduled_start_utc and scheduled_end_utc must be ISO UTC timestamps. Keep reply_text concise and action-oriented.'
+              },
+              {
+                role: 'user',
+                content: JSON.stringify({
+                  planning_date: context.planning_date,
+                  planning_timezone: context.planning_timezone || 'America/Denver',
+                  user_request: lastUserMessage
+                })
+              }
+            ],
+            responseFormat: 'json_object',
+            modelProfile: 'delta-general'
+          },
+          requestId
+        );
+
+        if (planningCompletion.content) {
+          const parsed = JSON.parse(planningCompletion.content) as {
+            reply_text?: string;
+            proposals?: Array<{
+              title?: string;
+              notes?: string | null;
+              scheduled_start_utc?: string;
+              scheduled_end_utc?: string | null;
+            }>;
+          };
+
+          const proposals: ChatProposal[] = Array.isArray(parsed.proposals)
+            ? parsed.proposals
+                .filter(
+                  (proposal) =>
+                    typeof proposal?.title === 'string' &&
+                    proposal.title.trim().length > 0 &&
+                    typeof proposal?.scheduled_start_utc === 'string' &&
+                    proposal.scheduled_start_utc.includes('T')
+                )
+                .slice(0, 3)
+                .map((proposal) => ({
+                  id: crypto.randomUUID(),
+                  type: 'create_time_block' as const,
+                  title: proposal.title!.trim(),
+                  scheduled_start_utc: proposal.scheduled_start_utc!,
+                  scheduled_end_utc: proposal.scheduled_end_utc || null,
+                  notes: typeof proposal.notes === 'string' ? proposal.notes : null
+                }))
+            : [];
+
+          if (proposals.length > 0) {
+            return new Response(
+              JSON.stringify({
+                text:
+                  (typeof parsed.reply_text === 'string' && parsed.reply_text.trim()) ||
+                  'I drafted a plan for that day. Review it and push the block you want to create.',
+                source: 'ai',
+                proposals,
+                debug_reason: 'day_planning_proposal',
+                debug_model: planningCompletion.modelUsed || null,
+                debug_meta: buildDebugMeta(
+                  requestId,
+                  context,
+                  accountSnapshot,
+                  'llm',
+                  'day_planning_proposal',
+                  undefined,
+                  undefined,
+                  snapshotWarnings
+                )
+              }),
+              {
+                status: 200,
+                headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+              }
+            );
+          }
+        }
+      } catch (planningError) {
+        console.warn(`[chat:${requestId}] day planning proposal failed`, planningError);
+      }
+    }
+
+    if (!hasAiProviders) {
+      console.error(`[chat:${requestId}] missing AI provider configuration`, aiProviderStatus);
       return new Response(JSON.stringify({
         ...heuristic(messages, context),
         text: 'Delta AI is temporarily unavailable. Please verify AI provider configuration.',
         debug_reason: 'missing_ai_config',
+        debug_error: aiProviderStatus,
         debug_meta: buildDebugMeta(requestId, context, accountSnapshot, 'heuristic', 'missing_ai_config', undefined, undefined, snapshotWarnings)
       }), {
         status: 200,

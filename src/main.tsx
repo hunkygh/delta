@@ -8,18 +8,34 @@ import './styles/design-tokens.css';
 import './styles/hover-focus.css';
 import './styles/responsive.css';
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <AppErrorBoundary>
-      <BrowserRouter>
-        <App />
-      </BrowserRouter>
-    </AppErrorBoundary>
-  </React.StrictMode>
-);
+async function clearDevBrowserState(): Promise<void> {
+  if (!import.meta.env.DEV || typeof window === 'undefined') {
+    return;
+  }
 
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    void navigator.serviceWorker.register('/sw.js');
-  });
+  if ('serviceWorker' in navigator) {
+    const registrations = await navigator.serviceWorker.getRegistrations();
+    await Promise.all(registrations.map((registration) => registration.unregister()));
+  }
+
+  if ('caches' in window) {
+    const cacheKeys = await caches.keys();
+    await Promise.all(cacheKeys.map((key) => caches.delete(key)));
+  }
 }
+
+async function bootstrap(): Promise<void> {
+  await clearDevBrowserState();
+
+  ReactDOM.createRoot(document.getElementById('root')!).render(
+    <React.StrictMode>
+      <AppErrorBoundary>
+        <BrowserRouter>
+          <App />
+        </BrowserRouter>
+      </AppErrorBoundary>
+    </React.StrictMode>
+  );
+}
+
+void bootstrap();

@@ -86,9 +86,20 @@ const getDefaultBaseUrl = (provider: string): string => {
     'openrouter': 'https://openrouter.ai/api/v1',
     'together': 'https://api.together.xyz/v1',
     'openai_compatible': 'https://api.openai.com/v1',
-    'groq': 'https://api.groq.com/openai/v1'
+    'groq': 'https://api.groq.com/openai/v1',
+    'deepseek': 'https://api.deepseek.com'
   };
   return defaults[provider] || 'https://api.openai.com/v1';
+};
+
+const PROVIDER_MODEL_FALLBACKS: Record<string, Record<string, string[]>> = {
+  groq: {
+    'delta-general': ['llama-3.3-70b-versatile', 'openai/gpt-oss-120b', 'qwen/qwen3-32b', 'llama-3.1-8b-instant'],
+    'delta-cheap': ['llama-3.1-8b-instant', 'qwen/qwen3-32b', 'openai/gpt-oss-20b'],
+    'delta-reasoning': ['openai/gpt-oss-120b', 'qwen/qwen3-32b', 'llama-3.3-70b-versatile'],
+    'delta-fast': ['llama-3.1-8b-instant', 'llama-3.3-70b-versatile'],
+    'delta-classifier': ['llama-3.1-8b-instant', 'qwen/qwen3-32b', 'openai/gpt-oss-20b']
+  }
 };
 
 // Model profile to provider/model mappings
@@ -97,29 +108,60 @@ const getModelProfileMappings = (): Record<string, ModelProfile[]> => {
     'delta-general': [
       { id: 'delta-general', provider: 'openrouter', capabilities: ['chat', 'reasoning'], costTier: 'general', providerModelId: 'anthropic/claude-3.5-sonnet' },
       { id: 'delta-general', provider: 'together', capabilities: ['chat', 'reasoning'], costTier: 'general', providerModelId: 'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo' },
+      { id: 'delta-general', provider: 'groq', capabilities: ['chat', 'reasoning'], costTier: 'general', providerModelId: 'llama-3.3-70b-versatile' },
+      { id: 'delta-general', provider: 'deepseek', capabilities: ['chat', 'reasoning'], costTier: 'general', providerModelId: 'deepseek-chat' },
       { id: 'delta-general', provider: 'openai_compatible', capabilities: ['chat', 'reasoning'], costTier: 'general', providerModelId: 'gpt-4o' }
     ],
     'delta-cheap': [
       { id: 'delta-cheap', provider: 'openrouter', capabilities: ['chat'], costTier: 'cheap', providerModelId: 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo' },
       { id: 'delta-cheap', provider: 'together', capabilities: ['chat'], costTier: 'cheap', providerModelId: 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo' },
-      { id: 'delta-cheap', provider: 'openai_compatible', capabilities: ['chat'], costTier: 'cheap', providerModelId: 'gpt-3.5-turbo' }
+      { id: 'delta-cheap', provider: 'groq', capabilities: ['chat'], costTier: 'cheap', providerModelId: 'llama-3.1-8b-instant' },
+      { id: 'delta-cheap', provider: 'deepseek', capabilities: ['chat'], costTier: 'cheap', providerModelId: 'deepseek-chat' },
+      { id: 'delta-cheap', provider: 'openai_compatible', capabilities: ['chat'], costTier: 'cheap', providerModelId: 'gpt-4o-mini' }
     ],
     'delta-reasoning': [
       { id: 'delta-reasoning', provider: 'openrouter', capabilities: ['chat', 'reasoning'], costTier: 'reasoning', providerModelId: 'openai/gpt-4o' },
       { id: 'delta-reasoning', provider: 'together', capabilities: ['chat', 'reasoning'], costTier: 'reasoning', providerModelId: 'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo' },
+      { id: 'delta-reasoning', provider: 'groq', capabilities: ['chat', 'reasoning'], costTier: 'reasoning', providerModelId: 'openai/gpt-oss-120b' },
+      { id: 'delta-reasoning', provider: 'deepseek', capabilities: ['chat', 'reasoning'], costTier: 'reasoning', providerModelId: 'deepseek-reasoner' },
       { id: 'delta-reasoning', provider: 'openai_compatible', capabilities: ['chat', 'reasoning'], costTier: 'reasoning', providerModelId: 'gpt-4o' }
     ],
     'delta-fast': [
       { id: 'delta-fast', provider: 'openrouter', capabilities: ['chat'], costTier: 'fast', providerModelId: 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo' },
       { id: 'delta-fast', provider: 'together', capabilities: ['chat'], costTier: 'fast', providerModelId: 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo' },
-      { id: 'delta-fast', provider: 'openai_compatible', capabilities: ['chat'], costTier: 'fast', providerModelId: 'gpt-3.5-turbo' }
+      { id: 'delta-fast', provider: 'groq', capabilities: ['chat'], costTier: 'fast', providerModelId: 'llama-3.1-8b-instant' },
+      { id: 'delta-fast', provider: 'deepseek', capabilities: ['chat'], costTier: 'fast', providerModelId: 'deepseek-chat' },
+      { id: 'delta-fast', provider: 'openai_compatible', capabilities: ['chat'], costTier: 'fast', providerModelId: 'gpt-4o-mini' }
     ],
     'delta-classifier': [
       { id: 'delta-classifier', provider: 'openrouter', capabilities: ['chat', 'classification'], costTier: 'cheap', providerModelId: 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo' },
       { id: 'delta-classifier', provider: 'together', capabilities: ['chat', 'classification'], costTier: 'cheap', providerModelId: 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo' },
-      { id: 'delta-classifier', provider: 'openai_compatible', capabilities: ['chat', 'classification'], costTier: 'cheap', providerModelId: 'gpt-3.5-turbo' }
+      { id: 'delta-classifier', provider: 'groq', capabilities: ['chat', 'classification'], costTier: 'cheap', providerModelId: 'llama-3.1-8b-instant' },
+      { id: 'delta-classifier', provider: 'deepseek', capabilities: ['chat', 'classification'], costTier: 'cheap', providerModelId: 'deepseek-chat' },
+      { id: 'delta-classifier', provider: 'openai_compatible', capabilities: ['chat', 'classification'], costTier: 'cheap', providerModelId: 'gpt-4o-mini' }
     ]
   };
+};
+
+const resolveCandidateModelsForProfile = (
+  profileId: string,
+  providerName: string,
+  discoveredIds: string[],
+  preferredModelId?: string
+): string[] => {
+  const fallbackIds = PROVIDER_MODEL_FALLBACKS[providerName]?.[profileId] || [];
+  const candidateIds = [...new Set([preferredModelId, ...fallbackIds].filter(Boolean) as string[])];
+
+  if (discoveredIds.length === 0) {
+    return candidateIds;
+  }
+
+  const matched = candidateIds.filter((candidateId) => discoveredIds.includes(candidateId));
+  if (matched.length > 0) {
+    return matched;
+  }
+
+  return discoveredIds[0] ? [discoveredIds[0]] : candidateIds;
 };
 
 // Model discovery cache
@@ -284,8 +326,15 @@ const getAvailableModelsForProfile = async (
     const providerProfiles = profileMappings.filter(p => p.provider === provider.name);
     
     for (const profile of providerProfiles) {
-      if (availableModels.includes(profile.providerModelId || '')) {
-        candidates.push({ provider, modelId: profile.providerModelId || '', profile });
+      const candidateModelIds = resolveCandidateModelsForProfile(
+        profileId,
+        provider.name,
+        availableModels,
+        profile.providerModelId
+      );
+
+      for (const candidateModelId of candidateModelIds) {
+        candidates.push({ provider, modelId: candidateModelId, profile });
       }
     }
   }
@@ -299,7 +348,7 @@ export const aiGateway = {
    */
   async getAvailableModels(profileId: string, requestId: string = crypto.randomUUID()): Promise<string[]> {
     const config = getProviderConfig();
-    const providers = [config.primary, config.secondary, config.fallback].filter(Boolean);
+    const providers = [config.primary, config.secondary, config.fallback].filter((p): p is AIProvider => p !== null);
     
     try {
       const candidates = await getAvailableModelsForProfile(profileId, providers, requestId);
@@ -316,7 +365,7 @@ export const aiGateway = {
   async createCompletion(request: AICompletionRequest, requestId: string = crypto.randomUUID()): Promise<AICompletionResponse> {
     const config = getProviderConfig();
     const profileId = request.modelProfile || 'delta-general';
-    const providers = [config.primary, config.secondary, config.fallback].filter(Boolean);
+    const providers = [config.primary, config.secondary, config.fallback].filter((p): p is AIProvider => p !== null);
     
     if (providers.length === 0) {
       return {

@@ -1,4 +1,4 @@
-import { Settings, Plus, LogOut, SlidersHorizontal } from 'lucide-react';
+import { Settings, Plus, LogOut, SlidersHorizontal, LayoutGrid } from 'lucide-react';
 import type { User as SupabaseUser } from '@supabase/supabase-js';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useState, useEffect, useRef } from 'react';
@@ -315,7 +315,10 @@ export default function Sidebar({
             <CalendarIcon size={14} />
             <span className="sidebar-nav-text">Calendar</span>
           </button>
-          
+          <button className={`sidebar-nav-item ${isActivePath('/shell') ? 'active' : ''}`.trim()} onClick={() => navigate('/shell')}>
+            <LayoutGrid size={14} />
+            <span className="sidebar-nav-text">Shell</span>
+          </button>
         </div>
         
         <div className="sidebar-divider-item" />
