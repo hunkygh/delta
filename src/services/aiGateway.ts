@@ -53,8 +53,8 @@ const getProviderConfig = (): {
   
   const primary = viteEnv.VITE_AI_PROVIDER_PRIMARY && viteEnv.VITE_AI_API_KEY_PRIMARY
     ? {
-        name: viteEnv.VITE_AI_PROVIDER_PRIMARY,
-        baseUrl: viteEnv.VITE_AI_BASE_URL_PRIMARY || getDefaultBaseUrl(viteEnv.VITE_AI_PROVIDER_PRIMARY),
+        name: normalizeProviderName(viteEnv.VITE_AI_PROVIDER_PRIMARY),
+        baseUrl: viteEnv.VITE_AI_BASE_URL_PRIMARY || getDefaultBaseUrl(normalizeProviderName(viteEnv.VITE_AI_PROVIDER_PRIMARY)),
         apiKey: viteEnv.VITE_AI_API_KEY_PRIMARY,
         models: []
       }
@@ -62,8 +62,9 @@ const getProviderConfig = (): {
 
   const secondary = viteEnv.VITE_AI_PROVIDER_SECONDARY && viteEnv.VITE_AI_API_KEY_SECONDARY
     ? {
-        name: viteEnv.VITE_AI_PROVIDER_SECONDARY,
-        baseUrl: viteEnv.VITE_AI_BASE_URL_SECONDARY || getDefaultBaseUrl(viteEnv.VITE_AI_PROVIDER_SECONDARY),
+        name: normalizeProviderName(viteEnv.VITE_AI_PROVIDER_SECONDARY),
+        baseUrl:
+          viteEnv.VITE_AI_BASE_URL_SECONDARY || getDefaultBaseUrl(normalizeProviderName(viteEnv.VITE_AI_PROVIDER_SECONDARY)),
         apiKey: viteEnv.VITE_AI_API_KEY_SECONDARY,
         models: []
       }
@@ -71,8 +72,9 @@ const getProviderConfig = (): {
 
   const fallback = viteEnv.VITE_AI_PROVIDER_FALLBACK && viteEnv.VITE_AI_API_KEY_FALLBACK
     ? {
-        name: viteEnv.VITE_AI_PROVIDER_FALLBACK,
-        baseUrl: viteEnv.VITE_AI_BASE_URL_FALLBACK || getDefaultBaseUrl(viteEnv.VITE_AI_PROVIDER_FALLBACK),
+        name: normalizeProviderName(viteEnv.VITE_AI_PROVIDER_FALLBACK),
+        baseUrl:
+          viteEnv.VITE_AI_BASE_URL_FALLBACK || getDefaultBaseUrl(normalizeProviderName(viteEnv.VITE_AI_PROVIDER_FALLBACK)),
         apiKey: viteEnv.VITE_AI_API_KEY_FALLBACK,
         models: []
       }
@@ -83,6 +85,7 @@ const getProviderConfig = (): {
 
 const getDefaultBaseUrl = (provider: string): string => {
   const defaults: Record<string, string> = {
+    'google': 'https://generativelanguage.googleapis.com/v1beta',
     'openrouter': 'https://openrouter.ai/api/v1',
     'together': 'https://api.together.xyz/v1',
     'openai_compatible': 'https://api.openai.com/v1',
@@ -106,6 +109,7 @@ const PROVIDER_MODEL_FALLBACKS: Record<string, Record<string, string[]>> = {
 const getModelProfileMappings = (): Record<string, ModelProfile[]> => {
   return {
     'delta-general': [
+      { id: 'delta-general', provider: 'google', capabilities: ['chat', 'reasoning'], costTier: 'general', providerModelId: 'gemini-2.5-flash-lite' },
       { id: 'delta-general', provider: 'openrouter', capabilities: ['chat', 'reasoning'], costTier: 'general', providerModelId: 'anthropic/claude-3.5-sonnet' },
       { id: 'delta-general', provider: 'together', capabilities: ['chat', 'reasoning'], costTier: 'general', providerModelId: 'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo' },
       { id: 'delta-general', provider: 'groq', capabilities: ['chat', 'reasoning'], costTier: 'general', providerModelId: 'llama-3.3-70b-versatile' },
@@ -113,6 +117,7 @@ const getModelProfileMappings = (): Record<string, ModelProfile[]> => {
       { id: 'delta-general', provider: 'openai_compatible', capabilities: ['chat', 'reasoning'], costTier: 'general', providerModelId: 'gpt-4o' }
     ],
     'delta-cheap': [
+      { id: 'delta-cheap', provider: 'google', capabilities: ['chat'], costTier: 'cheap', providerModelId: 'gemini-2.5-flash-lite' },
       { id: 'delta-cheap', provider: 'openrouter', capabilities: ['chat'], costTier: 'cheap', providerModelId: 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo' },
       { id: 'delta-cheap', provider: 'together', capabilities: ['chat'], costTier: 'cheap', providerModelId: 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo' },
       { id: 'delta-cheap', provider: 'groq', capabilities: ['chat'], costTier: 'cheap', providerModelId: 'llama-3.1-8b-instant' },
@@ -120,6 +125,7 @@ const getModelProfileMappings = (): Record<string, ModelProfile[]> => {
       { id: 'delta-cheap', provider: 'openai_compatible', capabilities: ['chat'], costTier: 'cheap', providerModelId: 'gpt-4o-mini' }
     ],
     'delta-reasoning': [
+      { id: 'delta-reasoning', provider: 'google', capabilities: ['chat', 'reasoning'], costTier: 'reasoning', providerModelId: 'gemini-2.5-flash-lite' },
       { id: 'delta-reasoning', provider: 'openrouter', capabilities: ['chat', 'reasoning'], costTier: 'reasoning', providerModelId: 'openai/gpt-4o' },
       { id: 'delta-reasoning', provider: 'together', capabilities: ['chat', 'reasoning'], costTier: 'reasoning', providerModelId: 'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo' },
       { id: 'delta-reasoning', provider: 'groq', capabilities: ['chat', 'reasoning'], costTier: 'reasoning', providerModelId: 'openai/gpt-oss-120b' },
@@ -127,6 +133,7 @@ const getModelProfileMappings = (): Record<string, ModelProfile[]> => {
       { id: 'delta-reasoning', provider: 'openai_compatible', capabilities: ['chat', 'reasoning'], costTier: 'reasoning', providerModelId: 'gpt-4o' }
     ],
     'delta-fast': [
+      { id: 'delta-fast', provider: 'google', capabilities: ['chat'], costTier: 'fast', providerModelId: 'gemini-2.5-flash-lite' },
       { id: 'delta-fast', provider: 'openrouter', capabilities: ['chat'], costTier: 'fast', providerModelId: 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo' },
       { id: 'delta-fast', provider: 'together', capabilities: ['chat'], costTier: 'fast', providerModelId: 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo' },
       { id: 'delta-fast', provider: 'groq', capabilities: ['chat'], costTier: 'fast', providerModelId: 'llama-3.1-8b-instant' },
@@ -134,6 +141,7 @@ const getModelProfileMappings = (): Record<string, ModelProfile[]> => {
       { id: 'delta-fast', provider: 'openai_compatible', capabilities: ['chat'], costTier: 'fast', providerModelId: 'gpt-4o-mini' }
     ],
     'delta-classifier': [
+      { id: 'delta-classifier', provider: 'google', capabilities: ['chat', 'classification'], costTier: 'cheap', providerModelId: 'gemini-2.5-flash-lite' },
       { id: 'delta-classifier', provider: 'openrouter', capabilities: ['chat', 'classification'], costTier: 'cheap', providerModelId: 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo' },
       { id: 'delta-classifier', provider: 'together', capabilities: ['chat', 'classification'], costTier: 'cheap', providerModelId: 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo' },
       { id: 'delta-classifier', provider: 'groq', capabilities: ['chat', 'classification'], costTier: 'cheap', providerModelId: 'llama-3.1-8b-instant' },
@@ -143,6 +151,15 @@ const getModelProfileMappings = (): Record<string, ModelProfile[]> => {
   };
 };
 
+const normalizeProviderName = (provider: string): string => {
+  const normalized = provider.trim().toLowerCase();
+  if (normalized === 'gemini') return 'google';
+  if (normalized === 'openai-compatible') return 'openai_compatible';
+  return normalized;
+};
+
+const isGoogleProvider = (provider: AIProvider): boolean => provider.name === 'google';
+
 const resolveCandidateModelsForProfile = (
   profileId: string,
   providerName: string,
@@ -151,6 +168,9 @@ const resolveCandidateModelsForProfile = (
 ): string[] => {
   const fallbackIds = PROVIDER_MODEL_FALLBACKS[providerName]?.[profileId] || [];
   const candidateIds = [...new Set([preferredModelId, ...fallbackIds].filter(Boolean) as string[])];
+  if (preferredModelId && preferredModelId.trim()) {
+    return candidateIds;
+  }
 
   if (discoveredIds.length === 0) {
     return candidateIds;
@@ -257,6 +277,103 @@ const makeOpenAICompatibleRequest = async (
   }
 };
 
+const buildGoogleRequestBody = (request: AICompletionRequest) => {
+  const systemText = request.messages
+    .filter((message) => message.role === 'system')
+    .map((message) => message.content.trim())
+    .filter(Boolean)
+    .join('\n\n');
+
+  const contents = request.messages
+    .filter((message) => message.role !== 'system')
+    .map((message) => ({
+      role: message.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: message.content }]
+    }));
+
+  return {
+    ...(systemText ? { systemInstruction: { parts: [{ text: systemText }] } } : {}),
+    contents: contents.length > 0 ? contents : [{ role: 'user', parts: [{ text: '' }] }],
+    generationConfig: {
+      temperature: request.temperature || 0,
+      ...(request.responseFormat
+        ? {
+            responseMimeType: request.responseFormat === 'json_object' ? 'application/json' : 'text/plain'
+          }
+        : {})
+    }
+  };
+};
+
+const makeGoogleRequest = async (
+  provider: AIProvider,
+  modelId: string,
+  request: AICompletionRequest,
+  requestId: string
+): Promise<{
+  ok: boolean;
+  content: string;
+  status: number | null;
+  error: unknown;
+}> => {
+  try {
+    const response = await fetch(
+      `${provider.baseUrl}/models/${encodeURIComponent(modelId)}:generateContent?key=${encodeURIComponent(provider.apiKey)}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(buildGoogleRequestBody(request))
+      }
+    );
+
+    if (!response.ok) {
+      const errPayload = await safeJson(response);
+      console.warn(`[ai-gateway:${requestId}] provider request failed`, {
+        provider: provider.name,
+        model: modelId,
+        status: response.status,
+        error: errPayload
+      });
+      return {
+        ok: false,
+        content: '',
+        status: response.status,
+        error: errPayload
+      };
+    }
+
+    const parsed = await safeJson(response);
+    const parts = Array.isArray(parsed?.candidates?.[0]?.content?.parts)
+      ? parsed.candidates[0].content.parts
+      : [];
+    const content = parts
+      .map((part: any) => (typeof part?.text === 'string' ? part.text : ''))
+      .join('')
+      .trim();
+
+    return {
+      ok: true,
+      content,
+      status: response.status,
+      error: null
+    };
+  } catch (error) {
+    console.warn(`[ai-gateway:${requestId}] provider exception`, {
+      provider: provider.name,
+      model: modelId,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return {
+      ok: false,
+      content: '',
+      status: null,
+      error
+    };
+  }
+};
+
 const discoverModels = async (provider: AIProvider, requestId: string): Promise<string[]> => {
   const cacheKey = provider.name;
   const cached = modelDiscoveryCache.get(cacheKey);
@@ -266,6 +383,37 @@ const discoverModels = async (provider: AIProvider, requestId: string): Promise<
   }
 
   try {
+    if (isGoogleProvider(provider)) {
+      const response = await fetch(`${provider.baseUrl}/models?key=${encodeURIComponent(provider.apiKey)}`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
+
+      if (!response.ok) {
+        console.warn(`[ai-gateway:${requestId}] model discovery failed`, {
+          provider: provider.name,
+          status: response.status
+        });
+        return [];
+      }
+
+      const parsed = await safeJson(response);
+      const models = Array.isArray(parsed?.models) ? parsed.models : [];
+
+      modelDiscoveryCache.set(cacheKey, {
+        provider: provider.name,
+        models: models.map((model: any) => ({
+          ...model,
+          id: String(model?.name || '').replace(/^models\//, '')
+        })),
+        lastUpdated: Date.now()
+      });
+
+      return models.map((m: any) => String(m?.name || '').replace(/^models\//, '')).filter(Boolean);
+    }
+
     const response = await fetch(`${provider.baseUrl}/models`, {
       method: 'GET',
       headers: {
@@ -387,7 +535,9 @@ export const aiGateway = {
       attempted.add(attemptKey);
 
       try {
-        const result = await makeOpenAICompatibleRequest(candidate.provider, candidate.modelId, request, requestId);
+        const result = isGoogleProvider(candidate.provider)
+          ? await makeGoogleRequest(candidate.provider, candidate.modelId, request, requestId)
+          : await makeOpenAICompatibleRequest(candidate.provider, candidate.modelId, request, requestId);
         
         if (result.ok) {
           console.info(`[ai-gateway:${requestId}] completion successful`, {

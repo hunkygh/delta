@@ -120,7 +120,15 @@ export const chatService = {
         text: text || 'No response generated.',
         source: parsed.source === 'ai' ? 'ai' : 'heuristic',
         proposals: Array.isArray(parsed.proposals) ? parsed.proposals : [],
-        debug_meta: parsed.debug_meta
+        debug_meta: parsed.debug_meta,
+        debug_reason: typeof parsed.debug_reason === 'string' ? parsed.debug_reason : null,
+        debug_error:
+          typeof parsed.debug_error === 'string'
+            ? parsed.debug_error
+            : parsed.debug_error
+              ? JSON.stringify(parsed.debug_error)
+              : null,
+        debug_model: typeof parsed.debug_model === 'string' ? parsed.debug_model : null
       };
     } catch {
       console.warn('[DeltaAI] chat invoke failed, using heuristic');

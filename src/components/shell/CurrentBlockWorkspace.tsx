@@ -1,11 +1,14 @@
 import { CommentAdd } from 'clicons-react';
-import { ArrowUp } from 'lucide-react';
+import { ArrowUp, CheckCircle2, ChevronDown, ChevronRight, Circle, Pencil } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import type { Event } from '../../types/Event';
+import type { ShellItemSummary, ShellListSummary } from './types';
 
 interface CurrentBlockWorkspaceProps {
   primaryBlock: Event | null;
   nextBlock: Event | null;
+  lists: ShellListSummary[];
+  items: ShellItemSummary[];
   selectedDate: Date;
   selectedDateEvents: Event[];
   loading: boolean;
@@ -14,7 +17,12 @@ interface CurrentBlockWorkspaceProps {
   onDescribeCurrentBlock: (input: string) => Promise<void>;
   onPlanFutureDay: (input: string) => Promise<void>;
   onOpenCreateComposer: () => void;
+  onEditBlock: (event: Event) => void;
   onOpenAiThread: (event: Event) => void;
+  onAddBlockTask: (eventId: string, title: string, linkedItemIds: string[]) => Promise<void>;
+  onToggleBlockTask: (eventId: string, taskId: string, checked: boolean) => Promise<void>;
+  onToggleBlockTaskItem: (eventId: string, blockTaskItemId: string, checked: boolean) => Promise<void>;
+  onOpenItem: (itemId: string) => void;
 }
 
 const formatRange = (startIso: string, endIso: string): string => {
@@ -46,6 +54,8 @@ const getProgressPercent = (startIso: string, endIso: string, nowMs: number): nu
 export default function CurrentBlockWorkspace({
   primaryBlock,
   nextBlock,
+  lists,
+  items,
   selectedDate,
   selectedDateEvents,
   loading,
@@ -54,17 +64,39 @@ export default function CurrentBlockWorkspace({
   onDescribeCurrentBlock,
   onPlanFutureDay,
   onOpenCreateComposer,
-  onOpenAiThread
+  onEditBlock,
+  onOpenAiThread,
+  onAddBlockTask,
+  onToggleBlockTask,
+  onToggleBlockTaskItem,
+  onOpenItem
 }: CurrentBlockWorkspaceProps): JSX.Element {
   const selectedIsToday = isSameDay(selectedDate, new Date());
   const selectedIsFuture = selectedDate.getTime() > new Date(new Date().setHours(23, 59, 59, 999)).getTime();
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [captureDraft, setCaptureDraft] = useState('');
+  const [taskDraft, setTaskDraft] = useState('');
+  const [selectedListId, setSelectedListId] = useState('');
+  const [selectedItemId, setSelectedItemId] = useState('');
+  const [taskComposerOpen, setTaskComposerOpen] = useState(false);
+  const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
+  const [busyLinkedItemId, setBusyLinkedItemId] = useState<string | null>(null);
+  const [expandedTaskIds, setExpandedTaskIds] = useState<string[]>([]);
 
   useEffect(() => {
     const intervalId = window.setInterval(() => setNowMs(Date.now()), 30000);
     return () => window.clearInterval(intervalId);
   }, []);
+
+  useEffect(() => {
+    setTaskDraft('');
+    setSelectedListId('');
+    setSelectedItemId('');
+    setTaskComposerOpen(false);
+    setBusyTaskId(null);
+    setBusyLinkedItemId(null);
+    setExpandedTaskIds(primaryBlock?.blockTasks?.filter((task) => task.linkedItems.length > 0).slice(0, 1).map((task) => task.id) || []);
+  }, [primaryBlock?.id]);
 
   const isActiveBlock = useMemo(() => {
     if (!primaryBlock) return false;
@@ -94,10 +126,35 @@ export default function CurrentBlockWorkspace({
   };
 
   const cardClassName = `shell-current-card ${primaryBlock ? 'active' : 'idle'} ${showPlanningCapture ? 'planning' : ''}`.trim();
+  const frameClassName = `shell-current-frame ${primaryBlock ? 'active' : 'idle'} ${showPlanningCapture ? 'planning' : ''}`.trim();
+
+  const blockTasks = primaryBlock?.blockTasks || [];
+  const filteredItems = selectedListId ? items.filter((entry) => entry.listId === selectedListId) : [];
+
+  const toggleExpandedTask = (taskId: string): void => {
+    setExpandedTaskIds((current) =>
+      current.includes(taskId) ? current.filter((entry) => entry !== taskId) : [...current, taskId]
+    );
+  };
+
+  const handleAddTask = async (): Promise<void> => {
+    const value = taskDraft.trim();
+    if (!primaryBlock?.id || !value) return;
+    setBusyTaskId('__create__');
+    try {
+      await onAddBlockTask(primaryBlock.id, value, selectedItemId ? [selectedItemId] : []);
+      setTaskDraft('');
+      setSelectedListId('');
+      setSelectedItemId('');
+      setTaskComposerOpen(false);
+    } finally {
+      setBusyTaskId(null);
+    }
+  };
 
   return (
     <section className="shell-current-workspace">
-      <div className="shell-current-frame">
+      <div className={frameClassName}>
         <aside className="shell-current-rail" aria-hidden="true">
           {showRailTimes ? (
             <>
@@ -139,26 +196,179 @@ export default function CurrentBlockWorkspace({
               </>
             ) : primaryBlock ? (
               <>
-                <span className="shell-current-label">{isActiveBlock && selectedIsToday ? 'In progress' : 'Scheduled block'}</span>
+                <div className="shell-current-meta-row">
+                  <span className="shell-current-label">{isActiveBlock && selectedIsToday ? 'In progress' : 'Scheduled block'}</span>
+                  <span className="shell-current-meta-dot" aria-hidden="true">
+                    ·
+                  </span>
+                  <span className="shell-current-meta-time">{formatRange(primaryBlock.start, primaryBlock.end)}</span>
+                </div>
                 <div className="shell-current-title-row">
                   <h1>{primaryBlock.title}</h1>
                   <button
                     type="button"
-                    className="shell-current-comment-btn"
+                    className="shell-current-inline-action"
+                    aria-label={`Edit ${primaryBlock.title}`}
+                    onClick={() => onEditBlock(primaryBlock)}
+                  >
+                    <Pencil size={16} strokeWidth={1.75} />
+                  </button>
+                  <button
+                    type="button"
+                    className="shell-current-inline-action shell-current-comment-btn"
                     aria-label={`Open comments for ${primaryBlock.title}`}
                     onClick={() => onOpenAiThread(primaryBlock)}
                   >
                     <CommentAdd size={18} strokeWidth={1.5} />
                   </button>
                 </div>
-                <p>{formatRange(primaryBlock.start, primaryBlock.end)}</p>
-                <div className="shell-current-body">
-                  <span className="shell-current-muted">
-                    {primaryBlock.description?.trim() ||
-                      `${primaryBlock.blockTasks?.length || 0} block tasks${
-                        nextBlock ? ` · next ${formatRange(nextBlock.start, nextBlock.end).split(' - ')[0]}` : ''
-                      }`}
-                  </span>
+                <div className="shell-current-body shell-current-task-body">
+                  <div className="shell-current-task-head">
+                    <button
+                      type="button"
+                      className="shell-current-add-task"
+                      onClick={() => setTaskComposerOpen((current) => !current)}
+                    >
+                      + Add Task
+                    </button>
+                  </div>
+                  {taskComposerOpen ? (
+                    <div className="shell-current-task-composer">
+                      <input
+                        type="text"
+                        className="shell-current-task-input"
+                        placeholder="Add a task for this block..."
+                        value={taskDraft}
+                        onChange={(event) => setTaskDraft(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            event.preventDefault();
+                            void handleAddTask();
+                          }
+                        }}
+                      />
+                      <div className="shell-current-task-picker-row">
+                        <select
+                          className="shell-current-task-select"
+                          value={selectedListId}
+                          onChange={(event) => {
+                            setSelectedListId(event.target.value);
+                            setSelectedItemId('');
+                          }}
+                        >
+                          <option value="">No linked item</option>
+                          {lists.map((list) => (
+                            <option key={list.id} value={list.id}>
+                              {list.name}
+                            </option>
+                          ))}
+                        </select>
+                        <select
+                          className="shell-current-task-select"
+                          value={selectedItemId}
+                          onChange={(event) => setSelectedItemId(event.target.value)}
+                          disabled={!selectedListId}
+                        >
+                          <option value="">{selectedListId ? 'Choose an item' : 'Choose list first'}</option>
+                          {filteredItems.map((item) => (
+                            <option key={item.id} value={item.id}>
+                              {item.title}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <button
+                        type="button"
+                        className="shell-current-task-save"
+                        onClick={() => void handleAddTask()}
+                        disabled={!taskDraft.trim() || busyTaskId === '__create__'}
+                      >
+                        Add
+                      </button>
+                    </div>
+                  ) : null}
+                  <div className="shell-current-task-list">
+                    {blockTasks.length ? (
+                      blockTasks.map((task) => {
+                        const hasLinkedItems = task.linkedItems.length > 0;
+                        const isExpanded = expandedTaskIds.includes(task.id);
+                        return (
+                          <div key={task.id} className={`shell-current-task-entry ${task.isCompleted ? 'completed' : ''}`.trim()}>
+                            <div className="shell-current-task-row">
+                              <button
+                                type="button"
+                                className="shell-current-task-check"
+                                aria-label={`${task.isCompleted ? 'Mark incomplete' : 'Mark complete'} ${task.title}`}
+                                disabled={busyTaskId === task.id}
+                                onClick={() => {
+                                  setBusyTaskId(task.id);
+                                  void onToggleBlockTask(primaryBlock.id, task.id, !task.isCompleted).finally(() => {
+                                    setBusyTaskId(null);
+                                  });
+                                }}
+                              >
+                                {task.isCompleted ? <CheckCircle2 size={18} strokeWidth={1.7} /> : <Circle size={18} strokeWidth={1.7} />}
+                              </button>
+                              <div className="shell-current-task-copy">
+                                <button
+                                  type="button"
+                                  className="shell-current-task-title"
+                                  onClick={() => {
+                                    if (hasLinkedItems) {
+                                      toggleExpandedTask(task.id);
+                                    }
+                                  }}
+                                >
+                                  {task.title}
+                                </button>
+                              </div>
+                              {hasLinkedItems ? (
+                                <button
+                                  type="button"
+                                  className="shell-current-task-expand"
+                                  aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${task.title}`}
+                                  onClick={() => toggleExpandedTask(task.id)}
+                                >
+                                  {isExpanded ? <ChevronDown size={16} strokeWidth={1.7} /> : <ChevronRight size={16} strokeWidth={1.7} />}
+                                </button>
+                              ) : null}
+                            </div>
+                            {hasLinkedItems && isExpanded ? (
+                              <div className="shell-current-task-subitems">
+                                {task.linkedItems.map((linkedItem) => (
+                                  <div key={linkedItem.id} className={`shell-current-task-subitem ${linkedItem.completedInContext ? 'completed' : ''}`.trim()}>
+                                    <button
+                                      type="button"
+                                      className="shell-current-task-subcheck"
+                                      aria-label={`${linkedItem.completedInContext ? 'Mark incomplete' : 'Mark complete'} ${linkedItem.title}`}
+                                      disabled={busyLinkedItemId === linkedItem.itemId}
+                                      onClick={() => {
+                                        setBusyLinkedItemId(linkedItem.itemId);
+                                        void onToggleBlockTaskItem(primaryBlock.id, linkedItem.blockTaskItemId, !linkedItem.completedInContext).finally(() => {
+                                          setBusyLinkedItemId(null);
+                                        });
+                                      }}
+                                    >
+                                      {linkedItem.completedInContext ? <CheckCircle2 size={16} strokeWidth={1.7} /> : <Circle size={16} strokeWidth={1.7} />}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="shell-current-task-subtitle"
+                                      onClick={() => onOpenItem(linkedItem.itemId)}
+                                    >
+                                      {linkedItem.title}
+                                    </button>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <span className="shell-current-muted">No tasks in this block yet.</span>
+                    )}
+                  </div>
                 </div>
               </>
             ) : (

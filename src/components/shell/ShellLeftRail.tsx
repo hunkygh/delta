@@ -39,6 +39,7 @@ export default function ShellLeftRail({
   return (
     <aside className="shell-rail shell-rail-left">
       <SpacesRailCard
+        userId={userId}
         focals={focals}
         lists={lists}
         items={items}
@@ -48,6 +49,7 @@ export default function ShellLeftRail({
         onAddSpace={onAddSpace}
         onAddList={onAddList}
         onExpand={onExpandSpaces}
+        onRefreshShellData={onRefreshShellData}
       />
       <MetricsCard
         userId={userId}

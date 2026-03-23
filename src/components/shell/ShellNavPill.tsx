@@ -1,14 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { AddSquareIcon } from 'clicons-react';
-import { ArrowRight, CalendarDays, ChevronLeft, ChevronRight, Clock3, CornerDownRight, Minus, Plus, Repeat2 } from 'lucide-react';
+import { AddSquareIcon, ComputerDollar, GridView } from 'clicons-react';
+import { ArrowRight, CalendarDays, ChevronLeft, ChevronRight, Clock3, Compass, CornerDownRight, Minus, Plus, Repeat2 } from 'lucide-react';
 import { HomeIcon, ProfileIcon } from '../../icons';
 import type { ShellComposerDraft, ShellComposerType } from './composerTypes';
 import type { ShellFocalSummary, ShellItemSummary, ShellListSummary } from './types';
+import type { ShellInstalledNode, ShellNodeDefinition } from './nodeRuntime';
 
 const navItems = [
-  { label: 'Home', active: true, icon: HomeIcon, showLabel: true },
-  { label: 'Profile', active: false, icon: ProfileIcon, showLabel: false }
+  { label: 'Home', key: 'home', icon: HomeIcon, showLabel: true },
+  { label: 'Nodes', key: 'nodes', icon: GridView, showLabel: false },
+  { label: 'Profile', key: 'profile', icon: ProfileIcon, showLabel: false }
 ];
+
+const formatInstalledNodeLabel = (value: string): string => value.replace(/\s+node$/i, '').trim();
 
 interface ShellNavPillProps {
   composerOpen: boolean;
@@ -20,6 +24,9 @@ interface ShellNavPillProps {
   focals: ShellFocalSummary[];
   lists: ShellListSummary[];
   items: ShellItemSummary[];
+  nodeCatalog: ShellNodeDefinition[];
+  installedNodes: ShellInstalledNode[];
+  onOpenNodeManager: (nodeId?: string) => void;
 }
 
 export default function ShellNavPill({
@@ -31,8 +38,12 @@ export default function ShellNavPill({
   onComposerSubmit,
   focals,
   lists,
-  items
+  items,
+  nodeCatalog,
+  installedNodes,
+  onOpenNodeManager
 }: ShellNavPillProps): JSX.Element {
+  const PANEL_ANIMATION_MS = 420;
   const [visualState, setVisualState] = useState<'closed' | 'opening' | 'open' | 'closing'>(
     composerOpen ? 'open' : 'closed'
   );
@@ -40,11 +51,16 @@ export default function ShellNavPill({
   const [openPicker, setOpenPicker] = useState<null | 'date' | 'start' | 'end' | 'parent'>(null);
   const [showDetails, setShowDetails] = useState(Boolean(composerDraft.lockedType || composerDraft.sourceEventId));
   const [showSubitems, setShowSubitems] = useState(false);
+  const [profilePanelOpen, setProfilePanelOpen] = useState(false);
+  const [profilePanelVisualState, setProfilePanelVisualState] = useState<'closed' | 'opening' | 'open' | 'closing'>('closed');
   const [pickerMonth, setPickerMonth] = useState<Date>(() => {
     const base = composerDraft.scheduledDate ? new Date(`${composerDraft.scheduledDate}T12:00:00`) : new Date();
     return new Date(base.getFullYear(), base.getMonth(), 1);
   });
+  const [renderedPicker, setRenderedPicker] = useState<null | 'date' | 'start' | 'end' | 'parent'>(null);
+  const [pickerVisualState, setPickerVisualState] = useState<'closed' | 'opening' | 'open' | 'closing'>('closed');
   const composerRef = useRef<HTMLElement | null>(null);
+  const profilePanelRef = useRef<HTMLDivElement | null>(null);
 
   const updateDraft = (partial: Partial<ShellComposerDraft>): void => {
     onComposerDraftChange({
@@ -154,7 +170,10 @@ export default function ShellNavPill({
   };
 
   const renderDatePicker = (): JSX.Element => (
-    <div className="shell-nav-picker-popover shell-nav-picker-inline-surface shell-nav-date-popover">
+    <div
+      className="shell-nav-picker-popover shell-nav-picker-inline-surface shell-nav-date-popover"
+      data-visual-state={pickerVisualState}
+    >
       <div className="shell-nav-picker-head">
         <button type="button" className="shell-nav-picker-nav" onClick={() => setPickerMonth(new Date(pickerMonth.getFullYear(), pickerMonth.getMonth() - 1, 1))}>
           <ChevronLeft size={14} />
@@ -202,7 +221,10 @@ export default function ShellNavPill({
   const renderTimePicker = (field: 'start' | 'end'): JSX.Element => {
     const currentValue = field === 'start' ? composerDraft.startTime : composerDraft.endTime;
     return (
-      <div className="shell-nav-picker-popover shell-nav-picker-inline-surface shell-nav-time-popover">
+      <div
+        className="shell-nav-picker-popover shell-nav-picker-inline-surface shell-nav-time-popover"
+        data-visual-state={pickerVisualState}
+      >
         <div className="shell-nav-time-list">
           {timeOptions.map((time) => (
             <button
@@ -251,7 +273,7 @@ export default function ShellNavPill({
                 </span>
                 <span className="shell-nav-picker-value">{formatDateValue(composerDraft.scheduledDate)}</span>
               </button>
-              {openPicker === 'date' ? renderDatePicker() : null}
+              {renderedPicker === 'date' ? renderDatePicker() : null}
             </div>
             <div className="shell-nav-recurrence-card">
               <button
@@ -310,7 +332,7 @@ export default function ShellNavPill({
                     {formatTimeValue(field === 'start' ? composerDraft.startTime : composerDraft.endTime)}
                   </span>
                 </button>
-                {openPicker === field ? renderTimePicker(field) : null}
+                {renderedPicker === field ? renderTimePicker(field) : null}
               </div>
             ))}
           </div>
@@ -515,16 +537,31 @@ export default function ShellNavPill({
       {navItems.map((item) => {
         const Icon = item.icon;
         return (
-          <button key={item.label} type="button" className={item.active ? 'active' : ''}>
-            <Icon size={16} />
-            {item.showLabel ? <span>{item.label}</span> : null}
-          </button>
+          <div key={item.label} className="shell-nav-pill-item">
+            <button
+              type="button"
+              className={`${item.key === 'home' ? 'active' : ''} ${item.key === 'nodes' && profilePanelVisualState !== 'closed' ? 'active' : ''} ${!item.showLabel ? 'icon-only' : ''}`.trim()}
+              onClick={() => {
+                if (item.key === 'nodes') {
+                  onComposerOpenChange(false);
+                  setProfilePanelOpen((prev) => !prev);
+                  return;
+                }
+
+                setProfilePanelOpen(false);
+              }}
+            >
+              <Icon size={16} />
+              {item.showLabel ? <span>{item.label}</span> : null}
+            </button>
+          </div>
         );
       })}
       <button
         type="button"
         className={`shell-nav-pill-add ${composerOpen ? 'active' : ''}`.trim()}
         onClick={() => {
+          setProfilePanelOpen(false);
           if (composerOpen) {
             onComposerOpenChange(false);
             return;
@@ -537,6 +574,83 @@ export default function ShellNavPill({
       </button>
     </nav>
   );
+
+  const renderProfilePanel = (): JSX.Element | null => {
+    if (profilePanelVisualState === 'closed') return null;
+
+    return (
+      <section
+        ref={profilePanelRef}
+        className="shell-nav-profile-panel shell-nav-profile-dock"
+        data-visual-state={profilePanelVisualState}
+        aria-label="Nodes"
+      >
+        <div className="shell-nav-profile-dock-head">
+          <strong>Nodes</strong>
+        </div>
+        <div className="shell-nav-profile-dock-icons">
+          {installedNodes.length > 0 ? (
+            <>
+              {installedNodes.map((installedNode) => {
+                const node = nodeCatalog.find((entry) => entry.id === installedNode.nodeId) || null;
+                if (!node) return null;
+                return (
+                  <button
+                    key={installedNode.nodeId}
+                    type="button"
+                    className="shell-nav-profile-node-icon"
+                    onClick={() => {
+                      setProfilePanelOpen(false);
+                      onOpenNodeManager(installedNode.nodeId);
+                    }}
+                    aria-label={node.name}
+                    title={node.name}
+                  >
+                    <span className="shell-nav-profile-node-icon-glyph" aria-hidden="true">
+                      {node.iconKey === 'computer_dollar' ? <ComputerDollar size={16} strokeWidth={1.5} /> : <Compass size={16} />}
+                    </span>
+                    <span className="shell-nav-profile-node-icon-label">{formatInstalledNodeLabel(node.name)}</span>
+                  </button>
+                );
+              })}
+              <button
+                type="button"
+                className="shell-nav-profile-node-icon shell-nav-profile-node-icon-add"
+                onClick={() => {
+                  setProfilePanelOpen(false);
+                  onOpenNodeManager();
+                }}
+                aria-label="Open node marketplace"
+                title="Open node marketplace"
+              >
+                <span className="shell-nav-profile-node-icon-glyph" aria-hidden="true">
+                  <Plus size={16} />
+                </span>
+              </button>
+            </>
+          ) : (
+            <>
+              <span className="shell-nav-profile-dock-empty">No nodes installed</span>
+              <button
+                type="button"
+                className="shell-nav-profile-node-icon shell-nav-profile-node-icon-add"
+                onClick={() => {
+                  setProfilePanelOpen(false);
+                  onOpenNodeManager();
+                }}
+                aria-label="Open node marketplace"
+                title="Open node marketplace"
+              >
+                <span className="shell-nav-profile-node-icon-glyph" aria-hidden="true">
+                  <Plus size={16} />
+                </span>
+              </button>
+            </>
+          )}
+        </div>
+      </section>
+    );
+  };
 
   const composerVisible = visualState === 'opening' || visualState === 'open' || visualState === 'closing';
   const isFreshQuickAdd = !composerDraft.lockedType && !composerDraft.sourceEventId;
@@ -567,16 +681,64 @@ export default function ShellNavPill({
     setVisualState('closing');
     const timeoutId = window.setTimeout(() => {
       setVisualState('closed');
-    }, 420);
+    }, PANEL_ANIMATION_MS);
     return () => window.clearTimeout(timeoutId);
   }, [composerOpen]);
+
+  useEffect(() => {
+    if (profilePanelOpen) {
+      setProfilePanelVisualState((prev) => (prev === 'open' ? prev : 'opening'));
+      const frameId = window.requestAnimationFrame(() => {
+        setProfilePanelVisualState('open');
+      });
+      return () => window.cancelAnimationFrame(frameId);
+    }
+
+    if (profilePanelVisualState === 'closed') {
+      return undefined;
+    }
+
+    setProfilePanelVisualState('closing');
+    const timeoutId = window.setTimeout(() => {
+      setProfilePanelVisualState('closed');
+    }, PANEL_ANIMATION_MS);
+    return () => window.clearTimeout(timeoutId);
+  }, [profilePanelOpen, profilePanelVisualState]);
+
+  useEffect(() => {
+    if (openPicker) {
+      setRenderedPicker(openPicker);
+      setPickerVisualState((prev) => (prev === 'open' ? prev : 'opening'));
+      const frameId = window.requestAnimationFrame(() => {
+        setPickerVisualState('open');
+      });
+      return () => window.cancelAnimationFrame(frameId);
+    }
+
+    if (!renderedPicker || pickerVisualState === 'closed') {
+      return undefined;
+    }
+
+    setPickerVisualState('closing');
+    const timeoutId = window.setTimeout(() => {
+      setPickerVisualState('closed');
+      setRenderedPicker(null);
+    }, PANEL_ANIMATION_MS);
+    return () => window.clearTimeout(timeoutId);
+  }, [openPicker, renderedPicker, pickerVisualState]);
 
   useEffect(() => {
     if (!composerVisible) return;
     const handlePointerDown = (event: MouseEvent): void => {
       if (composerRef.current && !composerRef.current.contains(event.target as Node)) {
         const target = event.target as HTMLElement | null;
-        if (target?.closest('.shell-refactor-page') && !target.closest('.shell-layout')) {
+        const clickedOutsideLayout = Boolean(target?.closest('.shell-refactor-page')) && !target?.closest('.shell-layout');
+        const clickedBareCenterBackground =
+          Boolean(target?.closest('.shell-center')) &&
+          !target?.closest(
+            '.shell-current-card, .shell-upcoming-line, .shell-upcoming-sticky-add, .shell-space-panel, .shell-surface-panel, .shell-rail, .shell-nav-shell'
+          );
+        if (clickedOutsideLayout || clickedBareCenterBackground) {
           onComposerOpenChange(false);
         }
       }
@@ -585,8 +747,23 @@ export default function ShellNavPill({
     return () => document.removeEventListener('mousedown', handlePointerDown);
   }, [composerVisible, onComposerOpenChange]);
 
+  useEffect(() => {
+    if (profilePanelVisualState === 'closed') return;
+    const handlePointerDown = (event: MouseEvent): void => {
+      if (profilePanelRef.current && !profilePanelRef.current.contains(event.target as Node)) {
+        const target = event.target as HTMLElement | null;
+        if (target?.closest('.shell-refactor-page') && !target.closest('.shell-layout')) {
+          setProfilePanelOpen(false);
+        }
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => document.removeEventListener('mousedown', handlePointerDown);
+  }, [profilePanelVisualState]);
+
   return (
     <div className={`shell-nav-shell ${composerVisible ? 'open' : ''}`.trim()}>
+      {renderProfilePanel()}
       {composerVisible ? (
         <section ref={composerRef} className="shell-nav-composer" data-visual-state={visualState} aria-label="Quick add composer">
           {composerDraft.lockedType ? (

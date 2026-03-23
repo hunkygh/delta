@@ -4,6 +4,7 @@ import type { Event } from '../types/Event';
 import { useAuth } from '../context/AuthContext';
 import { calendarService } from '../services/calendarService';
 import focalBoardService from '../services/focalBoardService';
+import { hasRecurrenceExceededLimit, normalizeRecurrenceConfigForRule, shiftByRecurrence } from '../utils/recurrence.js';
 import ShellLayout from '../components/shell/ShellLayout';
 import type { ShellFocalSummary, ShellItemSummary, ShellListSummary, ShellTaskSummary } from '../components/shell/types';
 import '../styles/shell.css';
@@ -18,6 +19,60 @@ export default function ShellRefactorView(): JSX.Element {
   const [shellError, setShellError] = useState<string | null>(null);
   const [dataLoading, setDataLoading] = useState(true);
   const [now, setNow] = useState(() => Date.now());
+
+  const expandShellEvents = useCallback((sourceEvents: Event[]): Event[] => {
+    const rangeStart = new Date();
+    rangeStart.setDate(rangeStart.getDate() - 30);
+    rangeStart.setHours(0, 0, 0, 0);
+    const rangeEnd = new Date();
+    rangeEnd.setDate(rangeEnd.getDate() + 365);
+    rangeEnd.setHours(23, 59, 59, 999);
+
+    const expanded: Event[] = [];
+
+    sourceEvents.forEach((event) => {
+      const recurrence = event.recurrence || 'none';
+      const baseStart = new Date(event.start);
+      const baseEnd = new Date(event.end);
+      const durationMs = Math.max(1, baseEnd.getTime() - baseStart.getTime());
+
+      if (recurrence === 'none') {
+        expanded.push(event);
+        return;
+      }
+
+      const recurrenceConfig = normalizeRecurrenceConfigForRule(recurrence, event.recurrenceConfig || undefined);
+      let cursor = new Date(baseStart);
+      let guard = 0;
+
+      while (guard < 520) {
+        if (hasRecurrenceExceededLimit(baseStart, cursor, recurrence, recurrenceConfig)) {
+          break;
+        }
+
+        const occurrenceStart = new Date(cursor);
+        const occurrenceEnd = new Date(occurrenceStart.getTime() + durationMs);
+        if (occurrenceEnd >= rangeStart && occurrenceStart <= rangeEnd) {
+          const startIso = occurrenceStart.toISOString();
+          expanded.push({
+            ...event,
+            id: occurrenceStart.getTime() === baseStart.getTime() ? event.id : `${event.id}::${startIso}`,
+            sourceEventId: event.id,
+            occurrenceStartUtc: startIso,
+            occurrenceEndUtc: occurrenceEnd.toISOString(),
+            isOccurrenceInstance: occurrenceStart.getTime() !== baseStart.getTime(),
+            start: startIso,
+            end: occurrenceEnd.toISOString()
+          });
+        }
+
+        cursor = shiftByRecurrence(cursor, recurrence, recurrenceConfig);
+        guard += 1;
+      }
+    });
+
+    return expanded.sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+  }, []);
 
   const mergeSavedEvent = useCallback((saved: Event) => {
     setEvents((prev) => {
@@ -102,7 +157,21 @@ export default function ShellRefactorView(): JSX.Element {
         });
       });
 
-      setEvents(timeBlocks || []);
+      const enrichedTimeBlocks = await Promise.all(
+        (timeBlocks || []).map(async (entry) => ({
+          ...entry,
+          sourceEventId: entry.id,
+          occurrenceStartUtc: entry.start,
+          occurrenceEndUtc: entry.end,
+          isOccurrenceInstance: false,
+          blockTasks: await calendarService.getBlockTasksWithItems({
+            timeBlockId: entry.id,
+            scheduledStartUtc: entry.start
+          })
+        }))
+      );
+
+      setEvents(enrichedTimeBlocks);
       setFocals(
         (focalRows || []).map((entry: any) => ({
           id: entry.id,
@@ -211,13 +280,7 @@ export default function ShellRefactorView(): JSX.Element {
     return () => window.clearInterval(intervalId);
   }, []);
 
-  const orderedEvents = useMemo(
-    () =>
-      [...events].sort(
-        (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()
-      ),
-    [events]
-  );
+  const orderedEvents = useMemo(() => expandShellEvents(events), [events, expandShellEvents]);
 
   const currentBlock = useMemo(
     () =>
@@ -263,6 +326,7 @@ export default function ShellRefactorView(): JSX.Element {
     <section className="shell-refactor-page" aria-label="Delta shell refactor preview">
       <ShellLayout
         userId={user.id}
+        sourceEvents={events}
         events={orderedEvents}
         currentBlock={currentBlock}
         nextBlock={nextBlock}

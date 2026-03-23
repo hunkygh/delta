@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CalendarBlank, CaretLeft, CaretRight, FunnelSimple, GearSix, Microphone, PaperPlaneTilt, Plus } from '@phosphor-icons/react';
+import { CalendarBlank, CaretLeft, CaretRight, FunnelSimple, GearSix, Microphone, PaperPlaneTilt } from '@phosphor-icons/react';
 import StatusSelect from '../FocalBoard/StatusSelect';
 import focalBoardService from '../../services/focalBoardService';
 import commentsService from '../../services/commentsService';
@@ -294,7 +294,8 @@ export default function ShellListSurface({
   const [fields, setFields] = useState<ListField[]>([]);
   const [fieldValues, setFieldValues] = useState<Record<string, Record<string, ItemFieldValue>>>({});
   const [selectedItemId, setSelectedItemId] = useState<string | null>(initialItemId);
-  const [listItemDraft, setListItemDraft] = useState('');
+  const [inlineAddStatusId, setInlineAddStatusId] = useState<string | null>(null);
+  const [inlineItemDraft, setInlineItemDraft] = useState('');
   const [savingItem, setSavingItem] = useState(false);
   const [selectedTitleDraft, setSelectedTitleDraft] = useState('');
   const [selectedDescriptionDraft, setSelectedDescriptionDraft] = useState('');
@@ -476,8 +477,8 @@ export default function ShellListSurface({
     );
   };
 
-  const createItemForStatus = async (status: LaneStatus): Promise<void> => {
-    const title = listItemDraft.trim();
+  const createItemForStatus = async (status: LaneStatus, titleOverride?: string): Promise<void> => {
+    const title = (titleOverride ?? inlineItemDraft).trim();
     if (!title) return;
     setSavingItem(true);
     try {
@@ -488,7 +489,8 @@ export default function ShellListSurface({
           status_id: status.id || null
         });
       }
-      setListItemDraft('');
+      setInlineItemDraft('');
+      setInlineAddStatusId(null);
       await load();
     } catch (err: any) {
       setError(err?.message || 'Failed to create item');
@@ -974,23 +976,6 @@ export default function ShellListSurface({
               </article>
             </div>
 
-            <div className="shell-shell-list-quick-add">
-              <input
-                value={listItemDraft}
-                onChange={(event) => setListItemDraft(event.target.value)}
-                placeholder={`+ Add ${detail?.item_label?.toLowerCase() || 'item'}`}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    event.preventDefault();
-                    void createItemForStatus(statuses[0] || DEFAULT_STATUSES[0]);
-                  }
-                }}
-              />
-              <button type="button" onClick={() => void createItemForStatus(statuses[0] || DEFAULT_STATUSES[0])} disabled={savingItem || !listItemDraft.trim()}>
-                Add
-              </button>
-            </div>
-
             {configureOpen ? (
               <div className="shell-shell-list-config">
                 <div className="shell-shell-list-config-block">
@@ -1048,9 +1033,6 @@ export default function ShellListSurface({
                         <strong>{status.name}</strong>
                         <span>{statusItems.length}</span>
                       </div>
-                      <button type="button" className="shell-shell-status-add" onClick={() => void createItemForStatus(status)}>
-                        <Plus size={14} />
-                      </button>
                     </header>
                     <div className="shell-shell-status-table">
                       <div className="shell-shell-status-table-head">
@@ -1083,8 +1065,40 @@ export default function ShellListSurface({
                           <span className="shell-shell-status-row-count">{(item.actions || []).length}</span>
                         </button>
                       ))}
+                      {inlineAddStatusId === (status.id || status.key) ? (
+                        <div className="shell-shell-status-inline-add">
+                          <input
+                            autoFocus
+                            value={inlineItemDraft}
+                            onChange={(event) => setInlineItemDraft(event.target.value)}
+                            placeholder={`+ Add ${detail?.item_label?.toLowerCase() || 'item'}`}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
+                                void createItemForStatus(status, inlineItemDraft);
+                              }
+                              if (event.key === 'Escape') {
+                                event.preventDefault();
+                                setInlineItemDraft('');
+                                setInlineAddStatusId(null);
+                              }
+                            }}
+                          />
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          className="shell-shell-status-inline-trigger"
+                          onClick={() => {
+                            setInlineItemDraft('');
+                            setInlineAddStatusId(status.id || status.key);
+                          }}
+                        >
+                          + Add {detail?.item_label?.toLowerCase() || 'item'}
+                        </button>
+                      )}
                       </div>
-                      {statusItems.length === 0 ? <div className="shell-shell-list-empty">No items</div> : null}
+                      {statusItems.length === 0 ? <div className="shell-shell-list-empty">No items yet</div> : null}
                     </div>
                   </section>
                 ))}

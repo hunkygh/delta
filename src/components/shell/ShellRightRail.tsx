@@ -23,6 +23,7 @@ interface ShellRightRailProps {
   onClearAiThread: () => void;
   aiRequest: ShellAiRequest | null;
   onPushProposal: (proposal: ChatProposal, assistantText: string) => void;
+  onAiExpandedChange?: (expanded: boolean) => void;
 }
 
 export default function ShellRightRail({
@@ -33,9 +34,14 @@ export default function ShellRightRail({
   aiThreadEvent,
   onClearAiThread,
   aiRequest,
-  onPushProposal
+  onPushProposal,
+  onAiExpandedChange
 }: ShellRightRailProps): JSX.Element {
   const [aiExpanded, setAiExpanded] = useState(false);
+
+  useEffect(() => {
+    onAiExpandedChange?.(aiExpanded);
+  }, [aiExpanded, onAiExpandedChange]);
 
   useEffect(() => {
     if (aiThreadEvent || aiRequest) {

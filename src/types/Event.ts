@@ -40,6 +40,10 @@ export interface BlockTask {
 
 export interface Event {
   id: string;
+  sourceEventId?: string;
+  occurrenceStartUtc?: string;
+  occurrenceEndUtc?: string;
+  isOccurrenceInstance?: boolean;
   title: string;
   description: string;
   start: string;

@@ -6,6 +6,7 @@
  */
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.49.4';
 import { aiGateway, getAiProviderStatus, hasConfiguredAiProviders } from '../_shared/aiGateway.ts';
+import { resolveRuntimeNodePrompts } from '../_shared/nodeRuntime.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -22,6 +23,14 @@ interface ChatContext {
   list_id?: string;
   item_id?: string;
   action_id?: string;
+  node_id?: string;
+  node_slug?: string;
+  node_name?: string;
+  node_mode?: 'setup' | 'operate';
+  node_structure_blueprint?: string;
+  node_structure_config?: Record<string, unknown>;
+  node_setup_logic?: string;
+  node_operate_logic?: string;
   time_block_occurrence?: {
     scheduled_start_utc: string;
     scheduled_end_utc: string;
@@ -36,7 +45,7 @@ interface ChatMessage {
 interface AccountContextSnapshot {
   focals: Array<{ id: string; name: string }>;
   lists: Array<{ id: string; focal_id: string | null; name: string; mode?: string | null }>;
-  items: Array<{ id: string; lane_id: string | null; title: string; status?: string | null }>;
+  items: Array<{ id: string; lane_id: string | null; title: string; status?: string | null; signal_label?: string | null; signal_score?: number | null }>;
   actions: Array<{ id: string; item_id: string | null; title: string }>;
   timeBlocks: Array<{ id: string; title: string; start_time: string; end_time: string }>;
   fields: Array<{ id: string; list_id: string; name: string; type: string; is_primary?: boolean }>;
@@ -59,6 +68,7 @@ interface DebugMeta {
   route?: string;
   scope: {
     mode?: 'global' | 'scoped';
+    node?: string;
     focal?: string;
     list?: string;
     item?: string;
@@ -105,8 +115,56 @@ type ChatProposal =
   | { id: string; type: 'create_list'; title: string; focal_id: string }
   | { id: string; type: 'create_item'; title: string; list_id: string }
   | { id: string; type: 'create_action'; title: string; item_id: string; notes?: string | null; scheduled_at?: string | null; time_block_id?: string | null; lane_id?: string | null }
-  | { id: string; type: 'create_time_block'; title: string; scheduled_start_utc: string; scheduled_end_utc?: string | null; lane_id?: string | null; notes?: string | null }
-  | { id: string; type: 'resolve_time_conflict'; conflict_time_block_id: string; conflict_title?: string; conflict_new_start_utc: string; conflict_new_end_utc: string; event_title: string; event_start_utc: string; event_end_utc: string; lane_id?: string | null; notes?: string | null };
+  | {
+      id: string;
+      type: 'create_time_block';
+      title: string;
+      scheduled_start_utc: string;
+      scheduled_end_utc?: string | null;
+      lane_id?: string | null;
+      notes?: string | null;
+      follow_up_request?: string | null;
+      follow_up_context?: ChatContext | null;
+    }
+  | { id: string; type: 'resolve_time_conflict'; conflict_time_block_id: string; conflict_title?: string; conflict_new_start_utc: string; conflict_new_end_utc: string; event_title: string; event_start_utc: string; event_end_utc: string; lane_id?: string | null; notes?: string | null }
+  | {
+      id: string;
+      type: 'node_setup_apply';
+      node_id: string;
+      focal_id: string;
+      summary: string;
+      lists: Array<{
+        name: string;
+        item_label?: string | null;
+        action_label?: string | null;
+        statuses?: Array<{
+          name: string;
+          key?: string | null;
+          color?: string | null;
+          group_key?: string | null;
+          is_default?: boolean;
+        }>;
+        subtask_statuses?: Array<{
+          name: string;
+          key?: string | null;
+          color?: string | null;
+          group_key?: string | null;
+          is_default?: boolean;
+        }>;
+        fields?: Array<{
+          name: string;
+          type: 'status' | 'select' | 'text' | 'number' | 'date' | 'boolean' | 'contact';
+          is_primary?: boolean;
+          is_pinned?: boolean;
+          options?: Array<{
+            label: string;
+            color_fill?: string | null;
+            color_border?: string | null;
+            color_text?: string | null;
+          }>;
+        }>;
+      }>;
+    };
 
 type DeterministicIntent =
   | 'list_items'
@@ -154,6 +212,27 @@ interface MutationPlanStep {
 interface MutationPlanContract {
   idempotencyKey: string;
   steps: MutationPlanStep[];
+}
+
+interface PlanningActionContract {
+  planningDate: { year: number; month: number; day: number; weekday: number } | null;
+  planningTimezone: string;
+  excludedStatusLabel: string | null;
+  targetBlockNeedle: string | null;
+  resolvedFocalId: string | null;
+  resolvedListId: string | null;
+  scopedLists: AccountContextSnapshot['lists'];
+  candidateItems: Array<{
+    item: AccountContextSnapshot['items'][number];
+    list: AccountContextSnapshot['lists'][number] | null;
+    statusLabel: string | null;
+    latestComment: AccountContextSnapshot['itemComments'][number] | null;
+    score: number;
+    missingCriticalFields: string[];
+  }>;
+  dayBlocks: AccountContextSnapshot['timeBlocks'];
+  targetBlock: AccountContextSnapshot['timeBlocks'][number] | null;
+  focalEntities: ResolvedEntities;
 }
 
 type MessageIntentMode = 'act' | 'ask' | 'mixed' | 'inform';
@@ -265,7 +344,7 @@ const buildAccountContextSnapshot = async (
 
   const itemsPromise = client
     .from('items')
-    .select('id,lane_id,title,status')
+    .select('id,lane_id,title,status,signal_label,signal_score')
     .eq('user_id', userId)
     .order('order_num', { ascending: true })
     .limit(hasScopedIds ? 60 : 120);
@@ -353,7 +432,7 @@ const buildAccountContextSnapshot = async (
   ) {
     itemsResult = await client
       .from('items')
-      .select('id,lane_id,title')
+      .select('id,lane_id,title,signal_label,signal_score')
       .eq('user_id', userId)
       .order('order_num', { ascending: true })
       .limit(hasScopedIds ? 60 : 120);
@@ -413,7 +492,9 @@ const buildAccountContextSnapshot = async (
       id: row.id,
       lane_id: row.lane_id,
       title: clip(row.title || ''),
-      status: row.status ?? null
+      status: row.status ?? null,
+      signal_label: row.signal_label ?? null,
+      signal_score: typeof row.signal_score === 'number' ? row.signal_score : null
       })),
       actions: actions.map((row) => ({
       id: row.id,
@@ -995,6 +1076,337 @@ const parseScheduledAtFromText = (userText: string, timeZone = 'America/Denver')
   return zonedLocalToUtcIso(year, month, day, hours, minutes, timeZone);
 };
 
+const parsePlanningDateFromText = (
+  userText: string,
+  timeZone = 'America/Denver'
+): { year: number; month: number; day: number; weekday: number } | null => {
+  const lower = userText.toLowerCase();
+  const nowTz = getNowInTimeZoneParts(timeZone);
+  const base = { ...nowTz };
+
+  if (/\btoday\b/.test(lower)) {
+    return base;
+  }
+
+  if (/\btomorrow\b/.test(lower)) {
+    const tomorrow = new Date(Date.UTC(nowTz.year, nowTz.month - 1, nowTz.day, 12, 0, 0));
+    tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+    return {
+      year: tomorrow.getUTCFullYear(),
+      month: tomorrow.getUTCMonth() + 1,
+      day: tomorrow.getUTCDate(),
+      weekday: tomorrow.getUTCDay()
+    };
+  }
+
+  const weekdays = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+  const idx = weekdays.findIndex((weekday) => new RegExp(`\\b${weekday}\\b`).test(lower));
+  if (idx >= 0) {
+    const current = nowTz.weekday;
+    let delta = (idx - current + 7) % 7;
+    if (delta === 0) delta = 7;
+    const target = new Date(Date.UTC(nowTz.year, nowTz.month - 1, nowTz.day, 12, 0, 0));
+    target.setUTCDate(target.getUTCDate() + delta);
+    return {
+      year: target.getUTCFullYear(),
+      month: target.getUTCMonth() + 1,
+      day: target.getUTCDate(),
+      weekday: target.getUTCDay()
+    };
+  }
+
+  return null;
+};
+
+const isSameLocalDate = (
+  iso: string,
+  target: { year: number; month: number; day: number },
+  timeZone = 'America/Denver'
+): boolean => {
+  const date = new Date(iso);
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  });
+  const parts = dtf.formatToParts(date);
+  const map = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+  return (
+    Number(map.year) === target.year &&
+    Number(map.month) === target.month &&
+    Number(map.day) === target.day
+  );
+};
+
+const inferTargetBlockNeedle = (userText: string): string | null => {
+  const explicit = userText.match(/\b(?:first|next|during|in)\s+([a-z0-9 '&/-]+?)\s+block\b/i);
+  if (explicit?.[1]?.trim()) {
+    return normalize(explicit[1]);
+  }
+  const generic = userText.match(/\b([a-z0-9 '&/-]+?)\s+block\b/i);
+  if (generic?.[1]?.trim()) {
+    return normalize(generic[1]);
+  }
+  return null;
+};
+
+const inferTargetBlockOrdinal = (userText: string): number | null => {
+  const lower = userText.toLowerCase();
+  if (/\b(first|1st)\b/.test(lower)) return 1;
+  if (/\b(second|2nd)\b/.test(lower)) return 2;
+  if (/\b(third|3rd)\b/.test(lower)) return 3;
+  if (/\b(fourth|4th)\b/.test(lower)) return 4;
+  if (/\b(fifth|5th)\b/.test(lower)) return 5;
+  return null;
+};
+
+const buildNamedTimeBlockTitle = (
+  blockNeedle: string | null,
+  userText: string,
+  existingBlocks: AccountContextSnapshot['timeBlocks'],
+  context: ChatContext
+): string => {
+  const planningConfig =
+    typeof context.node_structure_config?.planning === 'object' && context.node_structure_config?.planning
+      ? (context.node_structure_config.planning as Record<string, unknown>)
+      : null;
+  const namingRules = Array.isArray(planningConfig?.timeBlockNaming)
+    ? (planningConfig?.timeBlockNaming as Array<Record<string, unknown>>)
+    : [];
+  const normalizedNeedle = normalize(blockNeedle || '');
+  const matchedRule =
+    namingRules.find((rule) => {
+      const aliases = Array.isArray(rule.aliases) ? rule.aliases : [];
+      return aliases.some((alias) => normalizedNeedle.includes(normalize(String(alias))));
+    }) || null;
+
+  if (!matchedRule) {
+    return blockNeedle
+      ? blockNeedle
+          .split(' ')
+          .filter(Boolean)
+          .map((token) => token[0].toUpperCase() + token.slice(1))
+          .join(' ')
+      : 'Focus';
+  }
+
+  const template = typeof matchedRule.template === 'string' && matchedRule.template.trim()
+    ? matchedRule.template.trim()
+    : '{label} Block {n}';
+  const label = typeof matchedRule.label === 'string' && matchedRule.label.trim()
+    ? matchedRule.label.trim()
+    : 'Focus';
+  const ordinal = inferTargetBlockOrdinal(userText);
+  const normalizedLabel = normalize(label);
+  const existingCount = existingBlocks.filter((block) => normalize(block.title).includes(normalizedLabel)).length;
+  const sequenceNumber = ordinal || existingCount + 1;
+  return template.replace(/\{label\}/gi, label).replace(/\{n\}/gi, String(sequenceNumber));
+};
+
+const extractExcludedStatusLabel = (userText: string): string | null => {
+  const quoted = userText.match(/\b(?:apart from|except|excluding|exclude|not in)\s+(?:the\s+)?["“]([^"”]+)["”]\s+status\b/i);
+  if (quoted?.[1]?.trim()) return quoted[1].trim();
+  const plain = userText.match(/\b(?:apart from|except|excluding|exclude|not in)\s+(?:the\s+)?(.+?)\s+status\b/i);
+  if (plain?.[1]?.trim()) return plain[1].trim().replace(/[.?!,;:]+$/g, '');
+  return null;
+};
+
+const getPrimaryStatusLabelForItem = (
+  item: AccountContextSnapshot['items'][number],
+  snapshot: AccountContextSnapshot
+): string | null => {
+  const fields = snapshot.fields.filter((field) => field.list_id === item.lane_id);
+  const statusField = fields.find((field) => field.type === 'status' && field.is_primary) || fields.find((field) => field.type === 'status');
+  if (statusField) {
+    const row = snapshot.itemFieldValues.find((value) => value.item_id === item.id && value.field_id === statusField.id) || null;
+    if (row?.option_id) {
+      const option = snapshot.fieldOptions.find((entry) => entry.id === row.option_id) || null;
+      if (option?.label) return option.label;
+    }
+    if (row?.value_text?.trim()) {
+      return row.value_text.trim();
+    }
+  }
+  return item.status || null;
+};
+
+const detectTaskSuggestionsForBlockIntent = (userText: string): boolean => {
+  const lower = userText.toLowerCase();
+  return (
+    /\bwhat\b/.test(lower) &&
+    /\b(tasks?|actions?)\b/.test(lower) &&
+    /\b(block|time block)\b/.test(lower) &&
+    /\b(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/.test(lower)
+  );
+};
+
+const selectEligiblePlanningLists = (
+  scopedLists: AccountContextSnapshot['lists'],
+  context: ChatContext
+): AccountContextSnapshot['lists'] => {
+  const configuredLists = Array.isArray(context.node_structure_config?.lists)
+    ? (context.node_structure_config?.lists as Array<Record<string, unknown>>)
+    : [];
+  if (configuredLists.length === 0) return scopedLists;
+  const configuredNames = new Set(
+    configuredLists
+      .map((entry) => (typeof entry?.name === 'string' ? normalize(entry.name) : ''))
+      .filter(Boolean)
+  );
+  const matched = scopedLists.filter((list) => configuredNames.has(normalize(list.name)));
+  return matched.length > 0 ? matched : scopedLists;
+};
+
+const getNodeListConfig = (context: ChatContext, listName: string | null | undefined): Record<string, unknown> | null => {
+  if (!listName) return null;
+  const configuredLists = Array.isArray(context.node_structure_config?.lists)
+    ? (context.node_structure_config?.lists as Array<Record<string, unknown>>)
+    : [];
+  return (
+    configuredLists.find((entry) => typeof entry?.name === 'string' && normalize(entry.name) === normalize(listName)) ||
+    null
+  );
+};
+
+const getItemFieldValue = (
+  snapshot: AccountContextSnapshot,
+  itemId: string,
+  listId: string | null,
+  fieldName: string
+): string | number | boolean | null => {
+  if (!listId) return null;
+  const schema = snapshot.fields.find(
+    (field) => field.list_id === listId && normalize(field.name) === normalize(fieldName)
+  );
+  if (!schema) return null;
+  const value = snapshot.itemFieldValues.find((entry) => entry.item_id === itemId && entry.field_id === schema.id) || null;
+  if (!value) return null;
+  if (typeof value.value_text === 'string' && value.value_text.trim()) return value.value_text.trim();
+  if (typeof value.value_number === 'number') return value.value_number;
+  if (typeof value.value_date === 'string' && value.value_date.trim()) return value.value_date.trim();
+  if (typeof value.value_boolean === 'boolean') return value.value_boolean;
+  if (value.option_id) {
+    const option = snapshot.fieldOptions.find((entry) => entry.id === value.option_id) || null;
+    if (option?.label) return option.label;
+  }
+  return null;
+};
+
+const scorePlanningCandidate = (
+  item: AccountContextSnapshot['items'][number],
+  list: AccountContextSnapshot['lists'][number] | null,
+  latestComment: AccountContextSnapshot['itemComments'][number] | null,
+  snapshot: AccountContextSnapshot,
+  context: ChatContext
+): { score: number; missingCriticalFields: string[] } => {
+  let score = 0.5;
+  const missingCriticalFields: string[] = [];
+  const listConfig = getNodeListConfig(context, list?.name);
+  const configuredFields = Array.isArray(listConfig?.fields)
+    ? (listConfig?.fields as Array<Record<string, unknown>>)
+    : [];
+
+  for (const field of configuredFields) {
+    const fieldName = typeof field.name === 'string' ? field.name : '';
+    if (!fieldName) continue;
+    const semanticRole = typeof field.semanticRole === 'string' ? field.semanticRole : null;
+    const importance = typeof field.confidenceImportance === 'string' ? field.confidenceImportance : null;
+    const value = getItemFieldValue(snapshot, item.id, list?.id || null, fieldName);
+    const hasValue = value !== null && value !== undefined && !(typeof value === 'string' && value.trim().length === 0);
+
+    if (hasValue) {
+      if (importance === 'critical') score += 0.22;
+      else if (importance === 'preferred') score += 0.12;
+      else score += 0.04;
+      if (semanticRole === 'routing' || semanticRole === 'scheduling' || semanticRole === 'follow_up') {
+        score += 0.08;
+      }
+    } else if (importance === 'critical') {
+      missingCriticalFields.push(fieldName);
+      score -= 0.18;
+    } else if (importance === 'preferred') {
+      score -= 0.06;
+    }
+  }
+
+  if (latestComment?.body?.trim()) score += 0.1;
+  if (item.signal_label?.trim()) score += 0.06;
+  if (typeof item.signal_score === 'number') score += Math.max(0, Math.min(0.18, item.signal_score * 0.18));
+  if (item.status && !/done|closed|complete/i.test(item.status)) score += 0.08;
+  return {
+    score: Math.max(0, Math.min(1, Number(score.toFixed(2)))),
+    missingCriticalFields
+  };
+};
+
+const buildPlanningActionContract = (
+  userText: string,
+  snapshot: AccountContextSnapshot,
+  context: ChatContext,
+  messages: ChatMessage[]
+): PlanningActionContract => {
+  const planningTimezone = context.planning_timezone || 'America/Denver';
+  const planningDate = parsePlanningDateFromText(userText, planningTimezone);
+  const focalEntities = resolveEntities(userText, snapshot, context, messages);
+  const resolvedFocalId = focalEntities.focal.id || context.focal_id || null;
+  const resolvedListId = focalEntities.list.id || context.list_id || null;
+  const baseScopedLists = resolvedListId
+    ? snapshot.lists.filter((list) => list.id === resolvedListId)
+    : resolvedFocalId
+      ? snapshot.lists.filter((list) => list.focal_id === resolvedFocalId)
+      : snapshot.lists;
+  const scopedLists = selectEligiblePlanningLists(baseScopedLists, context);
+  const excludedStatusLabel = extractExcludedStatusLabel(userText);
+  const scopedItems = snapshot.items.filter((item) => scopedLists.some((list) => list.id === item.lane_id));
+  const candidateItems = scopedItems
+    .map((item) => ({
+      item,
+      list: scopedLists.find((list) => list.id === item.lane_id) || null,
+      statusLabel: getPrimaryStatusLabelForItem(item, snapshot),
+      latestComment:
+        snapshot.itemComments
+          .filter((comment) => comment.item_id === item.id)
+          .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0] || null
+    }))
+    .map((entry) => {
+      const scoring = scorePlanningCandidate(entry.item, entry.list, entry.latestComment, snapshot, context);
+      return {
+        ...entry,
+        score: scoring.score,
+        missingCriticalFields: scoring.missingCriticalFields
+      };
+    })
+    .filter((entry) =>
+      excludedStatusLabel ? normalize(entry.statusLabel || '') !== normalize(excludedStatusLabel) : true
+    )
+    .sort((a, b) => b.score - a.score);
+
+  const targetBlockNeedle = inferTargetBlockNeedle(userText);
+  const dayBlocks = planningDate
+    ? snapshot.timeBlocks
+        .filter((block) => isSameLocalDate(block.start_time, planningDate, planningTimezone))
+        .sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime())
+    : [];
+  const targetBlock = targetBlockNeedle
+    ? dayBlocks.find((block) => normalize(block.title).includes(targetBlockNeedle)) || null
+    : dayBlocks[0] || null;
+
+  return {
+    planningDate,
+    planningTimezone,
+    excludedStatusLabel,
+    targetBlockNeedle,
+    resolvedFocalId,
+    resolvedListId,
+    scopedLists,
+    candidateItems,
+    dayBlocks,
+    targetBlock,
+    focalEntities
+  };
+};
+
 const inferCalendarTitleFromText = (userText: string): string => {
   const trimmed = userText.trim();
   const quoted = trimmed.match(/["“](.+?)["”]/);
@@ -1167,6 +1579,7 @@ const runMutationTools = async (
   tools: DebugMeta['tools'];
 }> => {
   const tools: DebugMeta['tools'] = [];
+  const missingDataHandling = extractMissingDataHandling(context);
   if (!plan.mutationRequested) {
     tools.push({ name: 'find_entity', status: 'skipped', summary: 'No mutation verb detected' });
     return { handled: false, suppressInventory: false, tools };
@@ -1202,6 +1615,94 @@ const runMutationTools = async (
   const itemId = itemMatch.itemId || context.item_id || null;
   const item = itemId ? snapshot.items.find((entry) => entry.id === itemId) || null : null;
   const content = extractPrimaryUserContent(userText);
+  const wantsSchedulingAction =
+    /\b(visit|follow[- ]?up|schedule|remind|add task|add action|task|meeting|appointment|calendar|put it on my calendar|put on my calendar)\b/i.test(
+      content
+    ) &&
+    /\b(tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|calendar|block|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\b/i.test(
+      content
+    );
+
+  if (!item && wantsSchedulingAction) {
+    const scheduledAt = parseScheduledAtFromText(content, 'America/Denver');
+    const wantsCalendarEvent = /\b(calendar|put it on my calendar|put on my calendar)\b/i.test(content);
+    if (wantsCalendarEvent && scheduledAt) {
+      const startDate = new Date(scheduledAt);
+      const endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
+      const calendarTitle = inferCalendarTitleFromText(content);
+      const overlappingBlock = snapshot.timeBlocks.find((block) => {
+        const blockStart = new Date(block.start_time).getTime();
+        const blockEnd = new Date(block.end_time).getTime();
+        return startDate.getTime() < blockEnd && endDate.getTime() > blockStart;
+      });
+
+      if (overlappingBlock) {
+        tools.push({
+          name: 'create_time_block',
+          status: 'blocked',
+          summary: `Conflict with existing block ${overlappingBlock.title}`
+        });
+        return {
+          handled: true,
+          suppressInventory: true,
+          text: `I found "${calendarTitle}" for ${new Date(startDate).toLocaleString(undefined, {
+            weekday: 'short',
+            hour: 'numeric',
+            minute: '2-digit'
+          })}, but that overlaps with "${overlappingBlock.title}". Open the relevant item or clarify whether this should replace that block.`,
+          tools,
+          route: 'mutation_calendar_conflict_no_item',
+          scopeLabels: {
+            focal: entities.focal.id ? focalNameById.get(entities.focal.id) || undefined : undefined
+          },
+          confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
+        };
+      }
+
+      try {
+        const createdBlock = await insertTimeBlock(client, userId, {
+          title: calendarTitle,
+          description: null,
+          startUtc: startDate.toISOString(),
+          endUtc: endDate.toISOString(),
+          tags: []
+        });
+        tools.push({ name: 'create_time_block', status: 'applied', summary: `Created calendar event ${createdBlock.title}` });
+        return {
+          handled: true,
+          suppressInventory: true,
+          text: `Added "${calendarTitle}" to your calendar for ${new Date(startDate).toLocaleString(undefined, {
+            weekday: 'short',
+            hour: 'numeric',
+            minute: '2-digit'
+          })}.`,
+          tools,
+          route: 'create_calendar_event_direct_no_item',
+          scopeLabels: {
+            focal: entities.focal.id ? focalNameById.get(entities.focal.id) || undefined : undefined
+          },
+          confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
+        };
+      } catch (error) {
+        tools.push({
+          name: 'create_time_block',
+          status: 'error',
+          summary: error instanceof Error ? error.message : String(error)
+        });
+        return {
+          handled: true,
+          suppressInventory: true,
+          text: `I could read the schedule, but couldn't create the calendar event automatically (${error instanceof Error ? error.message : String(error)}).`,
+          tools,
+          route: 'create_calendar_event_error_no_item',
+          scopeLabels: {
+            focal: entities.focal.id ? focalNameById.get(entities.focal.id) || undefined : undefined
+          },
+          confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
+        };
+      }
+    }
+  }
 
   if (!item) {
     tools.push({ name: 'find_entity', status: 'blocked', summary: 'No active item resolved' });
@@ -1239,6 +1740,25 @@ const runMutationTools = async (
 
   const itemList = lists.find((entry) => entry.id === item.lane_id) || null;
   const fieldsForList = snapshot.fields.filter((field) => field.list_id === item.lane_id);
+  const preserveFallbackIntent = async (summary: string): Promise<void> => {
+    if (!missingDataHandling.doNotBlockOnPartialData) return;
+    try {
+      await client.from('item_comments').insert([
+        {
+          item_id: item.id,
+          user_id: userId,
+          body: `Context: ${summary}`
+        }
+      ]);
+      tools.push({ name: 'preserve_intent', status: 'applied', summary });
+    } catch (error) {
+      tools.push({
+        name: 'preserve_intent',
+        status: 'error',
+        summary: error instanceof Error ? error.message : String(error)
+      });
+    }
+  };
   tools.push({
     name: 'get_schema_and_state',
     status: 'applied',
@@ -1326,13 +1846,6 @@ const runMutationTools = async (
     }
   }
 
-  const wantsSchedulingAction =
-    /\b(visit|follow[- ]?up|schedule|remind|add task|add action|task|meeting|appointment|calendar|put it on my calendar|put on my calendar)\b/i.test(
-      content
-    ) &&
-    /\b(tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|calendar|block|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\b/i.test(
-      content
-    );
   if (wantsSchedulingAction) {
     const actionTitle = inferActionTitleFromText(content);
     const scheduledAt = parseScheduledAtFromText(content, 'America/Denver');
@@ -1428,34 +1941,42 @@ const runMutationTools = async (
           confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
         };
       }
-      return {
-        handled: true,
-        text: `Ready to add "${calendarTitle}" to your calendar for ${new Date(startDate).toLocaleString(undefined, {
-          weekday: 'short',
-          hour: 'numeric',
-          minute: '2-digit'
-        })}. Approve to apply.${ownerFieldUpdateSummary ? ` ${ownerFieldUpdateSummary}` : ''}`,
-        proposals: [
-          {
-            id: buildProposalId('create_time_block', {
-              title: calendarTitle,
-              scheduled_start_utc: startDate.toISOString(),
-              scheduled_end_utc: endDate.toISOString(),
-              lane_id: item.lane_id || null
-            }),
-            type: 'create_time_block',
-            title: calendarTitle,
-            scheduled_start_utc: startDate.toISOString(),
-            scheduled_end_utc: endDate.toISOString(),
-            lane_id: item.lane_id || null,
-            notes: null
-          }
-        ],
-        route: 'create_calendar_event_proposal',
-        tools,
-        scopeLabels: { focal: itemList?.focalName || undefined, list: itemList?.name || undefined },
-        confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
-      };
+      try {
+        const createdBlock = await insertTimeBlock(client, userId, {
+          title: calendarTitle,
+          description: null,
+          startUtc: startDate.toISOString(),
+          endUtc: endDate.toISOString(),
+          tags: item.lane_id ? [`lane:${item.lane_id}`, `item:${item.id}`] : [`item:${item.id}`]
+        });
+        tools.push({ name: 'create_time_block', status: 'applied', summary: `Created calendar event ${createdBlock.title}` });
+        return {
+          handled: true,
+          text: `Added "${calendarTitle}" to your calendar for ${new Date(startDate).toLocaleString(undefined, {
+            weekday: 'short',
+            hour: 'numeric',
+            minute: '2-digit'
+          })}.${ownerFieldUpdateSummary ? ` ${ownerFieldUpdateSummary}` : ''}`,
+          route: 'create_calendar_event_direct',
+          tools,
+          scopeLabels: { focal: itemList?.focalName || undefined, list: itemList?.name || undefined },
+          confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
+        };
+      } catch (error) {
+        tools.push({
+          name: 'create_time_block',
+          status: 'error',
+          summary: error instanceof Error ? error.message : String(error)
+        });
+        return {
+          handled: true,
+          text: `I found the schedule and time, but couldn't create the calendar event automatically (${error instanceof Error ? error.message : String(error)}).`,
+          route: 'create_calendar_event_error',
+          tools,
+          scopeLabels: { focal: itemList?.focalName || undefined, list: itemList?.name || undefined },
+          confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
+        };
+      }
     }
 
     const blockNeedle = inferTimeBlockNameFromText(content);
@@ -1636,6 +2157,17 @@ const runMutationTools = async (
 
   const targetField = resolveFieldFromAlias(fieldsForList, fieldAlias);
   if (!targetField) {
+    if (missingDataHandling.doNotBlockOnPartialData) {
+      await preserveFallbackIntent(`Requested ${fieldAlias} = ${rawValue} on ${item.title}, but no matching field exists yet.`);
+      return {
+        handled: true,
+        text: `I found ${item.title}, but this list has no "${fieldAlias}" field yet. I preserved the intent in the item context so Delta can still use it while you decide whether to add that field.`,
+        route: 'update_record_field_missing_preserved',
+        tools,
+        scopeLabels: { focal: itemList?.focalName || undefined, list: itemList?.name || undefined },
+        confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
+      };
+    }
     tools.push({ name: 'update_record', status: 'blocked', summary: `Missing field for alias: ${fieldAlias}` });
     return {
       handled: true,
@@ -1663,6 +2195,17 @@ const runMutationTools = async (
   } else if (targetField.type === 'number') {
     const parsed = Number(rawValue.replace(/,/g, ''));
     if (!Number.isFinite(parsed)) {
+      if (missingDataHandling.doNotBlockOnPartialData) {
+        await preserveFallbackIntent(`Requested numeric update ${targetField.name} = ${rawValue} on ${item.title}, but the value could not be parsed.`);
+        return {
+          handled: true,
+          text: `I found ${item.title}, but "${rawValue}" is not a clean number for ${targetField.name}. I saved the intent into the item context instead of dropping it.`,
+          route: 'update_record_value_preserved',
+          tools,
+          scopeLabels: { focal: itemList?.focalName || undefined, list: itemList?.name || undefined },
+          confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
+        };
+      }
       tools.push({ name: 'update_record', status: 'blocked', summary: `Invalid numeric value: ${rawValue}` });
       return {
         handled: true,
@@ -1678,6 +2221,17 @@ const runMutationTools = async (
     const truthy = /^(true|yes|y|1|done|completed)$/i.test(rawValue);
     const falsy = /^(false|no|n|0|not done|pending)$/i.test(rawValue);
     if (!truthy && !falsy) {
+      if (missingDataHandling.doNotBlockOnPartialData) {
+        await preserveFallbackIntent(`Requested boolean update ${targetField.name} = ${rawValue} on ${item.title}, but the value could not be normalized.`);
+        return {
+          handled: true,
+          text: `I found ${item.title}, but "${rawValue}" is not a clean yes/no value for ${targetField.name}. I preserved it in the item context instead.`,
+          route: 'update_record_value_preserved',
+          tools,
+          scopeLabels: { focal: itemList?.focalName || undefined, list: itemList?.name || undefined },
+          confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
+        };
+      }
       tools.push({ name: 'update_record', status: 'blocked', summary: `Invalid boolean value: ${rawValue}` });
       return {
         handled: true,
@@ -1692,6 +2246,17 @@ const runMutationTools = async (
   } else if (targetField.type === 'date') {
     const date = new Date(rawValue);
     if (Number.isNaN(date.getTime())) {
+      if (missingDataHandling.doNotBlockOnPartialData) {
+        await preserveFallbackIntent(`Requested date update ${targetField.name} = ${rawValue} on ${item.title}, but the date could not be parsed.`);
+        return {
+          handled: true,
+          text: `I found ${item.title}, but "${rawValue}" is not a clean date for ${targetField.name}. I preserved the intent in the item context instead.`,
+          route: 'update_record_value_preserved',
+          tools,
+          scopeLabels: { focal: itemList?.focalName || undefined, list: itemList?.name || undefined },
+          confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
+        };
+      }
       tools.push({ name: 'update_record', status: 'blocked', summary: `Invalid date value: ${rawValue}` });
       return {
         handled: true,
@@ -1709,6 +2274,17 @@ const runMutationTools = async (
       || options.find((option) => normalize(option.label).includes(normalize(rawValue)))
       || options.find((option) => normalize(rawValue).includes(normalize(option.label)));
     if (!match) {
+      if (missingDataHandling.doNotBlockOnPartialData) {
+        await preserveFallbackIntent(`Requested ${targetField.name} = ${rawValue} on ${item.title}, but that option does not exist on the field.`);
+        return {
+          handled: true,
+          text: `I found ${item.title}, but "${rawValue}" is not a valid option for ${targetField.name}. I preserved that intent in the item context so it can still inform Delta AI.`,
+          route: 'update_record_option_preserved',
+          tools,
+          scopeLabels: { focal: itemList?.focalName || undefined, list: itemList?.name || undefined },
+          confidence: { focal: entities.focal.confidence, list: entities.list.confidence }
+        };
+      }
       tools.push({ name: 'update_record', status: 'blocked', summary: `No option "${rawValue}" in ${targetField.name}` });
       return {
         handled: true,
@@ -2153,6 +2729,7 @@ const friendlyContextLine = (context: ChatContext, snapshot: AccountContextSnaps
   const item = context.item_id ? snapshot.items.find((i) => i.id === context.item_id) : null;
   const action = context.action_id ? snapshot.actions.find((a) => a.id === context.action_id) : null;
   const parts = [
+    context.node_name ? `Node=${context.node_name}${context.node_mode ? `(${context.node_mode})` : ''}` : null,
     focal ? `Space=${focal.name}` : null,
     list ? `List=${list.name}` : null,
     item ? `Item=${item.title}` : null,
@@ -2162,11 +2739,127 @@ const friendlyContextLine = (context: ChatContext, snapshot: AccountContextSnaps
   return parts.join(', ');
 };
 
+const buildNodeSystemPrompts = (context: ChatContext): string[] => {
+  const definition = resolveRuntimeNodePrompts(
+    context.node_id,
+    context.node_setup_logic,
+    context.node_operate_logic
+  );
+  if (!definition) return [];
+  const prompts = context.node_mode === 'setup'
+    ? [definition.setupPrompt]
+    : [definition.operatePrompt];
+  if (context.node_structure_blueprint?.trim()) {
+    prompts.push(`Node structure blueprint: ${context.node_structure_blueprint.trim()}`);
+  }
+  if (context.node_structure_config && Object.keys(context.node_structure_config).length > 0) {
+    prompts.push(`Node structured config: ${JSON.stringify(context.node_structure_config)}`);
+  }
+  return prompts;
+};
+
+const extractNodeBehaviorPolicy = (context: ChatContext): Record<string, unknown> | null => {
+  if (!context.node_structure_config || typeof context.node_structure_config !== 'object') return null;
+  const behavior =
+    typeof context.node_structure_config.behavior === 'object' && context.node_structure_config.behavior
+      ? (context.node_structure_config.behavior as Record<string, unknown>)
+      : null;
+  const dataPolicy =
+    typeof context.node_structure_config.dataPolicy === 'object' && context.node_structure_config.dataPolicy
+      ? (context.node_structure_config.dataPolicy as Record<string, unknown>)
+      : null;
+  if (!behavior && !dataPolicy) return null;
+  return {
+    action_priority_rules: Array.isArray(behavior?.actionPriorityRules) ? behavior?.actionPriorityRules : [],
+    primary_operating_modes: Array.isArray(behavior?.primaryOperatingModes) ? behavior?.primaryOperatingModes : [],
+    scheduling_behavior: Array.isArray(behavior?.schedulingBehavior) ? behavior?.schedulingBehavior : [],
+    activity_logging_behavior: Array.isArray(behavior?.activityLoggingBehavior) ? behavior?.activityLoggingBehavior : [],
+    missing_data_handling:
+      typeof behavior?.missingDataHandling === 'object' && behavior?.missingDataHandling
+        ? behavior.missingDataHandling
+        : null,
+    setup_wizard_rules:
+      typeof behavior?.setupWizardRules === 'object' && behavior?.setupWizardRules
+        ? behavior.setupWizardRules
+        : null,
+    automation_rules: Array.isArray(behavior?.automationRules) ? behavior?.automationRules : [],
+    required_data_rules: Array.isArray(dataPolicy?.requiredFields) ? dataPolicy?.requiredFields : [],
+    optional_data_rules: Array.isArray(dataPolicy?.optionalFields) ? dataPolicy?.optionalFields : []
+  };
+};
+
+const extractMissingDataHandling = (
+  context: ChatContext
+): {
+  doNotBlockOnPartialData: boolean;
+  buildFromBestAvailableData: boolean;
+  surfaceHighValueGapsInBatches: boolean;
+  avoidItemByItemNagging: boolean;
+} => {
+  const behavior =
+    typeof context.node_structure_config?.behavior === 'object' && context.node_structure_config?.behavior
+      ? (context.node_structure_config.behavior as Record<string, unknown>)
+      : null;
+  const missing =
+    typeof behavior?.missingDataHandling === 'object' && behavior?.missingDataHandling
+      ? (behavior.missingDataHandling as Record<string, unknown>)
+      : null;
+  return {
+    doNotBlockOnPartialData: missing?.doNotBlockOnPartialData !== false,
+    buildFromBestAvailableData: missing?.buildFromBestAvailableData !== false,
+    surfaceHighValueGapsInBatches: missing?.surfaceHighValueGapsInBatches !== false,
+    avoidItemByItemNagging: missing?.avoidItemByItemNagging !== false
+  };
+};
+
 const redactUuids = (text: string): string =>
   text.replace(
     /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi,
     '[id-hidden]'
   );
+
+const stabilizeAssistantText = (text: string): string => {
+  const trimmed = text.trim();
+  if (!trimmed) return '';
+  if (/[.!?]$/.test(trimmed)) return trimmed;
+  const matches = [...trimmed.matchAll(/[.!?](?=\s|$)/g)];
+  const last = matches[matches.length - 1];
+  if (last && typeof last.index === 'number' && last.index >= Math.floor(trimmed.length * 0.55)) {
+    return trimmed.slice(0, last.index + 1).trim();
+  }
+  return `${trimmed}…`;
+};
+
+const insertTimeBlock = async (
+  client: ReturnType<typeof createClient>,
+  userId: string,
+  payload: {
+    title: string;
+    description?: string | null;
+    startUtc: string;
+    endUtc: string;
+    tags?: string[] | null;
+  }
+): Promise<{ id: string; title: string; start_time: string; end_time: string }> => {
+  const { data, error } = await client
+    .from('time_blocks')
+    .insert({
+      user_id: userId,
+      title: payload.title,
+      description: payload.description || '',
+      start_time: payload.startUtc,
+      end_time: payload.endUtc,
+      recurrence_rule: 'none',
+      recurrence_config: null,
+      include_weekends: true,
+      timezone: 'America/Denver',
+      tags: Array.isArray(payload.tags) ? payload.tags : []
+    })
+    .select('id,title,start_time,end_time')
+    .single();
+  if (error) throw error;
+  return data;
+};
 
 const buildDebugMeta = (
   requestId: string,
@@ -2187,6 +2880,7 @@ const buildDebugMeta = (
       context.focal_id || context.list_id || context.item_id || context.action_id || context.time_block_id
         ? 'scoped'
         : 'global',
+    ...(context.node_name ? { node: context.node_name } : {}),
     ...(scopeLabels?.focal ? { focal: scopeLabels.focal } : {}),
     ...(scopeLabels?.list ? { list: scopeLabels.list } : {}),
     ...(context.item_id ? { item: 'active' } : {}),
@@ -2466,6 +3160,278 @@ Deno.serve(async (req) => {
       }
     }
 
+    if (accountSnapshot && detectTaskSuggestionsForBlockIntent(lastUserMessage)) {
+      const focalNameById = new Map(accountSnapshot.focals.map((entry) => [entry.id, entry.name]));
+      const planningContract = buildPlanningActionContract(lastUserMessage, accountSnapshot, context, messages);
+      const missingDataHandling = extractMissingDataHandling(context);
+      const {
+        planningDate,
+        planningTimezone,
+        excludedStatusLabel,
+        resolvedFocalId,
+        resolvedListId,
+        scopedLists,
+        candidateItems,
+        dayBlocks,
+        targetBlock,
+        targetBlockNeedle,
+        focalEntities
+      } = planningContract;
+      const fullyQualifiedCandidates = candidateItems.filter((entry) => entry.missingCriticalFields.length === 0);
+      const planningCandidates =
+        missingDataHandling.doNotBlockOnPartialData || missingDataHandling.buildFromBestAvailableData
+          ? candidateItems
+          : fullyQualifiedCandidates;
+      const topMissingFieldCounts = new Map<string, number>();
+      candidateItems.forEach((entry) => {
+        entry.missingCriticalFields.forEach((fieldName) => {
+          topMissingFieldCounts.set(fieldName, (topMissingFieldCounts.get(fieldName) || 0) + 1);
+        });
+      });
+      const highValueGapSummary = [...topMissingFieldCounts.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([fieldName, count]) => `${fieldName} (${count})`)
+        .join(', ');
+
+      if (planningCandidates.length === 0) {
+        return new Response(
+          JSON.stringify({
+            text: excludedStatusLabel
+              ? `I checked ${resolvedFocalId ? focalNameById.get(resolvedFocalId) || 'that space' : 'your workspace'}, and after excluding "${excludedStatusLabel}" there are no matching items to plan from.`
+              : highValueGapSummary
+                ? `I found matching items, but the node policy says not to plan from records missing critical data yet. Highest-value gaps: ${highValueGapSummary}.`
+                : 'I could not find matching items to plan from in that scope.',
+            source: 'ai',
+            proposals: [],
+            debug_reason: 'task_suggestions_no_candidates',
+            debug_model: 'none',
+            debug_meta: buildDebugMeta(
+              requestId,
+              context,
+              accountSnapshot,
+              'db',
+              'task_suggestions_no_candidates',
+              {
+                focal: resolvedFocalId ? focalNameById.get(resolvedFocalId) || undefined : undefined,
+                list: resolvedListId ? scopedLists.find((entry) => entry.id === resolvedListId)?.name || undefined : undefined
+              },
+              { focal: focalEntities.focal.confidence, list: focalEntities.list.confidence },
+              snapshotWarnings
+            )
+          }),
+          {
+            status: 200,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+          }
+        );
+      }
+
+      if (!targetBlock && planningDate) {
+        const blockTitle = buildNamedTimeBlockTitle(targetBlockNeedle, lastUserMessage, dayBlocks, context);
+        const startUtc = zonedLocalToUtcIso(planningDate.year, planningDate.month, planningDate.day, 9, 0, planningTimezone);
+        const endUtc = zonedLocalToUtcIso(planningDate.year, planningDate.month, planningDate.day, 10, 0, planningTimezone);
+        const humanDate = new Date(startUtc).toLocaleDateString(undefined, {
+          weekday: 'long',
+          month: 'short',
+          day: 'numeric'
+        });
+        const hadAnyBlocks = dayBlocks.length > 0;
+        return new Response(
+          JSON.stringify({
+            text: hadAnyBlocks
+              ? `You do not have a "${blockTitle}" block on ${humanDate}. I can create one first, then we can queue the prospecting tasks into it.`
+              : `You do not have any time blocks on ${humanDate} yet. I can create a "${blockTitle}" block first, then we can queue the prospecting tasks into it.`,
+            source: 'ai',
+            proposals: [
+              {
+                id: crypto.randomUUID(),
+                type: 'create_time_block',
+                title: blockTitle,
+                scheduled_start_utc: startUtc,
+                scheduled_end_utc: endUtc,
+                notes: `Created from planning request for ${humanDate}.`,
+                follow_up_request: lastUserMessage,
+                follow_up_context: {
+                  ...context,
+                  planning_date: `${planningDate.year}-${String(planningDate.month).padStart(2, '0')}-${String(planningDate.day).padStart(2, '0')}`,
+                  planning_timezone: planningTimezone
+                }
+              }
+            ],
+            debug_reason: 'task_suggestions_missing_target_block',
+            debug_model: 'none',
+            debug_meta: buildDebugMeta(
+              requestId,
+              context,
+              accountSnapshot,
+              'db',
+              'task_suggestions_missing_target_block',
+              {
+                focal: resolvedFocalId ? focalNameById.get(resolvedFocalId) || undefined : undefined,
+                list: resolvedListId ? scopedLists.find((entry) => entry.id === resolvedListId)?.name || undefined : undefined
+              },
+              { focal: focalEntities.focal.confidence, list: focalEntities.list.confidence },
+              snapshotWarnings
+            )
+          }),
+          {
+            status: 200,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+          }
+        );
+      }
+
+      if (hasAiProviders && targetBlock) {
+        try {
+          const nodePrompts = buildNodeSystemPrompts(context);
+          const nodeBehaviorPolicy = extractNodeBehaviorPolicy(context);
+          const suggestionCompletion = await aiGateway.createCompletion(
+            {
+              messages: [
+                ...nodePrompts.map((prompt) => ({ role: 'system' as const, content: prompt })),
+                {
+                  role: 'system',
+                  content:
+                    'Return JSON only. Suggest concrete app-native tasks for a target time block. Shape: {"reply_text": string, "proposals": Array<{item_id: string, title: string, notes?: string}>}. Choose 1 to 5 tasks. Use only the provided candidate item ids. Prefer concise, executable task titles.'
+                },
+                {
+                  role: 'user',
+                  content: JSON.stringify({
+                    request: lastUserMessage,
+                    excluded_status: excludedStatusLabel || null,
+                    target_block: {
+                      id: targetBlock.id,
+                      title: targetBlock.title,
+                      start_time: targetBlock.start_time,
+                      end_time: targetBlock.end_time
+                    },
+                    scope: {
+                      focal_id: resolvedFocalId,
+                      focal_name: resolvedFocalId ? focalNameById.get(resolvedFocalId) || null : null,
+                      list_id: resolvedListId,
+                      list_name: resolvedListId ? scopedLists.find((entry) => entry.id === resolvedListId)?.name || null : null
+                    },
+                    node_planning_policy: {
+                      default_task_placement:
+                        typeof context.node_structure_config?.planning === 'object' &&
+                        context.node_structure_config?.planning &&
+                        'defaultTaskPlacement' in (context.node_structure_config.planning as Record<string, unknown>)
+                          ? (context.node_structure_config.planning as Record<string, unknown>).defaultTaskPlacement || null
+                          : null,
+                      use_location_for_day_planning:
+                        typeof context.node_structure_config?.planning === 'object' &&
+                        context.node_structure_config?.planning &&
+                        'useLocationForDayPlanning' in (context.node_structure_config.planning as Record<string, unknown>)
+                          ? Boolean((context.node_structure_config.planning as Record<string, unknown>).useLocationForDayPlanning)
+                          : false,
+                      location_field_name:
+                        typeof context.node_structure_config?.planning === 'object' &&
+                        context.node_structure_config?.planning &&
+                        'locationFieldName' in (context.node_structure_config.planning as Record<string, unknown>)
+                          ? ((context.node_structure_config.planning as Record<string, unknown>).locationFieldName as string) || null
+                          : null,
+                      behavior_policy: nodeBehaviorPolicy
+                    },
+                    candidate_items: planningCandidates.slice(0, 24).map((entry) => ({
+                      item_id: entry.item.id,
+                      title: entry.item.title,
+                      list_name: entry.list?.name || null,
+                      status: entry.statusLabel || null,
+                      latest_comment: entry.latestComment?.body || null,
+                      current_context_signal: entry.item.signal_label || null,
+                      current_context_confidence: entry.item.signal_score ?? null,
+                      planning_score: entry.score,
+                      missing_critical_fields: entry.missingCriticalFields
+                    }))
+                  })
+                }
+              ],
+              responseFormat: 'json_object',
+              modelProfile: 'delta-general',
+              maxTokens: 1200
+            },
+            requestId
+          );
+
+          if (suggestionCompletion.content) {
+            const parsed = JSON.parse(suggestionCompletion.content) as {
+              reply_text?: string;
+              proposals?: Array<{
+                item_id?: string;
+                title?: string;
+                notes?: string | null;
+              }>;
+            };
+
+            const scopedItemIds = new Set(candidateItems.map((entry) => entry.item.id));
+            const proposals: ChatProposal[] = Array.isArray(parsed.proposals)
+              ? parsed.proposals
+                  .filter(
+                    (proposal) =>
+                      typeof proposal?.item_id === 'string' &&
+                      scopedItemIds.has(proposal.item_id) &&
+                      typeof proposal?.title === 'string' &&
+                      proposal.title.trim().length > 0
+                  )
+                  .slice(0, 5)
+                  .map((proposal) => {
+                    const item = candidateItems.find((entry) => entry.item.id === proposal.item_id)?.item || null;
+                    return {
+                      id: buildProposalId('create_action', {
+                        item_id: proposal.item_id!,
+                        title: proposal.title!.trim(),
+                        scheduled_at: targetBlock.start_time,
+                        time_block_id: targetBlock.id
+                      }),
+                      type: 'create_action' as const,
+                      item_id: proposal.item_id!,
+                      title: proposal.title!.trim(),
+                      notes: typeof proposal.notes === 'string' ? proposal.notes : null,
+                      scheduled_at: targetBlock.start_time,
+                      time_block_id: targetBlock.id,
+                      lane_id: item?.lane_id || null
+                    };
+                  })
+              : [];
+
+            if (proposals.length > 0) {
+              return new Response(
+                JSON.stringify({
+                  text:
+                    (typeof parsed.reply_text === 'string' && parsed.reply_text.trim()) ||
+                    `I pulled together a focused set of tasks for "${targetBlock.title}". Review the drafts and push the ones you want.${highValueGapSummary && missingDataHandling.surfaceHighValueGapsInBatches ? ` Highest-value missing data to clean up soon: ${highValueGapSummary}.` : ''}`,
+                  source: 'ai',
+                  proposals,
+                  debug_reason: 'task_suggestions_for_target_block',
+                  debug_model: suggestionCompletion.modelUsed || null,
+                  debug_meta: buildDebugMeta(
+                    requestId,
+                    context,
+                    accountSnapshot,
+                    'llm',
+                    'task_suggestions_for_target_block',
+                    {
+                      focal: resolvedFocalId ? focalNameById.get(resolvedFocalId) || undefined : undefined,
+                      list: resolvedListId ? scopedLists.find((entry) => entry.id === resolvedListId)?.name || undefined : undefined
+                    },
+                    { focal: focalEntities.focal.confidence, list: focalEntities.list.confidence },
+                    snapshotWarnings
+                  )
+                }),
+                {
+                  status: 200,
+                  headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+                }
+              );
+            }
+          }
+        } catch (taskPlanningError) {
+          console.warn(`[chat:${requestId}] task suggestion planning failed`, taskPlanningError);
+        }
+      }
+    }
+
     if (accountSnapshot && (asksAccountData || messagePlan.explicitInventoryAsk)) {
       const deterministic = buildDeterministicAnswer(lastUserMessage, accountSnapshot, context, messages);
       if (deterministic) {
@@ -2493,6 +3459,189 @@ Deno.serve(async (req) => {
             headers: { ...corsHeaders, 'Content-Type': 'application/json' }
           }
         );
+      }
+    }
+
+    if (
+      hasAiProviders &&
+      accountSnapshot &&
+      context.node_id &&
+      context.node_mode === 'setup' &&
+      context.focal_id &&
+      lastUserMessage
+    ) {
+      try {
+        const nodeSetupCompletion = await aiGateway.createCompletion(
+          {
+            messages: [
+              {
+                role: 'system',
+                content:
+                  'Return JSON only. Build an executable workspace setup plan. Shape: {"reply_text": string, "proposal": {"summary": string, "lists": Array<{name: string, item_label?: string, action_label?: string, statuses?: Array<{name: string, key?: string, color?: string, group_key?: string, is_default?: boolean}>, subtask_statuses?: Array<{name: string, key?: string, color?: string, group_key?: string, is_default?: boolean}>, fields?: Array<{name: string, type: "status"|"select"|"text"|"number"|"date"|"boolean"|"contact", is_primary?: boolean, is_pinned?: boolean, options?: Array<{label: string, color_fill?: string, color_border?: string, color_text?: string}>}>}>}}. Keep it practical. Recommend only what should be created or configured now.'
+              },
+              {
+                role: 'user',
+                content: JSON.stringify({
+                  node_id: context.node_id,
+                  focal_id: context.focal_id,
+                  focal_name: accountSnapshot.focals.find((entry) => entry.id === context.focal_id)?.name || null,
+                  desired_node_structure: context.node_structure_config || null,
+                  node_structure_blueprint: context.node_structure_blueprint || null,
+                  node_behavior_policy: extractNodeBehaviorPolicy(context),
+                  user_request: lastUserMessage,
+                  existing_lists: accountSnapshot.lists
+                    .filter((entry) => entry.focal_id === context.focal_id)
+                    .map((entry) => ({ id: entry.id, name: entry.name, mode: entry.mode || null })),
+                  existing_fields: accountSnapshot.fields
+                    .filter((entry) => accountSnapshot.lists.some((list) => list.id === entry.list_id && list.focal_id === context.focal_id))
+                    .map((entry) => ({ list_id: entry.list_id, name: entry.name, type: entry.type, is_primary: entry.is_primary || false })),
+                  existing_field_options: accountSnapshot.fieldOptions,
+                  existing_item_count: accountSnapshot.items.filter((entry) => {
+                    const list = accountSnapshot.lists.find((listEntry) => listEntry.id === entry.lane_id);
+                    return list?.focal_id === context.focal_id;
+                  }).length
+                })
+              }
+            ],
+            responseFormat: 'json_object',
+            modelProfile: 'delta-general',
+            maxTokens: 1400
+          },
+          requestId
+        );
+
+        if (nodeSetupCompletion.content) {
+          const parsed = JSON.parse(nodeSetupCompletion.content) as {
+            reply_text?: string;
+            proposal?: {
+              summary?: string;
+              lists?: Array<{
+                name?: string;
+                item_label?: string | null;
+                action_label?: string | null;
+                statuses?: Array<{
+                  name?: string;
+                  key?: string | null;
+                  color?: string | null;
+                  group_key?: string | null;
+                  is_default?: boolean;
+                }>;
+                subtask_statuses?: Array<{
+                  name?: string;
+                  key?: string | null;
+                  color?: string | null;
+                  group_key?: string | null;
+                  is_default?: boolean;
+                }>;
+                fields?: Array<{
+                  name?: string;
+                  type?: 'status' | 'select' | 'text' | 'number' | 'date' | 'boolean' | 'contact';
+                  is_primary?: boolean;
+                  is_pinned?: boolean;
+                  options?: Array<{
+                    label?: string;
+                    color_fill?: string | null;
+                    color_border?: string | null;
+                    color_text?: string | null;
+                  }>;
+                }>;
+              }>;
+            };
+          };
+
+          const listPlans = Array.isArray(parsed.proposal?.lists)
+            ? parsed.proposal!.lists!
+                .filter((entry) => typeof entry?.name === 'string' && entry.name.trim().length > 0)
+                .map((entry) => ({
+                  name: entry.name!.trim(),
+                  item_label: entry.item_label || null,
+                  action_label: entry.action_label || null,
+                  statuses: Array.isArray(entry.statuses)
+                    ? entry.statuses
+                        .filter((status) => typeof status?.name === 'string' && status.name.trim().length > 0)
+                        .map((status) => ({
+                          name: status.name!.trim(),
+                          key: status.key || null,
+                          color: status.color || null,
+                          group_key: status.group_key || null,
+                          is_default: Boolean(status.is_default)
+                        }))
+                    : [],
+                  subtask_statuses: Array.isArray(entry.subtask_statuses)
+                    ? entry.subtask_statuses
+                        .filter((status) => typeof status?.name === 'string' && status.name.trim().length > 0)
+                        .map((status) => ({
+                          name: status.name!.trim(),
+                          key: status.key || null,
+                          color: status.color || null,
+                          group_key: status.group_key || null,
+                          is_default: Boolean(status.is_default)
+                        }))
+                    : [],
+                  fields: Array.isArray(entry.fields)
+                    ? entry.fields
+                        .filter((field) => typeof field?.name === 'string' && typeof field?.type === 'string')
+                        .map((field) => ({
+                          name: field.name!.trim(),
+                          type: field.type!,
+                          is_primary: Boolean(field.is_primary),
+                          is_pinned: Boolean(field.is_pinned),
+                          options: Array.isArray(field.options)
+                            ? field.options
+                                .filter((option) => typeof option?.label === 'string' && option.label.trim().length > 0)
+                                .map((option) => ({
+                                  label: option.label!.trim(),
+                                  color_fill: option.color_fill || null,
+                                  color_border: option.color_border || null,
+                                  color_text: option.color_text || null
+                                }))
+                            : []
+                        }))
+                    : []
+                }))
+            : [];
+
+          if (listPlans.length > 0) {
+            return new Response(
+              JSON.stringify({
+                text:
+                  (typeof parsed.reply_text === 'string' && parsed.reply_text.trim()) ||
+                  'I mapped the setup changes this space needs. Review the plan and apply it when you are ready.',
+                source: 'ai',
+                proposals: [
+                  {
+                    id: crypto.randomUUID(),
+                    type: 'node_setup_apply' as const,
+                    node_id: context.node_id,
+                    focal_id: context.focal_id,
+                    summary:
+                      (typeof parsed.proposal?.summary === 'string' && parsed.proposal.summary.trim()) ||
+                      `Configure ${listPlans.length} list${listPlans.length === 1 ? '' : 's'} for this node`,
+                    lists: listPlans
+                  }
+                ],
+                debug_reason: 'node_setup_plan',
+                debug_model: nodeSetupCompletion.modelUsed || null,
+                debug_meta: buildDebugMeta(
+                  requestId,
+                  context,
+                  accountSnapshot,
+                  'llm',
+                  'node_setup_plan',
+                  undefined,
+                  undefined,
+                  snapshotWarnings
+                )
+              }),
+              {
+                status: 200,
+                headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+              }
+            );
+          }
+        }
+      } catch (nodeSetupError) {
+        console.warn(`[chat:${requestId}] node setup planning failed`, nodeSetupError);
       }
     }
 
@@ -2600,6 +3749,7 @@ Deno.serve(async (req) => {
     }
 
     const contextLine = friendlyContextLine(context, accountSnapshot);
+    const nodePrompts = buildNodeSystemPrompts(context);
 
     const promptMessages = [
       {
@@ -2607,6 +3757,7 @@ Deno.serve(async (req) => {
         content:
           'You are Delta AI. Keep responses concise and practical. Use the provided account data snapshot as source of truth for user-specific questions. Never invent names, counts, or entities not present in snapshot data. Never expose internal IDs/UUIDs in user-facing text. If data is absent, clearly say you could not find matching records in current scope.'
       },
+      ...nodePrompts.map((content) => ({ role: 'system' as const, content })),
       ...(contextLine ? [{ role: 'system', content: `Active context: ${contextLine}` }] : []),
       ...(accountSnapshot
         ? [
@@ -2629,6 +3780,8 @@ Deno.serve(async (req) => {
     let usedModel: string | null = null;
     let lastAiStatus: number | null = null;
     let lastAiError: unknown = null;
+    let lastAiProvider: string | null = null;
+    let lastAiModel: string | null = null;
 
     const llmAttempt = await (async () => {
       try {
@@ -2651,7 +3804,10 @@ Deno.serve(async (req) => {
           ok: !!completion.content,
           content: completion.content || '',
           model: completion.modelUsed,
-          status: completion.content ? 200 : 500
+          provider: completion.providerUsed || null,
+          status: completion.content ? 200 : (completion.lastStatus ?? 500),
+          lastStatus: completion.lastStatus ?? null,
+          lastError: completion.lastError ?? null
         };
       } catch (error) {
         console.warn(`[chat:${requestId}] AI gateway failed`, error);
@@ -2659,7 +3815,10 @@ Deno.serve(async (req) => {
           ok: false,
           content: '',
           model: null,
-          status: 500
+          provider: null,
+          status: 500,
+          lastStatus: null,
+          lastError: error instanceof Error ? error.message : String(error)
         };
       }
     })();
@@ -2669,6 +3828,10 @@ Deno.serve(async (req) => {
       usedModel = llmAttempt.model;
       console.log(`[chat:${requestId}] model success`, { model: usedModel });
     } else {
+      lastAiStatus = llmAttempt.lastStatus ?? llmAttempt.status ?? null;
+      lastAiError = llmAttempt.lastError ?? null;
+      lastAiProvider = llmAttempt.provider ?? null;
+      lastAiModel = llmAttempt.model ?? null;
       const fallbackReason = lastAiStatus ? `ai_http_${lastAiStatus}` : 'ai_all_providers_failed';
       const fallbackText =
         llmAttempt.status === 429
@@ -2679,13 +3842,19 @@ Deno.serve(async (req) => {
       console.warn(`[chat:${requestId}] ai_fallback`, {
         reason: fallbackReason,
         status: llmAttempt.status,
-        error: null
+        provider: lastAiProvider,
+        model: lastAiModel,
+        error: lastAiError
       });
       return new Response(JSON.stringify({
         ...heuristic(messages, context),
         text: fallbackText,
         debug_reason: fallbackReason,
-        debug_error: null,
+        debug_error:
+          lastAiError && typeof lastAiError === 'object'
+            ? JSON.stringify(lastAiError)
+            : lastAiError,
+        debug_model: lastAiModel ? `${lastAiProvider || 'unknown'}:${lastAiModel}` : null,
         debug_meta: buildDebugMeta(
           requestId,
           context,
@@ -2701,7 +3870,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    const safeText = redactUuids(text);
+    const safeText = stabilizeAssistantText(redactUuids(text));
     return new Response(
       JSON.stringify({
         text: safeText,

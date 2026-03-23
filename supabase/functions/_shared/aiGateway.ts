@@ -19,6 +19,8 @@ interface AICompletionResponse {
   fallbackOccurred: boolean;
   requestId: string;
   discoveryMode: 'live' | 'static';
+  lastStatus?: number | null;
+  lastError?: string | null;
 }
 
 interface ProviderModelDiscoveryCache {
@@ -30,6 +32,7 @@ const CACHE_TTL_MS = 10 * 60 * 1000;
 const modelCache = new Map<string, ProviderModelDiscoveryCache>();
 
 const DEFAULT_BASE_URLS: Record<string, string> = {
+  google: 'https://generativelanguage.googleapis.com/v1beta',
   openrouter: 'https://openrouter.ai/api/v1',
   together: 'https://api.together.xyz/v1',
   groq: 'https://api.groq.com/openai/v1',
@@ -40,6 +43,7 @@ const DEFAULT_BASE_URLS: Record<string, string> = {
 
 const DEFAULT_PROFILE_MODELS: Record<string, Record<string, string>> = {
   'delta-general': {
+    google: 'gemini-2.5-flash-lite',
     openrouter: 'anthropic/claude-3.5-sonnet',
     together: 'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo',
     groq: 'llama-3.3-70b-versatile',
@@ -48,6 +52,7 @@ const DEFAULT_PROFILE_MODELS: Record<string, Record<string, string>> = {
     openai: 'gpt-4o'
   },
   'delta-cheap': {
+    google: 'gemini-2.5-flash-lite',
     openrouter: 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo',
     together: 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo',
     groq: 'llama-3.1-8b-instant',
@@ -56,6 +61,7 @@ const DEFAULT_PROFILE_MODELS: Record<string, Record<string, string>> = {
     openai: 'gpt-4o-mini'
   },
   'delta-reasoning': {
+    google: 'gemini-2.5-flash-lite',
     openrouter: 'openai/gpt-4o',
     together: 'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo',
     groq: 'openai/gpt-oss-120b',
@@ -64,6 +70,7 @@ const DEFAULT_PROFILE_MODELS: Record<string, Record<string, string>> = {
     openai: 'gpt-4o'
   },
   'delta-fast': {
+    google: 'gemini-2.5-flash-lite',
     openrouter: 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo',
     together: 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo',
     groq: 'llama-3.1-8b-instant',
@@ -72,6 +79,7 @@ const DEFAULT_PROFILE_MODELS: Record<string, Record<string, string>> = {
     openai: 'gpt-4o-mini'
   },
   'delta-classifier': {
+    google: 'gemini-2.5-flash-lite',
     openrouter: 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo',
     together: 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo',
     groq: 'llama-3.1-8b-instant',
@@ -96,8 +104,11 @@ const normalizeProviderName = (provider: string | null | undefined): string | nu
   const normalized = provider.trim().toLowerCase();
   if (!normalized) return null;
   if (normalized === 'openai-compatible') return 'openai_compatible';
+  if (normalized === 'gemini') return 'google';
   return normalized;
 };
+
+const isGoogleProvider = (providerName: string): boolean => providerName === 'google';
 
 const getProfileOverride = (profileId: string): string | null => {
   const envMap: Record<string, string> = {
@@ -130,6 +141,9 @@ const resolveCandidateModelsForProfile = (
   const preferred = PROVIDER_MODEL_FALLBACKS[providerName]?.[profileId] || [];
   const candidates = [configured, ...preferred].filter(Boolean) as string[];
   const uniqueCandidates = [...new Set(candidates)];
+  if (configured && configured.trim()) {
+    return uniqueCandidates;
+  }
   if (discoveredIds.length === 0) {
     return uniqueCandidates;
   }
@@ -223,6 +237,34 @@ const fetchProviderModelIds = async (
   }
 
   try {
+    if (isGoogleProvider(provider.name)) {
+      const response = await fetch(`${provider.baseUrl}/models?key=${encodeURIComponent(provider.apiKey)}`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
+      if (!response.ok) {
+        console.warn(`[ai-gateway:${requestId}] model discovery failed`, {
+          provider: provider.name,
+          status: response.status
+        });
+        return { ids: [], discoveryMode: 'static' };
+      }
+
+      const parsed = await safeJson(response);
+      const data = Array.isArray(parsed?.models) ? parsed.models : [];
+      const ids = data
+        .map((entry: any) => String(entry?.name || ''))
+        .map((name) => name.replace(/^models\//, ''))
+        .filter(Boolean);
+      modelCache.set(cacheKey, {
+        expiresAt: Date.now() + CACHE_TTL_MS,
+        ids
+      });
+      return { ids, discoveryMode: 'live' };
+    }
+
     const response = await fetch(`${provider.baseUrl}/models`, {
       method: 'GET',
       headers: {
@@ -263,6 +305,35 @@ const buildRequestBody = (modelId: string, request: AICompletionRequest) => ({
   ...(request.responseFormat ? { response_format: { type: request.responseFormat } } : {})
 });
 
+const buildGoogleRequestBody = (request: AICompletionRequest) => {
+  const systemText = request.messages
+    .filter((message) => message.role === 'system')
+    .map((message) => message.content.trim())
+    .filter(Boolean)
+    .join('\n\n');
+
+  const conversation = request.messages
+    .filter((message) => message.role !== 'system')
+    .map((message) => ({
+      role: message.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: message.content }]
+    }));
+
+  return {
+    ...(systemText ? { systemInstruction: { parts: [{ text: systemText }] } } : {}),
+    contents: conversation.length > 0 ? conversation : [{ role: 'user', parts: [{ text: '' }] }],
+    generationConfig: {
+      temperature: request.temperature ?? 0,
+      ...(request.maxTokens ? { maxOutputTokens: request.maxTokens } : {}),
+      ...(request.responseFormat
+        ? {
+            responseMimeType: request.responseFormat === 'json_object' ? 'application/json' : 'text/plain'
+          }
+        : {})
+    }
+  };
+};
+
 const makeCompletionRequest = async (
   provider: AIProviderConfig,
   modelId: string,
@@ -270,6 +341,34 @@ const makeCompletionRequest = async (
   requestId: string
 ): Promise<{ ok: boolean; content: string; status: number | null; error: unknown }> => {
   try {
+    if (isGoogleProvider(provider.name)) {
+      const response = await fetch(
+        `${provider.baseUrl}/models/${encodeURIComponent(modelId)}:generateContent?key=${encodeURIComponent(provider.apiKey)}`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(buildGoogleRequestBody(request))
+        }
+      );
+
+      if (!response.ok) {
+        const error = await safeJson(response);
+        return { ok: false, content: '', status: response.status, error };
+      }
+
+      const parsed = await safeJson(response);
+      const parts = Array.isArray(parsed?.candidates?.[0]?.content?.parts)
+        ? parsed.candidates[0].content.parts
+        : [];
+      const content = parts
+        .map((part: any) => (typeof part?.text === 'string' ? part.text : ''))
+        .join('')
+        .trim();
+      return { ok: Boolean(content), content, status: response.status, error: content ? null : 'empty_completion' };
+    }
+
     const response = await fetch(`${provider.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -318,11 +417,15 @@ export const aiGateway = {
         providerUsed: '',
         fallbackOccurred: false,
         requestId,
-        discoveryMode: 'static'
+        discoveryMode: 'static',
+        lastStatus: null,
+        lastError: 'no_providers_configured'
       };
     }
 
     let fallbackOccurred = false;
+    let lastStatus: number | null = null;
+    let lastError: string | null = null;
 
     for (const provider of providers) {
       const discovery = await fetchProviderModelIds(provider, requestId);
@@ -356,6 +459,8 @@ export const aiGateway = {
           status: result.status,
           error: extractErrorMessage(result.error) || result.error
         });
+        lastStatus = result.status;
+        lastError = extractErrorMessage(result.error) || (result.error ? String(result.error) : 'unknown_provider_error');
 
         if (!isModelUnavailableError(result.status, result.error)) {
           fallbackOccurred = true;
@@ -372,7 +477,9 @@ export const aiGateway = {
       providerUsed: '',
       fallbackOccurred: true,
       requestId,
-      discoveryMode: 'static'
+      discoveryMode: 'static',
+      lastStatus,
+      lastError
     };
   }
 };

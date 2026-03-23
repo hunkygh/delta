@@ -1,3 +1,5 @@
+import type { ShellNodeStructureConfig } from '../components/shell/nodeRuntime';
+
 export interface ChatContext {
   time_block_id?: string;
   time_block_occurrence?: {
@@ -10,6 +12,14 @@ export interface ChatContext {
   list_id?: string;
   item_id?: string;
   action_id?: string;
+  node_id?: string;
+  node_slug?: string;
+  node_name?: string;
+  node_mode?: 'setup' | 'operate';
+  node_structure_blueprint?: string;
+  node_structure_config?: ShellNodeStructureConfig;
+  node_setup_logic?: string;
+  node_operate_logic?: string;
 }
 
 export type ChatRole = 'user' | 'assistant' | 'system_marker';
@@ -62,6 +72,8 @@ export interface CreateTimeBlockProposal {
   scheduled_end_utc?: string | null;
   lane_id?: string | null;
   notes?: string | null;
+  follow_up_request?: string | null;
+  follow_up_context?: ChatContext | null;
 }
 
 export interface ResolveTimeConflictProposal {
@@ -78,6 +90,47 @@ export interface ResolveTimeConflictProposal {
   notes?: string | null;
 }
 
+export interface NodeSetupStatusDraft {
+  name: string;
+  key?: string | null;
+  color?: string | null;
+  group_key?: string | null;
+  is_default?: boolean;
+}
+
+export interface NodeSetupFieldOptionDraft {
+  label: string;
+  color_fill?: string | null;
+  color_border?: string | null;
+  color_text?: string | null;
+}
+
+export interface NodeSetupFieldDraft {
+  name: string;
+  type: 'status' | 'select' | 'text' | 'number' | 'date' | 'boolean' | 'contact';
+  is_primary?: boolean;
+  is_pinned?: boolean;
+  options?: NodeSetupFieldOptionDraft[];
+}
+
+export interface NodeSetupListDraft {
+  name: string;
+  item_label?: string | null;
+  action_label?: string | null;
+  statuses?: NodeSetupStatusDraft[];
+  subtask_statuses?: NodeSetupStatusDraft[];
+  fields?: NodeSetupFieldDraft[];
+}
+
+export interface NodeSetupApplyProposal {
+  id: string;
+  type: 'node_setup_apply';
+  node_id: string;
+  focal_id: string;
+  summary: string;
+  lists: NodeSetupListDraft[];
+}
+
 export type ChatProposal =
   | CreateFollowUpProposal
   | CreateFocalProposal
@@ -85,7 +138,8 @@ export type ChatProposal =
   | CreateItemProposal
   | CreateActionProposal
   | CreateTimeBlockProposal
-  | ResolveTimeConflictProposal;
+  | ResolveTimeConflictProposal
+  | NodeSetupApplyProposal;
 
 export interface ChatDebugMeta {
   source?: 'db' | 'llm' | 'heuristic';
@@ -93,6 +147,7 @@ export interface ChatDebugMeta {
   route?: string;
   scope?: {
     mode?: 'global' | 'scoped';
+    node?: string;
     focal?: string;
     list?: string;
     item?: string;
@@ -123,6 +178,7 @@ export interface ChatMessage {
   role: ChatRole;
   content: string;
   created_at: number;
+  queued?: boolean | null;
   mode?: ChatMode;
   context?: ChatContext | null;
   marker_label?: string | null;
@@ -140,4 +196,7 @@ export interface ChatReply {
   source: 'ai' | 'heuristic';
   proposals?: ChatProposal[];
   debug_meta?: ChatDebugMeta;
+  debug_reason?: string | null;
+  debug_error?: string | null;
+  debug_model?: string | null;
 }

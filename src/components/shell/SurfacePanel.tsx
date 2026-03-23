@@ -6,10 +6,13 @@ interface SurfacePanelProps {
   kickerContent?: ReactNode;
   title: string;
   subtitle?: string;
+  hideHeaderText?: boolean;
+  headerActions?: ReactNode;
   onClose: () => void;
   children: ReactNode;
   tone?: 'light' | 'dark';
   density?: 'default' | 'compact';
+  className?: string;
 }
 
 export default function SurfacePanel({
@@ -17,14 +20,20 @@ export default function SurfacePanel({
   kickerContent,
   title,
   subtitle,
+  hideHeaderText = false,
+  headerActions,
   onClose,
   children,
   tone = 'light',
-  density = 'default'
+  density = 'default',
+  className = ''
 }: SurfacePanelProps): JSX.Element {
   const isDark = tone === 'dark';
   return (
-    <section className={`shell-surface-panel ${isDark ? 'shell-surface-panel-dark' : ''}`.trim()} aria-label={title || kicker}>
+    <section
+      className={`shell-surface-panel ${isDark ? 'shell-surface-panel-dark' : ''} ${className}`.trim()}
+      aria-label={title || kicker}
+    >
       <div
         className={`shell-surface-panel-head ${isDark ? 'shell-surface-panel-head-dark' : ''} ${
           density === 'compact' ? 'shell-surface-panel-head-compact' : ''
@@ -32,17 +41,20 @@ export default function SurfacePanel({
       >
         <div>
           {kickerContent ?? <span className="shell-kicker">{kicker}</span>}
-          {title ? <h2>{title}</h2> : null}
-          {subtitle ? <p>{subtitle}</p> : null}
+          {!hideHeaderText && title ? <h2>{title}</h2> : null}
+          {!hideHeaderText && subtitle ? <p>{subtitle}</p> : null}
         </div>
-        <button
-          type="button"
-          className={`shell-surface-panel-close ${isDark ? 'shell-surface-panel-close-dark' : ''}`.trim()}
-          onClick={onClose}
-          aria-label="Close panel"
-        >
-          <X size={16} weight="bold" />
-        </button>
+        <div className="shell-surface-panel-head-actions">
+          {headerActions}
+          <button
+            type="button"
+            className={`shell-surface-panel-close ${isDark ? 'shell-surface-panel-close-dark' : ''}`.trim()}
+            onClick={onClose}
+            aria-label="Close panel"
+          >
+            <X size={16} weight="bold" />
+          </button>
+        </div>
       </div>
       <div className={`shell-surface-panel-body ${isDark ? 'shell-surface-panel-body-dark' : ''}`.trim()}>{children}</div>
     </section>

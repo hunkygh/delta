@@ -5,6 +5,7 @@ import threadService from './threadService.js';
 
 const FOCALS_TIMEOUT_MS = 5000;
 const FULL_FOCAL_TIMEOUT_MS = 7000;
+const CONTEXT_TAG_PREFIX = 'Context';
 
 const isMissingColumnError = (error, columnName, tableName) => {
   const message = (error?.message || '').toLowerCase();
@@ -80,6 +81,118 @@ const isMissingCommentsTableError = (error) =>
       (error.message.toLowerCase().includes('does not exist') ||
         error.message.toLowerCase().includes('schema cache'))
   );
+
+const hasMeaningfulValue = (value) => {
+  if (value === null || value === undefined) return false;
+  if (typeof value === 'string') return value.trim().length > 0;
+  return true;
+};
+
+const buildItemContextSummary = ({ item, reason, updates, commentBody, actionTitle }) => {
+  const nextStatus =
+    (typeof updates?.status === 'string' && updates.status.trim()) ||
+    (typeof updates?.status_id === 'string' ? 'updated status' : null);
+  if (reason === 'create_item') {
+    return {
+      signalLabel: 'Needs initial next step',
+      signalScore: 0.76,
+      commentBody: `${CONTEXT_TAG_PREFIX}: New item created. Establish the first concrete next step and best execution lane.`
+    };
+  }
+  if (reason === 'comment' && commentBody) {
+    return {
+      signalLabel: 'New note to process',
+      signalScore: 0.73,
+      commentBody: `${CONTEXT_TAG_PREFIX}: New note added. Re-evaluate next step from the latest context.`
+    };
+  }
+  if (reason === 'update_item' && nextStatus) {
+    return {
+      signalLabel: 'Status changed',
+      signalScore: 0.81,
+      commentBody: `${CONTEXT_TAG_PREFIX}: Status changed to ${nextStatus}. Refresh the current execution approach for this item.`
+    };
+  }
+  if (reason === 'create_action' && actionTitle) {
+    return {
+      signalLabel: 'Action added',
+      signalScore: 0.71,
+      commentBody: `${CONTEXT_TAG_PREFIX}: New task added (${actionTitle}). Reassess sequencing and block placement.`
+    };
+  }
+  if (reason === 'update_action' && actionTitle) {
+    return {
+      signalLabel: 'Task updated',
+      signalScore: 0.68,
+      commentBody: `${CONTEXT_TAG_PREFIX}: Task updated (${actionTitle}). Refresh the item's current execution context.`
+    };
+  }
+  const changedKeys = Object.keys(updates || {}).filter((key) => hasMeaningfulValue(updates[key]));
+  if (changedKeys.length > 0) {
+    return {
+      signalLabel: 'Item context refreshed',
+      signalScore: 0.62,
+      commentBody: `${CONTEXT_TAG_PREFIX}: Item details changed (${changedKeys.join(', ')}). Refresh next-step context.`
+    };
+  }
+  return {
+    signalLabel: item?.signal_label || 'Needs review',
+    signalScore: typeof item?.signal_score === 'number' ? item.signal_score : 0.55,
+    commentBody: `${CONTEXT_TAG_PREFIX}: Item context refreshed after recent activity.`
+  };
+};
+
+const stageItemExecutionContext = async ({
+  itemId,
+  userId,
+  reason,
+  itemSnapshot = null,
+  updates = null,
+  commentBody = null,
+  actionTitle = null
+}) => {
+  if (!itemId || !userId) return;
+
+  let item = itemSnapshot;
+  if (!item) {
+    const { data, error } = await supabase
+      .from('items')
+      .select('*')
+      .eq('id', itemId)
+      .single();
+    if (error || !data) return;
+    item = data;
+  }
+
+  const nextContext = buildItemContextSummary({ item, reason, updates, commentBody, actionTitle });
+
+  try {
+    await supabase
+      .from('items')
+      .update({
+        signal_label: nextContext.signalLabel,
+        signal_score: nextContext.signalScore
+      })
+      .eq('id', itemId);
+  } catch (error) {
+    console.warn('Failed to update item signal context:', error);
+  }
+
+  try {
+    await supabase.from('item_comments').insert([
+      {
+        item_id: itemId,
+        user_id: userId,
+        body: `${nextContext.commentBody} [confidence ${nextContext.signalScore.toFixed(2)}]`
+      }
+    ]);
+  } catch (error) {
+    if (isMissingItemCommentsTableError(error)) {
+      return;
+    }
+    console.warn('Failed to append item context tag:', error);
+  }
+};
 
 const isMissingLanesModeColumnError = (error) => isMissingColumnError(error, 'mode', 'lanes');
 
@@ -922,6 +1035,13 @@ export const focalBoardService = {
         throw error;
       }
 
+      void stageItemExecutionContext({
+        itemId: data?.id,
+        userId,
+        reason: 'create_item',
+        itemSnapshot: data
+      });
+
       return data;
     } catch (error) {
       throw error;
@@ -949,6 +1069,13 @@ export const focalBoardService = {
     }
     
     if (error) throw error;
+    void stageItemExecutionContext({
+      itemId: data?.id || id,
+      userId: data?.user_id || updates?.user_id || null,
+      reason: 'update_item',
+      itemSnapshot: data,
+      updates
+    });
     return data;
   },
 
@@ -970,6 +1097,12 @@ export const focalBoardService = {
       .order('order_num', { ascending: true });
     
     if (error) throw error;
+    void stageItemExecutionContext({
+      itemId,
+      userId,
+      reason: 'create_action',
+      actionTitle: title
+    });
     return data;
   },
 
@@ -1017,6 +1150,12 @@ export const focalBoardService = {
       return fallback.data;
     }
     if (error) throw error;
+    void stageItemExecutionContext({
+      itemId: data?.item_id || null,
+      userId: data?.user_id || updates?.user_id || null,
+      reason: 'update_action',
+      actionTitle: data?.title || updates?.title || null
+    });
     return data;
   },
 
@@ -1121,6 +1260,12 @@ export const focalBoardService = {
       }
       throw error;
     }
+    void stageItemExecutionContext({
+      itemId,
+      userId,
+      reason: 'comment',
+      commentBody: body
+    });
     return data;
   },
 
