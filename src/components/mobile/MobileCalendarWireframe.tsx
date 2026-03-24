@@ -313,7 +313,7 @@ const mapThreadComment = (entry: any) => ({
   created_at: entry.created_at,
   author_type: entry.author_type || entry.source || 'user',
   user_id: entry.user_id || null,
-  proposals: Array.isArray(entry.proposals) ? entry.proposals : []
+  proposals: (Array.isArray(entry.proposals) ? entry.proposals : []) as ChatProposal[]
 });
 
 type MobileThreadEntry = ReturnType<typeof mapThreadComment>;
@@ -2772,7 +2772,11 @@ export default function MobileCalendarWireframe(): JSX.Element {
           ...buildMobileChatContext(),
           item_id: resolvedDrawerItem.id,
           list_id: resolvedDrawerItem.listId || mobileScope.listId || undefined,
-          focal_id: resolvedDrawerItem.focalId || mobileScope.focalId || undefined
+          focal_id:
+            ('focalId' in resolvedDrawerItem ? resolvedDrawerItem.focalId : undefined) ||
+            (resolvedDrawerItem.listId ? listMetaById.get(resolvedDrawerItem.listId)?.focalId ?? undefined : undefined) ||
+            mobileScope.focalId ||
+            undefined
         },
         mode: 'ai'
       });
@@ -7095,8 +7099,8 @@ export default function MobileCalendarWireframe(): JSX.Element {
                                 </div>
                               )}
                               {(comment.proposals || [])
-                                .filter((proposal) => !dismissedMobileProposalIds[proposal.id])
-                                .map((proposal) => (
+                                .filter((proposal: ChatProposal) => !dismissedMobileProposalIds[proposal.id])
+                                .map((proposal: ChatProposal) => (
                                   <div key={proposal.id} className="mobile-ai-proposal-card">
                                     <p>{getChatProposalTitle(proposal)}</p>
                                     {(proposal.type === 'create_action' ||

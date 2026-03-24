@@ -21,6 +21,9 @@ export interface ShellItemSummary {
   focal_id?: string | null;
   focalId: string | null;
   title: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+  signal_score?: number | null;
 }
 
 export interface ShellTaskSummary {
