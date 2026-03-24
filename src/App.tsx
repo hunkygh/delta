@@ -12,14 +12,24 @@ import Login from './components/Auth/Login';
 import Stockyard from './stockyard/Stockyard';
 import { AuthProvider } from './context/AuthContext';
 
+function ResponsiveHomeRedirect(): JSX.Element {
+  const isMobile = typeof window !== 'undefined' ? window.matchMedia('(max-width: 900px)').matches : false;
+  return <Navigate to={isMobile ? '/calendar' : '/shell'} replace />;
+}
+
+function ResponsiveShellRoute(): JSX.Element {
+  const isMobile = typeof window !== 'undefined' ? window.matchMedia('(max-width: 900px)').matches : false;
+  return isMobile ? <Navigate to="/calendar" replace /> : <ShellRefactorView />;
+}
+
 export default function App(): JSX.Element {
   return (
     <AuthProvider>
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/stockyard" element={<Stockyard />} />
-        <Route path="/shell" element={<ShellRefactorView />} />
-        <Route path="/" element={<Navigate to="/shell" replace />} />
+        <Route path="/shell" element={<ResponsiveShellRoute />} />
+        <Route path="/" element={<ResponsiveHomeRedirect />} />
 
         <Route element={<AppShell />}>
           <Route path="/calendar" element={<CalendarView />} />
@@ -41,7 +51,7 @@ export default function App(): JSX.Element {
           <Route path="/docs" element={<DocViewer />} />
           <Route path="/settings" element={<Settings />} />
 
-          <Route path="*" element={<Navigate to="/shell" replace />} />
+          <Route path="*" element={<ResponsiveHomeRedirect />} />
         </Route>
       </Routes>
     </AuthProvider>

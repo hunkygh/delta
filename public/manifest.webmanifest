@@ -5,7 +5,7 @@
   "theme_color": "#ffffff",
   "background_color": "#ffffff",
   "display": "standalone",
-  "start_url": "/shell",
+  "start_url": "/",
   "icons": [
     {
       "src": "/icon-192.png",
