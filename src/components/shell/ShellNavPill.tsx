@@ -699,13 +699,11 @@ export default function ShellNavPill({
               setAccountPanelOpen(false);
               navigate('/calendar');
             }}
+            aria-label="Old view"
+            title="Old view"
           >
             <span className="shell-nav-account-action-glyph" aria-hidden="true">
               <CalendarDays size={15} />
-            </span>
-            <span className="shell-nav-account-action-body">
-              <span className="shell-nav-account-action-title">Old view</span>
-              <span className="shell-nav-account-action-copy">Switch to the legacy calendar layout.</span>
             </span>
           </button>
           <button
@@ -714,26 +712,22 @@ export default function ShellNavPill({
             onClick={() => {
               setAccountPanelOpen(false);
             }}
+            aria-label="Share Delta"
+            title="Share Delta"
           >
             <span className="shell-nav-account-action-glyph" aria-hidden="true">
               <Share2 size={15} />
-            </span>
-            <span className="shell-nav-account-action-body">
-              <span className="shell-nav-account-action-title">Share Delta</span>
-              <span className="shell-nav-account-action-copy">Share link coming soon.</span>
             </span>
           </button>
           <button
             type="button"
             className="shell-nav-account-action logout"
             onClick={() => void handleLogout()}
+            aria-label="Log out"
+            title="Log out"
           >
             <span className="shell-nav-account-action-glyph" aria-hidden="true">
               <LogOut size={15} />
-            </span>
-            <span className="shell-nav-account-action-body">
-              <span className="shell-nav-account-action-title">Log out</span>
-              <span className="shell-nav-account-action-copy">Sign out of your Delta workspace.</span>
             </span>
           </button>
         </div>

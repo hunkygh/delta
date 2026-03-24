@@ -540,6 +540,13 @@
     -webkit-overflow-scrolling: touch;
   }
 
+  .mobile-wireframe-scroll.timeline-draft-lock {
+    overflow-y: hidden;
+    touch-action: none;
+    overscroll-behavior: none;
+    -webkit-overflow-scrolling: auto;
+  }
+
   .mobile-focals-surface {
     flex: 1 1 auto;
     min-height: 0;
@@ -1561,7 +1568,7 @@
 
   .mobile-item-subrow {
     display: grid;
-    grid-template-columns: 24px minmax(0, 1fr);
+    grid-template-columns: 24px minmax(0, 1fr) auto;
     align-items: flex-start;
     gap: 6px;
     min-width: 0;
@@ -1576,6 +1583,18 @@
     min-width: 0;
     overflow: hidden;
     color: #687281;
+  }
+
+  .mobile-item-subdelta {
+    border: none;
+    background: transparent;
+    color: rgba(214, 220, 232, 0.7);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 1px 0 0;
+    align-self: center;
   }
 
   .mobile-item-drawer-subtasks {
@@ -4570,7 +4589,7 @@
 
   .mobile-wireframe-root .mobile-time-block-items .mobile-item-subrow,
   .mobile-wireframe-root .mobile-drawer-linked-list.actionable .mobile-item-subrow {
-    grid-template-columns: 22px minmax(0, 1fr);
+    grid-template-columns: 22px minmax(0, 1fr) auto;
     gap: 6px;
   }
 
@@ -4595,7 +4614,7 @@
   }
 
   .mobile-item-drawer-subtasks .mobile-item-subrow.drawer-detail {
-    grid-template-columns: 22px minmax(0, 1fr);
+    grid-template-columns: 22px minmax(0, 1fr) auto;
     gap: 8px;
     align-items: center;
   }

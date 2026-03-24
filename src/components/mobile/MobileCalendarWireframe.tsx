@@ -395,6 +395,8 @@ export default function MobileCalendarWireframe(): JSX.Element {
   const [blockDrawerActivityMessages, setBlockDrawerActivityMessages] = useState<ChatMessage[]>([]);
   const [blockDrawerActivityDraft, setBlockDrawerActivityDraft] = useState('');
   const [blockDrawerActivitySending, setBlockDrawerActivitySending] = useState(false);
+  const [floatingSheetDragY, setFloatingSheetDragY] = useState(0);
+  const [isFloatingSheetDragging, setIsFloatingSheetDragging] = useState(false);
   const [statusSheet, setStatusSheet] = useState<StatusSheetState>({
     open: false,
     step: 'select',
@@ -515,6 +517,9 @@ export default function MobileCalendarWireframe(): JSX.Element {
     startMin: DAY_START_MIN
   });
   const timelineScrollRef = useRef<HTMLDivElement | null>(null);
+  const lockedTimelineScrollTopRef = useRef<number | null>(null);
+  const floatingSheetGestureRef = useRef({ startY: 0, lastY: 0, lastT: 0, velocityY: 0 });
+  const floatingSheetPointerIdRef = useRef<number | null>(null);
   const previousMobileCalendarZoomRef = useRef<number>(1.2);
   const chatMessagesRef = useRef<HTMLDivElement | null>(null);
   const blockDrawerActivityRef = useRef<HTMLDivElement | null>(null);
@@ -1626,6 +1631,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
     }
     timelineDraftPressTimerRef.current = window.setTimeout(() => {
       timelineDraftGestureRef.current.active = true;
+      lockedTimelineScrollTopRef.current = timelineScrollRef.current?.scrollTop ?? null;
       setTimelineDraft(getTimelineDraftLayout(startMin, startMin + MIN_TIME_BLOCK_MINUTES));
     }, 320);
   };
@@ -1648,6 +1654,9 @@ export default function MobileCalendarWireframe(): JSX.Element {
     }
 
     event.preventDefault();
+    if (timelineScrollRef.current && lockedTimelineScrollTopRef.current != null) {
+      timelineScrollRef.current.scrollTop = lockedTimelineScrollTopRef.current;
+    }
     const currentMin = getMinuteFromTimelineClientY(touch.clientY);
     setTimelineDraft(getTimelineDraftLayout(gesture.startMin, currentMin));
   };
@@ -1676,6 +1685,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
     } else {
       setTimelineDraft(null);
     }
+    lockedTimelineScrollTopRef.current = null;
   };
 
   const onAddSheetTouchStart = (event: TouchEvent): void => {
@@ -1773,6 +1783,98 @@ export default function MobileCalendarWireframe(): JSX.Element {
     }
     addSheetPointerIdRef.current = null;
     onAddSheetTouchEnd();
+  };
+
+  const onFloatingSheetTouchStart = (event: TouchEvent): void => {
+    const touch = event.touches[0];
+    setIsFloatingSheetDragging(true);
+    floatingSheetGestureRef.current = {
+      startY: touch.clientY,
+      lastY: touch.clientY,
+      lastT: performance.now(),
+      velocityY: 0
+    };
+  };
+
+  const onFloatingSheetTouchMove = (event: TouchEvent): void => {
+    if (!isFloatingSheetDragging) return;
+    const touch = event.touches[0];
+    const dy = touch.clientY - floatingSheetGestureRef.current.startY;
+    const now = performance.now();
+    const dt = Math.max(1, now - floatingSheetGestureRef.current.lastT);
+    const vy = (touch.clientY - floatingSheetGestureRef.current.lastY) / dt;
+    floatingSheetGestureRef.current = {
+      ...floatingSheetGestureRef.current,
+      lastY: touch.clientY,
+      lastT: now,
+      velocityY: vy
+    };
+    if (dy <= 0) {
+      setFloatingSheetDragY(dy * 0.2);
+      return;
+    }
+    event.preventDefault();
+    setFloatingSheetDragY(Math.min(dy, window.innerHeight * 0.85));
+  };
+
+  const finishFloatingSheetDrag = (close: () => void): void => {
+    if (!isFloatingSheetDragging) return;
+    const closeByDistance = floatingSheetDragY > window.innerHeight * 0.16;
+    const closeByVelocity = floatingSheetGestureRef.current.velocityY > 0.6;
+    setIsFloatingSheetDragging(false);
+    setFloatingSheetDragY(0);
+    if (closeByDistance || closeByVelocity) {
+      close();
+    }
+  };
+
+  const onFloatingSheetPointerDown = (event: PointerEvent<HTMLDivElement>): void => {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    floatingSheetPointerIdRef.current = event.pointerId;
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // no-op
+    }
+    setIsFloatingSheetDragging(true);
+    floatingSheetGestureRef.current = {
+      startY: event.clientY,
+      lastY: event.clientY,
+      lastT: performance.now(),
+      velocityY: 0
+    };
+  };
+
+  const onFloatingSheetPointerMove = (event: PointerEvent<HTMLDivElement>): void => {
+    if (!isFloatingSheetDragging) return;
+    if (floatingSheetPointerIdRef.current !== event.pointerId) return;
+    const dy = event.clientY - floatingSheetGestureRef.current.startY;
+    const now = performance.now();
+    const dt = Math.max(1, now - floatingSheetGestureRef.current.lastT);
+    const vy = (event.clientY - floatingSheetGestureRef.current.lastY) / dt;
+    floatingSheetGestureRef.current = {
+      ...floatingSheetGestureRef.current,
+      lastY: event.clientY,
+      lastT: now,
+      velocityY: vy
+    };
+    if (dy <= 0) {
+      setFloatingSheetDragY(dy * 0.2);
+      return;
+    }
+    event.preventDefault();
+    setFloatingSheetDragY(Math.min(dy, window.innerHeight * 0.85));
+  };
+
+  const onFloatingSheetPointerEnd = (event: PointerEvent<HTMLDivElement>, close: () => void): void => {
+    if (floatingSheetPointerIdRef.current !== event.pointerId) return;
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // no-op
+    }
+    floatingSheetPointerIdRef.current = null;
+    finishFloatingSheetDrag(close);
   };
 
   const moveDay = (delta: number): void => {
@@ -3367,6 +3469,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
     setTaskDrawerExpandedFocals({});
     setTaskDrawerExpandedLists({});
     setDrawer({ open: true, mode: 'addTask', blockId });
+    void ensureMobileListRegistry(mobileScope.focalId ?? null);
     void ensureTaskDrawerIndexData();
     void (async () => {
       const resolvedListId = await resolveListForBlock(blockId);
@@ -3375,6 +3478,12 @@ export default function MobileCalendarWireframe(): JSX.Element {
       }
     })();
   };
+
+  useEffect(() => {
+    if (!drawer.open || drawer.mode !== 'addTask' || taskDrawerEntryType !== 'linked_item') return;
+    if (indexedLists.length > 0) return;
+    void ensureTaskDrawerIndexData();
+  }, [drawer.open, drawer.mode, taskDrawerEntryType, indexedLists.length]);
 
   const addBlockTaskIntoBlockState = (blockId: string, task: MobileBlockTask): void => {
     setBlocks((prev) =>
@@ -3848,6 +3957,21 @@ export default function MobileCalendarWireframe(): JSX.Element {
                         <span className="mobile-item-label">{linked.name}</span>
                       </div>
                     </button>
+                    <button
+                      type="button"
+                      className="mobile-item-subdelta"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        launchTaskDeltaFlow({
+                          itemId: linked.itemId,
+                          taskTitle: task.title,
+                          taskDescription: task.description || null,
+                          blockId
+                        });
+                      }}
+                    >
+                      Delta
+                    </button>
                   </div>
                 ))}
               </div>
@@ -3926,6 +4050,32 @@ export default function MobileCalendarWireframe(): JSX.Element {
     setItemDrawerCommentDraft('');
     setDrawerClosing(false);
     setDrawer({ open: true, mode: 'item', blockId: null, itemId });
+  };
+
+  const launchTaskDeltaFlow = (params: {
+    itemId: string;
+    taskTitle: string;
+    taskDescription?: string | null;
+    blockId?: string | null;
+  }): void => {
+    const seededDraft = [
+      `Task context: ${params.taskTitle}`,
+      params.taskDescription?.trim() ? `Details: ${params.taskDescription.trim()}` : '',
+      'Extract any tasks, item updates, status changes, field updates, or next actions that should be staged in Delta.'
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    setItemDrawerPanel('activity');
+    setItemDrawerCommentDraft(seededDraft);
+    setDrawerClosing(false);
+    drawerOpenedAtRef.current = Date.now();
+    setDrawer({
+      open: true,
+      mode: 'item',
+      blockId: params.blockId || null,
+      itemId: params.itemId
+    });
   };
 
   const toggleItemExpansion = (itemId: string): void => {
@@ -4912,7 +5062,19 @@ export default function MobileCalendarWireframe(): JSX.Element {
                             <span className="mobile-item-label">{action.title}</span>
                           </div>
                         </button>
-                        <div></div>
+                        <button
+                          type="button"
+                          className="mobile-item-subdelta"
+                          onClick={() =>
+                            launchTaskDeltaFlow({
+                              itemId: item.id,
+                              taskTitle: action.title,
+                              taskDescription: action.description || null
+                            })
+                          }
+                        >
+                          Delta
+                        </button>
                       </article>
                     ))}
                   </div>
@@ -4971,7 +5133,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
           {activeNav === 'calendar' ? renderCalendarHeader() : renderFocalsHeader()}
 
           {activeNav === 'calendar' && (
-            <div className="mobile-wireframe-scroll" ref={timelineScrollRef}>
+            <div className={`mobile-wireframe-scroll ${timelineDraft ? 'timeline-draft-lock' : ''}`.trim()} ref={timelineScrollRef}>
               <div
                 className="mobile-timeline"
                 style={{ height: `${timelineHeight + 140}px` }}
@@ -5294,6 +5456,21 @@ export default function MobileCalendarWireframe(): JSX.Element {
                                           }}
                                         >
                                           <div className="mobile-item-sub">↳ {subItem.name}</div>
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="mobile-item-subdelta"
+                                          onPointerDown={(event) => event.stopPropagation()}
+                                          onClick={(event) => {
+                                            event.stopPropagation();
+                                            launchTaskDeltaFlow({
+                                              itemId: item.id,
+                                              taskTitle: subItem.name,
+                                              taskDescription: subItem.description || null
+                                            });
+                                          }}
+                                        >
+                                          Delta
                                         </button>
                                       </div>
                                     ))}
@@ -5692,8 +5869,21 @@ export default function MobileCalendarWireframe(): JSX.Element {
 
       {activeNoteEditor && (
         <div className="mobile-note-editor-overlay" onClick={() => setActiveNoteEditor(null)}>
-          <div className="mobile-note-editor" onClick={(event) => event.stopPropagation()}>
-            <div className="mobile-note-editor-head">
+          <div
+            className={`mobile-note-editor ${isFloatingSheetDragging ? 'dragging' : ''}`.trim()}
+            style={isFloatingSheetDragging ? { transform: `translateY(${floatingSheetDragY}px)` } : undefined}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div
+              className="mobile-note-editor-head"
+              onTouchStart={onFloatingSheetTouchStart}
+              onTouchMove={onFloatingSheetTouchMove}
+              onTouchEnd={() => finishFloatingSheetDrag(() => setActiveNoteEditor(null))}
+              onPointerDown={onFloatingSheetPointerDown}
+              onPointerMove={onFloatingSheetPointerMove}
+              onPointerUp={(event) => onFloatingSheetPointerEnd(event, () => setActiveNoteEditor(null))}
+              onPointerCancel={(event) => onFloatingSheetPointerEnd(event, () => setActiveNoteEditor(null))}
+            >
               <button type="button" className="done" onClick={() => setActiveNoteEditor(null)}>
                 Done
               </button>
@@ -5762,7 +5952,16 @@ export default function MobileCalendarWireframe(): JSX.Element {
               onPointerUp={onAddSheetPointerEnd}
               onPointerCancel={onAddSheetPointerEnd}
             />
-            <div className="mobile-add-sheet-head">
+            <div
+              className="mobile-add-sheet-head"
+              onTouchStart={onAddSheetTouchStart}
+              onTouchMove={onAddSheetTouchMove}
+              onTouchEnd={onAddSheetTouchEnd}
+              onPointerDown={onAddSheetPointerDown}
+              onPointerMove={onAddSheetPointerMove}
+              onPointerUp={onAddSheetPointerEnd}
+              onPointerCancel={onAddSheetPointerEnd}
+            >
               {addSheet.type === 'item' || addSheet.type === 'event' || addSheet.type === 'subitem' || addSheet.type === 'voice' ? (
                 <input
                   ref={addSheetNameRef}
@@ -6244,20 +6443,26 @@ export default function MobileCalendarWireframe(): JSX.Element {
                   </button>
                     {taskDrawerListPickerOpen && (
                       <div className="mobile-task-drawer-target-menu">
-                        {indexedLists.map((list) => (
-                          <button
-                            key={list.id}
-                            type="button"
-                            className={taskDrawerListId === list.id ? 'active' : ''}
-                            onClick={() => {
-                              setTaskDrawerListId(list.id);
-                              setTaskDrawerListPickerOpen(false);
-                            }}
-                          >
-                            <strong>{list.name}</strong>
-                            <span>{list.focalName}</span>
-                          </button>
-                        ))}
+                        {taskDrawerLoading && indexedLists.length === 0 ? (
+                          <div className="mobile-task-drawer-empty compact">Loading lists…</div>
+                        ) : indexedLists.length === 0 ? (
+                          <div className="mobile-task-drawer-empty compact">No lists available</div>
+                        ) : (
+                          indexedLists.map((list) => (
+                            <button
+                              key={list.id}
+                              type="button"
+                              className={taskDrawerListId === list.id ? 'active' : ''}
+                              onClick={() => {
+                                setTaskDrawerListId(list.id);
+                                setTaskDrawerListPickerOpen(false);
+                              }}
+                            >
+                              <strong>{list.name}</strong>
+                              <span>{list.focalName}</span>
+                            </button>
+                          ))
+                        )}
                       </div>
                     )}
                   </div>
@@ -6814,6 +7019,20 @@ export default function MobileCalendarWireframe(): JSX.Element {
                                 >
                                   <div className="mobile-item-sub">↳ {subItem.name}</div>
                                 </button>
+                                <button
+                                  type="button"
+                                  className="mobile-item-subdelta"
+                                  onClick={() =>
+                                    launchTaskDeltaFlow({
+                                      itemId: resolvedDrawerItem.id,
+                                      taskTitle: subItem.name,
+                                      taskDescription: subItem.description || null,
+                                      blockId: drawer.blockId || null
+                                    })
+                                  }
+                                >
+                                  Delta
+                                </button>
                               </div>
                             );
                           })}
@@ -6961,10 +7180,32 @@ export default function MobileCalendarWireframe(): JSX.Element {
           </div>
           {editOverlayBlockId && (
             <div className="mobile-drawer-edit-overlay" onClick={() => setEditOverlayBlockId(null)}>
-              <div className="mobile-drawer edit overlay-sheet" onClick={(event) => event.stopPropagation()}>
-                <div className="mobile-drawer-grab" />
+              <div
+                className={`mobile-drawer edit overlay-sheet ${isFloatingSheetDragging ? 'dragging' : ''}`.trim()}
+                style={isFloatingSheetDragging ? { transform: `translateY(${floatingSheetDragY}px)` } : undefined}
+                onClick={(event) => event.stopPropagation()}
+              >
+                <div
+                  className="mobile-drawer-grab"
+                  onTouchStart={onFloatingSheetTouchStart}
+                  onTouchMove={onFloatingSheetTouchMove}
+                  onTouchEnd={() => finishFloatingSheetDrag(() => setEditOverlayBlockId(null))}
+                  onPointerDown={onFloatingSheetPointerDown}
+                  onPointerMove={onFloatingSheetPointerMove}
+                  onPointerUp={(event) => onFloatingSheetPointerEnd(event, () => setEditOverlayBlockId(null))}
+                  onPointerCancel={(event) => onFloatingSheetPointerEnd(event, () => setEditOverlayBlockId(null))}
+                />
                 <div className="mobile-drawer-head">
-                  <div className="mobile-drawer-head-drag">
+                  <div
+                    className="mobile-drawer-head-drag"
+                    onTouchStart={onFloatingSheetTouchStart}
+                    onTouchMove={onFloatingSheetTouchMove}
+                    onTouchEnd={() => finishFloatingSheetDrag(() => setEditOverlayBlockId(null))}
+                    onPointerDown={onFloatingSheetPointerDown}
+                    onPointerMove={onFloatingSheetPointerMove}
+                    onPointerUp={(event) => onFloatingSheetPointerEnd(event, () => setEditOverlayBlockId(null))}
+                    onPointerCancel={(event) => onFloatingSheetPointerEnd(event, () => setEditOverlayBlockId(null))}
+                  >
                     <Clock3 size={15} />
                     <strong>{activeDrawerBlock?.name || 'Time Block'}</strong>
                   </div>
@@ -7077,9 +7318,31 @@ export default function MobileCalendarWireframe(): JSX.Element {
       )}
       {statusSheet.open && (
         <div className="mobile-status-sheet-overlay" onClick={statusSheet.saving ? undefined : closeStatusSheet}>
-          <div className="mobile-status-sheet" onClick={(event) => event.stopPropagation()}>
-            <div className="mobile-status-sheet-grab" />
-            <div className="mobile-status-sheet-head">
+          <div
+            className={`mobile-status-sheet ${isFloatingSheetDragging ? 'dragging' : ''}`.trim()}
+            style={isFloatingSheetDragging ? { transform: `translateY(${floatingSheetDragY}px)` } : undefined}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div
+              className="mobile-status-sheet-grab"
+              onTouchStart={onFloatingSheetTouchStart}
+              onTouchMove={onFloatingSheetTouchMove}
+              onTouchEnd={() => finishFloatingSheetDrag(closeStatusSheet)}
+              onPointerDown={onFloatingSheetPointerDown}
+              onPointerMove={onFloatingSheetPointerMove}
+              onPointerUp={(event) => onFloatingSheetPointerEnd(event, closeStatusSheet)}
+              onPointerCancel={(event) => onFloatingSheetPointerEnd(event, closeStatusSheet)}
+            />
+            <div
+              className="mobile-status-sheet-head"
+              onTouchStart={onFloatingSheetTouchStart}
+              onTouchMove={onFloatingSheetTouchMove}
+              onTouchEnd={() => finishFloatingSheetDrag(closeStatusSheet)}
+              onPointerDown={onFloatingSheetPointerDown}
+              onPointerMove={onFloatingSheetPointerMove}
+              onPointerUp={(event) => onFloatingSheetPointerEnd(event, closeStatusSheet)}
+              onPointerCancel={(event) => onFloatingSheetPointerEnd(event, closeStatusSheet)}
+            >
               <strong>{statusSheet.step === 'select' ? 'Change status' : 'Add a note'}</strong>
               <button type="button" onClick={closeStatusSheet} disabled={statusSheet.saving}>
                 <X size={16} />
@@ -7158,8 +7421,31 @@ export default function MobileCalendarWireframe(): JSX.Element {
 
       {blockTaskCompletionSheet.open && (
         <div className="mobile-status-sheet-overlay" onClick={blockTaskCompletionSheet.saving ? undefined : closeBlockTaskCompletionSheet}>
-          <div className="mobile-status-sheet block-task-completion" onClick={(event) => event.stopPropagation()}>
-            <div className="mobile-status-sheet-head">
+          <div
+            className={`mobile-status-sheet block-task-completion ${isFloatingSheetDragging ? 'dragging' : ''}`.trim()}
+            style={isFloatingSheetDragging ? { transform: `translateY(${floatingSheetDragY}px)` } : undefined}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div
+              className="mobile-status-sheet-grab"
+              onTouchStart={onFloatingSheetTouchStart}
+              onTouchMove={onFloatingSheetTouchMove}
+              onTouchEnd={() => finishFloatingSheetDrag(closeBlockTaskCompletionSheet)}
+              onPointerDown={onFloatingSheetPointerDown}
+              onPointerMove={onFloatingSheetPointerMove}
+              onPointerUp={(event) => onFloatingSheetPointerEnd(event, closeBlockTaskCompletionSheet)}
+              onPointerCancel={(event) => onFloatingSheetPointerEnd(event, closeBlockTaskCompletionSheet)}
+            />
+            <div
+              className="mobile-status-sheet-head"
+              onTouchStart={onFloatingSheetTouchStart}
+              onTouchMove={onFloatingSheetTouchMove}
+              onTouchEnd={() => finishFloatingSheetDrag(closeBlockTaskCompletionSheet)}
+              onPointerDown={onFloatingSheetPointerDown}
+              onPointerMove={onFloatingSheetPointerMove}
+              onPointerUp={(event) => onFloatingSheetPointerEnd(event, closeBlockTaskCompletionSheet)}
+              onPointerCancel={(event) => onFloatingSheetPointerEnd(event, closeBlockTaskCompletionSheet)}
+            >
               <strong>Complete in block</strong>
               <button type="button" onClick={closeBlockTaskCompletionSheet} disabled={blockTaskCompletionSheet.saving}>
                 <X size={16} />
@@ -7226,9 +7512,31 @@ export default function MobileCalendarWireframe(): JSX.Element {
           className="mobile-status-sheet-overlay"
           onClick={editDrawerSaving ? undefined : () => setMobileEditScopeConfirm({ open: false, kind: 'save' })}
         >
-          <div className="mobile-status-sheet" onClick={(event) => event.stopPropagation()}>
-            <div className="mobile-status-sheet-grab" />
-            <div className="mobile-status-sheet-head">
+          <div
+            className={`mobile-status-sheet ${isFloatingSheetDragging ? 'dragging' : ''}`.trim()}
+            style={isFloatingSheetDragging ? { transform: `translateY(${floatingSheetDragY}px)` } : undefined}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div
+              className="mobile-status-sheet-grab"
+              onTouchStart={onFloatingSheetTouchStart}
+              onTouchMove={onFloatingSheetTouchMove}
+              onTouchEnd={() => finishFloatingSheetDrag(() => setMobileEditScopeConfirm({ open: false, kind: 'save' }))}
+              onPointerDown={onFloatingSheetPointerDown}
+              onPointerMove={onFloatingSheetPointerMove}
+              onPointerUp={(event) => onFloatingSheetPointerEnd(event, () => setMobileEditScopeConfirm({ open: false, kind: 'save' }))}
+              onPointerCancel={(event) => onFloatingSheetPointerEnd(event, () => setMobileEditScopeConfirm({ open: false, kind: 'save' }))}
+            />
+            <div
+              className="mobile-status-sheet-head"
+              onTouchStart={onFloatingSheetTouchStart}
+              onTouchMove={onFloatingSheetTouchMove}
+              onTouchEnd={() => finishFloatingSheetDrag(() => setMobileEditScopeConfirm({ open: false, kind: 'save' }))}
+              onPointerDown={onFloatingSheetPointerDown}
+              onPointerMove={onFloatingSheetPointerMove}
+              onPointerUp={(event) => onFloatingSheetPointerEnd(event, () => setMobileEditScopeConfirm({ open: false, kind: 'save' }))}
+              onPointerCancel={(event) => onFloatingSheetPointerEnd(event, () => setMobileEditScopeConfirm({ open: false, kind: 'save' }))}
+            >
               <strong>{mobileEditScopeConfirm.kind === 'delete' ? 'Delete recurring block' : 'Apply recurring change'}</strong>
               <button type="button" onClick={() => setMobileEditScopeConfirm({ open: false, kind: 'save' })} disabled={editDrawerSaving}>
                 <X size={16} />
@@ -7302,14 +7610,108 @@ export default function MobileCalendarWireframe(): JSX.Element {
           saving: false,
           error: ''
         })}>
-          <div className="mobile-status-sheet" onClick={(event) => event.stopPropagation()}>
+          <div
+            className={`mobile-status-sheet ${isFloatingSheetDragging ? 'dragging' : ''}`.trim()}
+            style={isFloatingSheetDragging ? { transform: `translateY(${floatingSheetDragY}px)` } : undefined}
+            onClick={(event) => event.stopPropagation()}
+          >
             {(() => {
               const editorSubtask = subtaskEditor.subtask;
               const editorStatusEntry = editorSubtask ? getSubtaskStatusEntry(editorSubtask) : null;
               return (
                 <>
-            <div className="mobile-status-sheet-grab" />
-            <div className="mobile-status-sheet-head">
+            <div
+              className="mobile-status-sheet-grab"
+              onTouchStart={onFloatingSheetTouchStart}
+              onTouchMove={onFloatingSheetTouchMove}
+              onTouchEnd={() =>
+                finishFloatingSheetDrag(() =>
+                  setSubtaskEditor({
+                    open: false,
+                    parentItemId: null,
+                    subtask: null,
+                    title: '',
+                    description: '',
+                    saving: false,
+                    error: ''
+                  })
+                )
+              }
+              onPointerDown={onFloatingSheetPointerDown}
+              onPointerMove={onFloatingSheetPointerMove}
+              onPointerUp={(event) =>
+                onFloatingSheetPointerEnd(event, () =>
+                  setSubtaskEditor({
+                    open: false,
+                    parentItemId: null,
+                    subtask: null,
+                    title: '',
+                    description: '',
+                    saving: false,
+                    error: ''
+                  })
+                )
+              }
+              onPointerCancel={(event) =>
+                onFloatingSheetPointerEnd(event, () =>
+                  setSubtaskEditor({
+                    open: false,
+                    parentItemId: null,
+                    subtask: null,
+                    title: '',
+                    description: '',
+                    saving: false,
+                    error: ''
+                  })
+                )
+              }
+            />
+            <div
+              className="mobile-status-sheet-head"
+              onTouchStart={onFloatingSheetTouchStart}
+              onTouchMove={onFloatingSheetTouchMove}
+              onTouchEnd={() =>
+                finishFloatingSheetDrag(() =>
+                  setSubtaskEditor({
+                    open: false,
+                    parentItemId: null,
+                    subtask: null,
+                    title: '',
+                    description: '',
+                    saving: false,
+                    error: ''
+                  })
+                )
+              }
+              onPointerDown={onFloatingSheetPointerDown}
+              onPointerMove={onFloatingSheetPointerMove}
+              onPointerUp={(event) =>
+                onFloatingSheetPointerEnd(event, () =>
+                  setSubtaskEditor({
+                    open: false,
+                    parentItemId: null,
+                    subtask: null,
+                    title: '',
+                    description: '',
+                    saving: false,
+                    error: ''
+                  })
+                )
+              }
+              onPointerCancel={(event) =>
+                onFloatingSheetPointerEnd(event, () =>
+                  setSubtaskEditor({
+                    open: false,
+                    parentItemId: null,
+                    subtask: null,
+                    title: '',
+                    description: '',
+                    saving: false,
+                    error: ''
+                  })
+                )
+              }
+            >
               <strong>Edit subtask</strong>
               <button
                 type="button"
