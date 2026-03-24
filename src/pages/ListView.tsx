@@ -15,7 +15,7 @@ import fieldOptionService from '../services/fieldOptionService';
 import itemFieldValueService from '../services/itemFieldValueService';
 import commentsService from '../services/commentsService';
 import chatService from '../services/chatService';
-import type { ChatProposal } from '../types/chat';
+import { getChatProposalTitle, type ChatProposal } from '../types/chat';
 import '../components/FocalBoard/StatusSelect.css';
 import './ListView.css';
 import type { CalendarProposal, FieldUpdateProposal, NewActionProposal } from '../contracts/executionContracts';
@@ -4432,7 +4432,7 @@ export default function ListView(): JSX.Element {
                             .filter((entry) => !entry.dismissed)
                             .map((entry) => (
                               <div key={entry.proposal.id} className="list-item-comment-ai-proposal">
-                                <p>{entry.proposal.type === 'resolve_time_conflict' ? entry.proposal.event_title : entry.proposal.title}</p>
+                                <p>{getChatProposalTitle(entry.proposal)}</p>
                                 {(entry.proposal.type === 'create_action' ||
                                   entry.proposal.type === 'create_follow_up_action' ||
                                   entry.proposal.type === 'create_time_block' ||

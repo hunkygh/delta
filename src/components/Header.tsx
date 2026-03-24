@@ -3,7 +3,7 @@ import type { KeyboardEvent } from 'react';
 import { Calendar, Search, X, ArrowDown, ChevronDown } from 'lucide-react';
 import { Microphone, PaperPlaneTilt, Plus } from '@phosphor-icons/react';
 import type { User } from '@supabase/supabase-js';
-import type { ChatContext, ChatDebugMeta, ChatMessage, ChatProposal } from '../types/chat';
+import { getChatProposalTitle, type ChatContext, type ChatDebugMeta, type ChatMessage, type ChatProposal } from '../types/chat';
 import chatPersistence from '../services/chatPersistence';
 import chatService from '../services/chatService';
 import focalBoardService from '../services/focalBoardService';
@@ -593,7 +593,7 @@ export default function Header({
         delete next[proposal.id];
         return next;
       });
-      const appliedTitle = proposal.type === 'resolve_time_conflict' ? proposal.event_title : proposal.title;
+      const appliedTitle = getChatProposalTitle(proposal);
       insertMessage({
         id: crypto.randomUUID(),
         role: 'assistant',
@@ -837,7 +837,7 @@ export default function Header({
                         {(message.proposals || []).map((proposal) => (
                           dismissedProposalIds[proposal.id] ? null : (
                           <div key={proposal.id} className="delta-ai-inline-card">
-                            <p>{proposal.type === 'resolve_time_conflict' ? proposal.event_title : proposal.title}</p>
+                            <p>{getChatProposalTitle(proposal)}</p>
                             {(proposal.type === 'create_action' ||
                               proposal.type === 'create_follow_up_action' ||
                               proposal.type === 'create_time_block' ||

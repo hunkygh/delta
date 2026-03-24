@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, Circle, Link2 } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Circle, Link2, Plus } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import focalBoardService from '../../services/focalBoardService';
 import type { ShellDaySnapshot } from './daySnapshot';
@@ -12,6 +12,7 @@ interface MetricsCardProps {
   snapshot: ShellDaySnapshot;
   onOpenItem: (itemId: string, listId: string, focalId: string | null) => void;
   onRefreshShellData: () => Promise<void>;
+  onAddTask: (date: Date) => void;
 }
 
 const addDays = (value: Date, amount: number): Date => {
@@ -27,7 +28,8 @@ export default function MetricsCard({
   onSelectDate,
   snapshot,
   onOpenItem,
-  onRefreshShellData
+  onRefreshShellData,
+  onAddTask
 }: MetricsCardProps): JSX.Element {
   const [activePopover, setActivePopover] = useState<{ taskId: string; type: 'connect' } | null>(null);
   const [connectQuery, setConnectQuery] = useState('');
@@ -103,16 +105,29 @@ export default function MetricsCard({
   return (
     <section className="shell-card shell-card-frosted shell-metrics-card shell-task-snapshot-card">
       <div className="shell-task-snapshot-head">
-        <strong className="shell-task-snapshot-label">Tasks</strong>
-        <button type="button" className="shell-task-snapshot-step" onClick={() => onSelectDate(addDays(selectedDate, -1))} aria-label="Previous day">
-          <ArrowLeft size={14} />
-        </button>
-        <strong className="shell-task-snapshot-title">
-          <span>{selectedDate.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })}</span>
-        </strong>
-        <button type="button" className="shell-task-snapshot-step" onClick={() => onSelectDate(addDays(selectedDate, 1))} aria-label="Next day">
-          <ArrowRight size={14} />
-        </button>
+        <div className="shell-task-snapshot-head-start">
+          <strong className="shell-task-snapshot-label">Tasks</strong>
+          <button
+            type="button"
+            className="shell-task-snapshot-add"
+            onClick={() => onAddTask(selectedDate)}
+            aria-label={`Add task for ${selectedDate.toLocaleDateString([], { month: 'numeric', day: 'numeric' })}`}
+          >
+            <Plus size={15} />
+          </button>
+        </div>
+        <div className="shell-task-snapshot-date-controls">
+          <button type="button" className="shell-task-snapshot-step" onClick={() => onSelectDate(addDays(selectedDate, -1))} aria-label="Previous day">
+            <ArrowLeft size={14} />
+          </button>
+          <strong className="shell-task-snapshot-title">
+            <span>{selectedDate.toLocaleDateString([], { month: 'numeric', day: 'numeric' })}</span>
+          </strong>
+          <button type="button" className="shell-task-snapshot-step" onClick={() => onSelectDate(addDays(selectedDate, 1))} aria-label="Next day">
+            <ArrowRight size={14} />
+          </button>
+        </div>
+        <div className="shell-task-snapshot-head-spacer" aria-hidden="true" />
       </div>
 
       <div className="shell-task-snapshot-list">

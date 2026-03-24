@@ -13,8 +13,12 @@ export interface ShellListSummary {
 
 export interface ShellItemSummary {
   id: string;
+  lane_id?: string | null;
   listId: string | null;
   listName: string;
+  status?: string | null;
+  status_id?: string | null;
+  focal_id?: string | null;
   focalId: string | null;
   title: string;
 }

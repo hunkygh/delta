@@ -19,9 +19,9 @@ export default function App(): JSX.Element {
         <Route path="/login" element={<Login />} />
         <Route path="/stockyard" element={<Stockyard />} />
         <Route path="/shell" element={<ShellRefactorView />} />
+        <Route path="/" element={<Navigate to="/shell" replace />} />
 
         <Route element={<AppShell />}>
-          <Route path="/" element={<CalendarView />} />
           <Route path="/calendar" element={<CalendarView />} />
           <Route path="/launchpad" element={<Home />} />
           <Route path="/dashboard" element={<Navigate to="/launchpad" replace />} />
@@ -41,7 +41,7 @@ export default function App(): JSX.Element {
           <Route path="/docs" element={<DocViewer />} />
           <Route path="/settings" element={<Settings />} />
 
-          <Route path="*" element={<Navigate to="/" replace />} />
+          <Route path="*" element={<Navigate to="/shell" replace />} />
         </Route>
       </Routes>
     </AuthProvider>

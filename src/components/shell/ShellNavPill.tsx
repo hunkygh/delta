@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { AddSquareIcon, ComputerDollar, GridView } from 'clicons-react';
-import { ArrowRight, CalendarDays, ChevronLeft, ChevronRight, Clock3, Compass, CornerDownRight, Minus, Plus, Repeat2 } from 'lucide-react';
+import { ArrowRight, CalendarDays, ChevronLeft, ChevronRight, Clock3, Compass, CornerDownRight, LogOut, Minus, Plus, Repeat2, Share2 } from 'lucide-react';
 import { HomeIcon, ProfileIcon } from '../../icons';
+import { authService } from '../../services/authService';
 import type { ShellComposerDraft, ShellComposerType } from './composerTypes';
 import type { ShellFocalSummary, ShellItemSummary, ShellListSummary } from './types';
 import type { ShellInstalledNode, ShellNodeDefinition } from './nodeRuntime';
@@ -44,6 +46,7 @@ export default function ShellNavPill({
   onOpenNodeManager
 }: ShellNavPillProps): JSX.Element {
   const PANEL_ANIMATION_MS = 420;
+  const navigate = useNavigate();
   const [visualState, setVisualState] = useState<'closed' | 'opening' | 'open' | 'closing'>(
     composerOpen ? 'open' : 'closed'
   );
@@ -51,8 +54,10 @@ export default function ShellNavPill({
   const [openPicker, setOpenPicker] = useState<null | 'date' | 'start' | 'end' | 'parent'>(null);
   const [showDetails, setShowDetails] = useState(Boolean(composerDraft.lockedType || composerDraft.sourceEventId));
   const [showSubitems, setShowSubitems] = useState(false);
-  const [profilePanelOpen, setProfilePanelOpen] = useState(false);
-  const [profilePanelVisualState, setProfilePanelVisualState] = useState<'closed' | 'opening' | 'open' | 'closing'>('closed');
+  const [nodesPanelOpen, setNodesPanelOpen] = useState(false);
+  const [nodesPanelVisualState, setNodesPanelVisualState] = useState<'closed' | 'opening' | 'open' | 'closing'>('closed');
+  const [accountPanelOpen, setAccountPanelOpen] = useState(false);
+  const [accountPanelVisualState, setAccountPanelVisualState] = useState<'closed' | 'opening' | 'open' | 'closing'>('closed');
   const [pickerMonth, setPickerMonth] = useState<Date>(() => {
     const base = composerDraft.scheduledDate ? new Date(`${composerDraft.scheduledDate}T12:00:00`) : new Date();
     return new Date(base.getFullYear(), base.getMonth(), 1);
@@ -60,7 +65,18 @@ export default function ShellNavPill({
   const [renderedPicker, setRenderedPicker] = useState<null | 'date' | 'start' | 'end' | 'parent'>(null);
   const [pickerVisualState, setPickerVisualState] = useState<'closed' | 'opening' | 'open' | 'closing'>('closed');
   const composerRef = useRef<HTMLElement | null>(null);
-  const profilePanelRef = useRef<HTMLDivElement | null>(null);
+  const nodesPanelRef = useRef<HTMLDivElement | null>(null);
+  const accountPanelRef = useRef<HTMLDivElement | null>(null);
+
+  const handleLogout = async (): Promise<void> => {
+    try {
+      await authService.signOut();
+      setAccountPanelOpen(false);
+      window.location.href = '/login';
+    } catch (error) {
+      console.error('Failed to logout:', error);
+    }
+  };
 
   const updateDraft = (partial: Partial<ShellComposerDraft>): void => {
     onComposerDraftChange({
@@ -540,15 +556,24 @@ export default function ShellNavPill({
           <div key={item.label} className="shell-nav-pill-item">
             <button
               type="button"
-              className={`${item.key === 'home' ? 'active' : ''} ${item.key === 'nodes' && profilePanelVisualState !== 'closed' ? 'active' : ''} ${!item.showLabel ? 'icon-only' : ''}`.trim()}
+              className={`${item.key === 'home' ? 'active' : ''} ${item.key === 'nodes' && nodesPanelVisualState !== 'closed' ? 'active' : ''} ${item.key === 'profile' && accountPanelVisualState !== 'closed' ? 'active' : ''} ${!item.showLabel ? 'icon-only' : ''}`.trim()}
               onClick={() => {
                 if (item.key === 'nodes') {
                   onComposerOpenChange(false);
-                  setProfilePanelOpen((prev) => !prev);
+                  setAccountPanelOpen(false);
+                  setNodesPanelOpen((prev) => !prev);
                   return;
                 }
 
-                setProfilePanelOpen(false);
+                if (item.key === 'profile') {
+                  onComposerOpenChange(false);
+                  setNodesPanelOpen(false);
+                  setAccountPanelOpen((prev) => !prev);
+                  return;
+                }
+
+                setNodesPanelOpen(false);
+                setAccountPanelOpen(false);
               }}
             >
               <Icon size={16} />
@@ -561,7 +586,8 @@ export default function ShellNavPill({
         type="button"
         className={`shell-nav-pill-add ${composerOpen ? 'active' : ''}`.trim()}
         onClick={() => {
-          setProfilePanelOpen(false);
+          setNodesPanelOpen(false);
+          setAccountPanelOpen(false);
           if (composerOpen) {
             onComposerOpenChange(false);
             return;
@@ -575,14 +601,14 @@ export default function ShellNavPill({
     </nav>
   );
 
-  const renderProfilePanel = (): JSX.Element | null => {
-    if (profilePanelVisualState === 'closed') return null;
+  const renderNodesPanel = (): JSX.Element | null => {
+    if (nodesPanelVisualState === 'closed') return null;
 
     return (
       <section
-        ref={profilePanelRef}
+        ref={nodesPanelRef}
         className="shell-nav-profile-panel shell-nav-profile-dock"
-        data-visual-state={profilePanelVisualState}
+        data-visual-state={nodesPanelVisualState}
         aria-label="Nodes"
       >
         <div className="shell-nav-profile-dock-head">
@@ -600,7 +626,7 @@ export default function ShellNavPill({
                     type="button"
                     className="shell-nav-profile-node-icon"
                     onClick={() => {
-                      setProfilePanelOpen(false);
+                      setNodesPanelOpen(false);
                       onOpenNodeManager(installedNode.nodeId);
                     }}
                     aria-label={node.name}
@@ -617,7 +643,7 @@ export default function ShellNavPill({
                 type="button"
                 className="shell-nav-profile-node-icon shell-nav-profile-node-icon-add"
                 onClick={() => {
-                  setProfilePanelOpen(false);
+                  setNodesPanelOpen(false);
                   onOpenNodeManager();
                 }}
                 aria-label="Open node marketplace"
@@ -635,7 +661,7 @@ export default function ShellNavPill({
                 type="button"
                 className="shell-nav-profile-node-icon shell-nav-profile-node-icon-add"
                 onClick={() => {
-                  setProfilePanelOpen(false);
+                  setNodesPanelOpen(false);
                   onOpenNodeManager();
                 }}
                 aria-label="Open node marketplace"
@@ -647,6 +673,69 @@ export default function ShellNavPill({
               </button>
             </>
           )}
+        </div>
+      </section>
+    );
+  };
+
+  const renderAccountPanel = (): JSX.Element | null => {
+    if (accountPanelVisualState === 'closed') return null;
+
+    return (
+      <section
+        ref={accountPanelRef}
+        className="shell-nav-profile-panel shell-nav-account-panel"
+        data-visual-state={accountPanelVisualState}
+        aria-label="Profile"
+      >
+        <div className="shell-nav-profile-dock-head">
+          <strong>Profile</strong>
+        </div>
+        <div className="shell-nav-account-actions">
+          <button
+            type="button"
+            className="shell-nav-account-action"
+            onClick={() => {
+              setAccountPanelOpen(false);
+              navigate('/calendar');
+            }}
+          >
+            <span className="shell-nav-account-action-glyph" aria-hidden="true">
+              <CalendarDays size={15} />
+            </span>
+            <span className="shell-nav-account-action-body">
+              <span className="shell-nav-account-action-title">Old view</span>
+              <span className="shell-nav-account-action-copy">Switch to the legacy calendar layout.</span>
+            </span>
+          </button>
+          <button
+            type="button"
+            className="shell-nav-account-action"
+            onClick={() => {
+              setAccountPanelOpen(false);
+            }}
+          >
+            <span className="shell-nav-account-action-glyph" aria-hidden="true">
+              <Share2 size={15} />
+            </span>
+            <span className="shell-nav-account-action-body">
+              <span className="shell-nav-account-action-title">Share Delta</span>
+              <span className="shell-nav-account-action-copy">Share link coming soon.</span>
+            </span>
+          </button>
+          <button
+            type="button"
+            className="shell-nav-account-action logout"
+            onClick={() => void handleLogout()}
+          >
+            <span className="shell-nav-account-action-glyph" aria-hidden="true">
+              <LogOut size={15} />
+            </span>
+            <span className="shell-nav-account-action-body">
+              <span className="shell-nav-account-action-title">Log out</span>
+              <span className="shell-nav-account-action-copy">Sign out of your Delta workspace.</span>
+            </span>
+          </button>
         </div>
       </section>
     );
@@ -686,24 +775,44 @@ export default function ShellNavPill({
   }, [composerOpen]);
 
   useEffect(() => {
-    if (profilePanelOpen) {
-      setProfilePanelVisualState((prev) => (prev === 'open' ? prev : 'opening'));
+    if (nodesPanelOpen) {
+      setNodesPanelVisualState((prev) => (prev === 'open' ? prev : 'opening'));
       const frameId = window.requestAnimationFrame(() => {
-        setProfilePanelVisualState('open');
+        setNodesPanelVisualState('open');
       });
       return () => window.cancelAnimationFrame(frameId);
     }
 
-    if (profilePanelVisualState === 'closed') {
+    if (nodesPanelVisualState === 'closed') {
       return undefined;
     }
 
-    setProfilePanelVisualState('closing');
+    setNodesPanelVisualState('closing');
     const timeoutId = window.setTimeout(() => {
-      setProfilePanelVisualState('closed');
+      setNodesPanelVisualState('closed');
     }, PANEL_ANIMATION_MS);
     return () => window.clearTimeout(timeoutId);
-  }, [profilePanelOpen, profilePanelVisualState]);
+  }, [nodesPanelOpen, nodesPanelVisualState]);
+
+  useEffect(() => {
+    if (accountPanelOpen) {
+      setAccountPanelVisualState((prev) => (prev === 'open' ? prev : 'opening'));
+      const frameId = window.requestAnimationFrame(() => {
+        setAccountPanelVisualState('open');
+      });
+      return () => window.cancelAnimationFrame(frameId);
+    }
+
+    if (accountPanelVisualState === 'closed') {
+      return undefined;
+    }
+
+    setAccountPanelVisualState('closing');
+    const timeoutId = window.setTimeout(() => {
+      setAccountPanelVisualState('closed');
+    }, PANEL_ANIMATION_MS);
+    return () => window.clearTimeout(timeoutId);
+  }, [accountPanelOpen, accountPanelVisualState]);
 
   useEffect(() => {
     if (openPicker) {
@@ -748,22 +857,37 @@ export default function ShellNavPill({
   }, [composerVisible, onComposerOpenChange]);
 
   useEffect(() => {
-    if (profilePanelVisualState === 'closed') return;
+    if (nodesPanelVisualState === 'closed') return;
     const handlePointerDown = (event: MouseEvent): void => {
-      if (profilePanelRef.current && !profilePanelRef.current.contains(event.target as Node)) {
+      if (nodesPanelRef.current && !nodesPanelRef.current.contains(event.target as Node)) {
         const target = event.target as HTMLElement | null;
         if (target?.closest('.shell-refactor-page') && !target.closest('.shell-layout')) {
-          setProfilePanelOpen(false);
+          setNodesPanelOpen(false);
         }
       }
     };
     document.addEventListener('mousedown', handlePointerDown);
     return () => document.removeEventListener('mousedown', handlePointerDown);
-  }, [profilePanelVisualState]);
+  }, [nodesPanelVisualState]);
+
+  useEffect(() => {
+    if (accountPanelVisualState === 'closed') return;
+    const handlePointerDown = (event: MouseEvent): void => {
+      if (accountPanelRef.current && !accountPanelRef.current.contains(event.target as Node)) {
+        const target = event.target as HTMLElement | null;
+        if (target?.closest('.shell-refactor-page') && !target.closest('.shell-layout')) {
+          setAccountPanelOpen(false);
+        }
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => document.removeEventListener('mousedown', handlePointerDown);
+  }, [accountPanelVisualState]);
 
   return (
     <div className={`shell-nav-shell ${composerVisible ? 'open' : ''}`.trim()}>
-      {renderProfilePanel()}
+      {renderNodesPanel()}
+      {renderAccountPanel()}
       {composerVisible ? (
         <section ref={composerRef} className="shell-nav-composer" data-visual-state={visualState} aria-label="Quick add composer">
           {composerDraft.lockedType ? (

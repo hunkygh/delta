@@ -83,6 +83,14 @@ const getProviderConfig = (): {
   return { primary, secondary, fallback };
 };
 
+const collectConfiguredProviders = (config: ReturnType<typeof getProviderConfig>): AIProvider[] => {
+  const providers: AIProvider[] = [];
+  if (config.primary) providers.push(config.primary);
+  if (config.secondary) providers.push(config.secondary);
+  if (config.fallback) providers.push(config.fallback);
+  return providers;
+};
+
 const getDefaultBaseUrl = (provider: string): string => {
   const defaults: Record<string, string> = {
     'google': 'https://generativelanguage.googleapis.com/v1beta',
@@ -496,7 +504,7 @@ export const aiGateway = {
    */
   async getAvailableModels(profileId: string, requestId: string = crypto.randomUUID()): Promise<string[]> {
     const config = getProviderConfig();
-    const providers = [config.primary, config.secondary, config.fallback].filter((p): p is AIProvider => p !== null);
+    const providers = collectConfiguredProviders(config);
     
     try {
       const candidates = await getAvailableModelsForProfile(profileId, providers, requestId);
@@ -513,7 +521,7 @@ export const aiGateway = {
   async createCompletion(request: AICompletionRequest, requestId: string = crypto.randomUUID()): Promise<AICompletionResponse> {
     const config = getProviderConfig();
     const profileId = request.modelProfile || 'delta-general';
-    const providers = [config.primary, config.secondary, config.fallback].filter((p): p is AIProvider => p !== null);
+    const providers = collectConfiguredProviders(config);
     
     if (providers.length === 0) {
       return {

@@ -534,6 +534,18 @@ export default function Sidebar({
               <SlidersHorizontal size={16} />
             </button>
             <button
+              className="sidebar-settings-option"
+              onClick={() => {
+                setShowSettingsMenu(false);
+                navigate('/shell');
+              }}
+              aria-label="New layout"
+              title="New layout"
+              tabIndex={showSettingsMenu ? 0 : -1}
+            >
+              <LayoutGrid size={16} />
+            </button>
+            <button
               className="sidebar-settings-option logout"
               onClick={handleLogout}
               aria-label="Sign out"

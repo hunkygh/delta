@@ -141,6 +141,16 @@ export type ChatProposal =
   | ResolveTimeConflictProposal
   | NodeSetupApplyProposal;
 
+export const getChatProposalTitle = (proposal: ChatProposal): string => {
+  if (proposal.type === 'resolve_time_conflict') {
+    return proposal.event_title;
+  }
+  if (proposal.type === 'node_setup_apply') {
+    return proposal.summary;
+  }
+  return proposal.title;
+};
+
 export interface ChatDebugMeta {
   source?: 'db' | 'llm' | 'heuristic';
   request_id?: string;

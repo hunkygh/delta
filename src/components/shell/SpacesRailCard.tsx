@@ -1,6 +1,6 @@
 import { CommentAdd } from 'clicons-react';
-import { ArrowLeft, ArrowUpRight, Circle, X } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { ArrowLeft, ArrowUpDown, ArrowUpRight, Circle, Funnel, Search, SlidersHorizontal, X } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import commentsService from '../../services/commentsService';
 import focalBoardService from '../../services/focalBoardService';
 import type { ShellFocalSummary, ShellItemSummary, ShellListSummary } from './types';
@@ -17,6 +17,7 @@ interface SpacesRailCardProps {
   onAddList: (focalId: string | null) => void;
   onExpand: (payload: { focalId: string | null; listId: string | null; mode: 'space' | 'list' }) => void;
   onRefreshShellData: () => Promise<void>;
+  onModeChange?: (mode: 'spaces' | 'lists' | 'items') => void;
 }
 
 interface RailStatus {
@@ -36,6 +37,13 @@ interface RailItem {
   title: string;
   status?: string | null;
   status_id?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  signal_score?: number | null;
+  actions?: Array<{
+    id: string;
+    scheduled_at?: string | null;
+  }>;
 }
 
 interface ThreadComment {
@@ -62,8 +70,11 @@ export default function SpacesRailCard({
   onAddSpace,
   onAddList,
   onExpand,
-  onRefreshShellData
+  onRefreshShellData,
+  onModeChange
 }: SpacesRailCardProps): JSX.Element {
+  type SortMode = 'status' | 'recently_added' | 'recent_activity' | 'next_action';
+
   const [view, setView] = useState<'spaces' | 'lists' | 'items'>('spaces');
   const [localFocalId, setLocalFocalId] = useState<string | null>(activeFocalId || focals[0]?.id || null);
   const [localListId, setLocalListId] = useState<string | null>(null);
@@ -72,11 +83,21 @@ export default function SpacesRailCard({
   const [selectedCommentItemId, setSelectedCommentItemId] = useState<string | null>(null);
   const [selectedStatusItemId, setSelectedStatusItemId] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [sortMode, setSortMode] = useState<SortMode>('status');
+  const [itemSearchQuery, setItemSearchQuery] = useState('');
+  const [searchExpanded, setSearchExpanded] = useState(false);
+  const [itemControlRailOpen, setItemControlRailOpen] = useState(false);
+  const [itemControlsOpen, setItemControlsOpen] = useState<'filter' | 'sort' | null>(null);
   const [commentThread, setCommentThread] = useState<ThreadComment[]>([]);
   const [commentDraft, setCommentDraft] = useState('');
   const [commentLoading, setCommentLoading] = useState(false);
   const [commentSubmitting, setCommentSubmitting] = useState(false);
   const [commentError, setCommentError] = useState<string | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    onModeChange?.(view);
+  }, [onModeChange, view]);
 
   useEffect(() => {
     if (!focals.length) {
@@ -115,8 +136,8 @@ export default function SpacesRailCard({
   const activeFocalName = selectedFocal?.name || 'Selected space';
   const selectedCommentItem = renderedItems.find((item) => item.id === selectedCommentItemId) || null;
   const selectedStatusItem = renderedItems.find((item) => item.id === selectedStatusItemId) || null;
-  const groupedItems = useMemo(() => {
-    const visibleByFilter =
+  const visibleByFilter = useMemo(
+    () =>
       statusFilter === 'all'
         ? renderedItems
         : renderedItems.filter((item) =>
@@ -126,15 +147,62 @@ export default function SpacesRailCard({
                 (!status.id && status.key === item.status && status.key === statusFilter) ||
                 (status.id && status.key === item.status && status.id === statusFilter)
             )
-          );
+          ),
+    [listStatuses, renderedItems, statusFilter]
+  );
+
+  const searchedItems = useMemo(() => {
+    const normalized = itemSearchQuery.trim().toLowerCase();
+    if (!normalized) return visibleByFilter;
+    return visibleByFilter.filter((item) => item.title.toLowerCase().includes(normalized));
+  }, [itemSearchQuery, visibleByFilter]);
+
+  const getNextActionTimestamp = useCallback((item: RailItem | ShellItemSummary): number | null => {
+    const actions = 'actions' in item && Array.isArray(item.actions) ? item.actions : [];
+    const timestamps = actions
+      .map((action) => (action.scheduled_at ? new Date(action.scheduled_at).getTime() : null))
+      .filter((value): value is number => value !== null && Number.isFinite(value))
+      .sort((a, b) => a - b);
+    return timestamps[0] ?? null;
+  }, []);
+
+  const sortedItems = useMemo(() => {
+    const next = [...searchedItems];
+    if (sortMode === 'recently_added') {
+      return next.sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
+    }
+    if (sortMode === 'recent_activity') {
+      return next.sort((a, b) => {
+        const updatedDelta = new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime();
+        if (updatedDelta !== 0) return updatedDelta;
+        return (b.signal_score || 0) - (a.signal_score || 0);
+      });
+    }
+    if (sortMode === 'next_action') {
+      return next.sort((a, b) => {
+        const nextA = getNextActionTimestamp(a);
+        const nextB = getNextActionTimestamp(b);
+        if (nextA === null && nextB === null) return a.title.localeCompare(b.title);
+        if (nextA === null) return 1;
+        if (nextB === null) return -1;
+        return nextA - nextB;
+      });
+    }
+    return next.sort((a, b) => a.title.localeCompare(b.title));
+  }, [getNextActionTimestamp, searchedItems, sortMode]);
+
+  const groupedItems = useMemo(() => {
+    if (sortMode !== 'status') {
+      return [{ status: null as RailStatus | null, items: sortedItems }];
+    }
 
     return listStatuses
       .map((status) => ({
         status,
-        items: visibleByFilter.filter((item) => item.status_id === status.id || item.status === status.key)
+        items: searchedItems.filter((item) => item.status_id === status.id || item.status === status.key)
       }))
       .filter((group) => statusFilter === 'all' || group.items.length > 0);
-  }, [listStatuses, renderedItems, statusFilter]);
+  }, [listStatuses, searchedItems, sortMode, sortedItems, statusFilter]);
 
   const loadSelectedListData = useCallback(async (): Promise<void> => {
     if (!selectedList?.id) {
@@ -161,7 +229,21 @@ export default function SpacesRailCard({
 
   useEffect(() => {
     setStatusFilter('all');
+    setSortMode('status');
+    setItemSearchQuery('');
+    setSearchExpanded(false);
+    setItemControlRailOpen(false);
+    setItemControlsOpen(null);
   }, [selectedList?.id]);
+
+  useEffect(() => {
+    if (!searchExpanded) return;
+    const frameId = window.requestAnimationFrame(() => {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    });
+    return () => window.cancelAnimationFrame(frameId);
+  }, [searchExpanded]);
 
   useEffect(() => {
     if (!selectedCommentItemId) {
@@ -269,6 +351,22 @@ export default function SpacesRailCard({
           ) : (
             <strong>Spaces</strong>
           )}
+          {view !== 'items' ? (
+            <button
+              type="button"
+              className="shell-space-rail-add"
+              onClick={() => {
+                if (view === 'lists') {
+                  onAddList(selectedFocal?.id || null);
+                  return;
+                }
+                onAddSpace();
+              }}
+              aria-label={view === 'lists' ? 'Add list' : 'Add space'}
+            >
+              +
+            </button>
+          ) : null}
         </div>
         <button
           type="button"
@@ -285,6 +383,126 @@ export default function SpacesRailCard({
           <ArrowUpRight size={16} />
         </button>
       </div>
+      {view === 'items' && listStatuses.length > 0 ? (
+        <div className="shell-space-item-controls shell-space-item-controls-top">
+          <div className="shell-space-item-controls-bar">
+            <div className={`shell-space-item-controls-actions ${itemControlRailOpen ? 'open' : ''}`.trim()}>
+              <button
+                type="button"
+                className={`shell-space-item-controls-trigger ${itemControlsOpen === 'filter' ? 'active' : ''}`.trim()}
+                aria-label="Filter items"
+                onClick={() => {
+                  setItemControlRailOpen(true);
+                  setItemControlsOpen((current) => (current === 'filter' ? null : 'filter'));
+                }}
+              >
+                <Funnel size={15} />
+              </button>
+              <button
+                type="button"
+                className={`shell-space-item-controls-trigger ${itemControlsOpen === 'sort' ? 'active' : ''}`.trim()}
+                aria-label="Sort items"
+                onClick={() => {
+                  setItemControlRailOpen(true);
+                  setItemControlsOpen((current) => (current === 'sort' ? null : 'sort'));
+                }}
+              >
+                <ArrowUpDown size={15} />
+              </button>
+            </div>
+            <button
+              type="button"
+              className={`shell-space-item-controls-trigger ${itemControlRailOpen ? 'active' : ''}`.trim()}
+              aria-label="List controls"
+              onClick={() => {
+                setItemControlRailOpen((current) => {
+                  const next = !current;
+                  if (!next) {
+                    setItemControlsOpen(null);
+                  }
+                  return next;
+                });
+              }}
+            >
+              <SlidersHorizontal size={15} />
+            </button>
+            <div className={`shell-space-item-search-wrap ${searchExpanded ? 'open' : ''}`.trim()}>
+              <button
+                type="button"
+                className={`shell-space-item-controls-trigger ${searchExpanded ? 'active' : ''}`.trim()}
+                aria-label={searchExpanded ? 'Close search' : 'Search items'}
+                onClick={() => {
+                  if (searchExpanded && !itemSearchQuery.trim()) {
+                    setSearchExpanded(false);
+                    return;
+                  }
+                  setSearchExpanded(true);
+                }}
+              >
+                <Search size={15} />
+              </button>
+              <label className="shell-space-item-search">
+                <Search size={13} aria-hidden="true" />
+                <input
+                  ref={searchInputRef}
+                  type="text"
+                  value={itemSearchQuery}
+                  onChange={(event) => setItemSearchQuery(event.target.value)}
+                  onBlur={() => {
+                    if (!itemSearchQuery.trim()) {
+                      setSearchExpanded(false);
+                    }
+                  }}
+                  placeholder="Search items"
+                  aria-label="Search items"
+                />
+              </label>
+            </div>
+          </div>
+          <div className={`shell-space-item-controls-drawer ${itemControlsOpen ? 'open' : ''}`.trim()}>
+            {itemControlsOpen === 'filter' ? (
+              <div className="shell-space-status-filter-row">
+                <button
+                  type="button"
+                  className={`shell-space-status-filter-pill ${statusFilter === 'all' ? 'active' : ''}`.trim()}
+                  onClick={() => setStatusFilter('all')}
+                >
+                  All
+                </button>
+                {listStatuses.map((status) => (
+                  <button
+                    key={status.id || status.key}
+                    type="button"
+                    className={`shell-space-status-filter-pill ${statusFilter === (status.id || status.key) ? 'active' : ''}`.trim()}
+                    onClick={() => setStatusFilter((status.id || status.key) as string)}
+                  >
+                    {status.name}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            {itemControlsOpen === 'sort' ? (
+              <div className="shell-space-status-filter-row shell-space-sort-row">
+                {[
+                  ['status', 'By status'],
+                  ['recently_added', 'Recently added'],
+                  ['recent_activity', 'Recent activity'],
+                  ['next_action', 'Next action']
+                ].map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={`shell-space-status-filter-pill ${sortMode === value ? 'active' : ''}`.trim()}
+                    onClick={() => setSortMode(value as SortMode)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
       <div className="shell-space-rail-shell">
         <div className="shell-space-rail-viewport">
           <div
@@ -308,14 +526,6 @@ export default function SpacesRailCard({
                     <span className={getTileTextClass(focal.name)}>{focal.name}</span>
                   </button>
                 ))}
-                <button
-                  type="button"
-                  className="shell-space-tile shell-space-tile-add"
-                  onClick={onAddSpace}
-                  aria-label="Add space"
-                >
-                  <span className="shell-space-tile-add-icon">+</span>
-                </button>
               </div>
             </div>
             <div className="shell-space-rail-panel">
@@ -333,13 +543,6 @@ export default function SpacesRailCard({
                     <span className="shell-space-list-row-text">{list.name}</span>
                   </button>
                 ))}
-                <button
-                  type="button"
-                  className="shell-space-list-row shell-space-list-row-add shell-space-list-row-plain"
-                  onClick={() => onAddList(selectedFocal?.id || null)}
-                >
-                  <span className="shell-space-list-row-text">+ Add</span>
-                </button>
                 {visibleLists.length === 0 ? (
                   <div className="shell-space-list-row shell-space-list-row-empty">
                     <span className="shell-space-list-row-text">No lists yet</span>
@@ -349,34 +552,15 @@ export default function SpacesRailCard({
             </div>
             <div className="shell-space-rail-panel">
               <div className="shell-space-rail-list-stack shell-space-rail-item-stack">
-                {listStatuses.length > 0 ? (
-                  <div className="shell-space-status-filter-row">
-                    <button
-                      type="button"
-                      className={`shell-space-status-filter-pill ${statusFilter === 'all' ? 'active' : ''}`.trim()}
-                      onClick={() => setStatusFilter('all')}
-                    >
-                      All
-                    </button>
-                    {listStatuses.map((status) => (
-                      <button
-                        key={status.id || status.key}
-                        type="button"
-                        className={`shell-space-status-filter-pill ${statusFilter === (status.id || status.key) ? 'active' : ''}`.trim()}
-                        onClick={() => setStatusFilter((status.id || status.key) as string)}
-                      >
-                        {status.name}
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
                 {groupedItems.map(({ status, items: statusItems }) => (
-                  <section key={status.id || status.key} className="shell-space-status-group">
-                    <div className="shell-space-status-group-head">
-                      <span className="shell-space-status-group-dot" style={{ backgroundColor: status.color }} />
-                      <strong>{status.name}</strong>
-                      <span>{statusItems.length}</span>
-                    </div>
+                  <section key={status?.id || status?.key || sortMode} className="shell-space-status-group">
+                    {status ? (
+                      <div className="shell-space-status-group-head">
+                        <span className="shell-space-status-group-dot" style={{ backgroundColor: status.color }} />
+                        <strong>{status.name}</strong>
+                        <span>{statusItems.length}</span>
+                      </div>
+                    ) : null}
                     {statusItems.map((item) => {
                       const currentStatus =
                         listStatuses.find((entry) => entry.id === item.status_id || (item.status && entry.key === item.status)) || null;

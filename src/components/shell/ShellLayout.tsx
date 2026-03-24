@@ -3,7 +3,7 @@ import { CaretLeft, PencilSimple } from '@phosphor-icons/react';
 import { ArrowRight, Compass, Plus, Search } from 'lucide-react';
 import { ComputerDollar } from 'clicons-react';
 import type { Event } from '../../types/Event';
-import type { NodeSetupApplyProposal, ChatProposal } from '../../types/chat';
+import { getChatProposalTitle, type NodeSetupApplyProposal, type ChatProposal } from '../../types/chat';
 import { buildShellDaySnapshot } from './daySnapshot';
 import ShellLeftRail from './ShellLeftRail';
 import ShellCenter from './ShellCenter';
@@ -800,7 +800,7 @@ export default function ShellLayout({
       setNavComposerDraft({
         ...baseDraft,
         type: proposal.type === 'create_item' ? 'item' : proposal.type === 'create_action' ? 'task' : 'note',
-        name: 'title' in proposal ? proposal.title : proposal.event_title,
+        name: getChatProposalTitle(proposal),
         description: 'notes' in proposal && proposal.notes ? proposal.notes : assistantText || '',
         subitems: [''],
         focalId: targetList?.focalId || null,
@@ -1040,6 +1040,22 @@ export default function ShellLayout({
               name: '',
               description: '',
               subitems: ['']
+            })
+          );
+          setNavComposerOpen(true);
+        }}
+        onAddTask={(date) => {
+          setNavComposerDraft(
+            createEmptyShellComposerDraft({
+              type: 'task',
+              lockedType: true,
+              headerTitle: 'New task',
+              name: '',
+              description: '',
+              subitems: [''],
+              scheduledDate: date.toISOString().slice(0, 10),
+              startTime: '',
+              scheduledStartUtc: null
             })
           );
           setNavComposerOpen(true);

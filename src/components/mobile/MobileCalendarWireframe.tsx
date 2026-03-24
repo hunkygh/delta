@@ -32,7 +32,7 @@ import listFieldService from '../../services/listFieldService';
 import itemFieldValueService from '../../services/itemFieldValueService';
 import commentsService from '../../services/commentsService';
 import docsService, { type DocNote } from '../../services/docsService';
-import type { ChatMessage, ChatProposal } from '../../types/chat';
+import { getChatProposalTitle, type ChatMessage, type ChatProposal } from '../../types/chat';
 
 type MobileBlockSubItem = {
   id: string;
@@ -312,8 +312,11 @@ const mapThreadComment = (entry: any) => ({
   body: entry.content || entry.body || '',
   created_at: entry.created_at,
   author_type: entry.author_type || entry.source || 'user',
-  user_id: entry.user_id || null
+  user_id: entry.user_id || null,
+  proposals: Array.isArray(entry.proposals) ? entry.proposals : []
 });
+
+type MobileThreadEntry = ReturnType<typeof mapThreadComment>;
 
 export default function MobileCalendarWireframe(): JSX.Element {
   const { user } = useAuth();
@@ -384,12 +387,11 @@ export default function MobileCalendarWireframe(): JSX.Element {
   const [itemDrawerFieldValues, setItemDrawerFieldValues] = useState<Record<string, any>>({});
   const [itemDrawerTitleDraft, setItemDrawerTitleDraft] = useState('');
   const [itemDrawerDescriptionDraft, setItemDrawerDescriptionDraft] = useState('');
-  const [itemDrawerComments, setItemDrawerComments] = useState<
-    Array<{ id: string; body: string; created_at: string; author_type?: string; user_id?: string | null }>
-  >([]);
+  const [itemDrawerComments, setItemDrawerComments] = useState<MobileThreadEntry[]>([]);
   const [itemDrawerCommentsLoading, setItemDrawerCommentsLoading] = useState(false);
   const [itemDrawerCommentDraft, setItemDrawerCommentDraft] = useState('');
   const [itemDrawerCommentSubmitting, setItemDrawerCommentSubmitting] = useState(false);
+  const [itemDrawerDeltaSubmitting, setItemDrawerDeltaSubmitting] = useState(false);
   const [blockDrawerActivityMessages, setBlockDrawerActivityMessages] = useState<ChatMessage[]>([]);
   const [blockDrawerActivityDraft, setBlockDrawerActivityDraft] = useState('');
   const [blockDrawerActivitySending, setBlockDrawerActivitySending] = useState(false);
@@ -896,6 +898,15 @@ export default function MobileCalendarWireframe(): JSX.Element {
     }
   };
 
+  const ensureMobileListRegistry = async (preferredFocalId?: string | null): Promise<void> => {
+    if (!user?.id) return;
+    const hasAnyLists = Object.values(listsByFocal).some((lists) => (lists || []).length > 0);
+    const needsPreferredFocal = preferredFocalId ? (listsByFocal[preferredFocalId] || []).length === 0 : false;
+    if (focals.length === 0 || !hasAnyLists || needsPreferredFocal) {
+      await loadFocals();
+    }
+  };
+
   const loadDocsNotes = async (): Promise<void> => {
     if (!user?.id) {
       setDocsNotes([]);
@@ -1239,6 +1250,38 @@ export default function MobileCalendarWireframe(): JSX.Element {
   }, [addSheet.open, addSheet.type, addSheet.listId]);
 
   useEffect(() => {
+    if (!addSheet.open) return;
+    if (addSheet.type !== 'list' && addSheet.type !== 'item' && addSheet.type !== 'subitem') return;
+    void ensureMobileListRegistry(addSheet.focalId ?? mobileScope.focalId ?? null);
+  }, [addSheet.open, addSheet.type, addSheet.focalId, mobileScope.focalId]);
+
+  useEffect(() => {
+    if (!addSheet.open) return;
+    if (addSheet.type !== 'item' && addSheet.type !== 'subitem') return;
+    if (addSheet.listId) return;
+
+    const preferredFocalId = addSheet.focalId ?? mobileScope.focalId ?? null;
+    const nextListId =
+      (preferredFocalId ? (listsByFocal[preferredFocalId] || [])[0]?.id || null : null) ??
+      indexedLists[0]?.id ??
+      null;
+
+    if (!nextListId) return;
+
+    const owningFocalId =
+      preferredFocalId || indexedLists.find((entry) => entry.id === nextListId)?.focalId || null;
+
+    setAddSheet((prev) => {
+      if (!prev.open || (prev.type !== 'item' && prev.type !== 'subitem') || prev.listId) return prev;
+      return {
+        ...prev,
+        focalId: prev.focalId ?? owningFocalId,
+        listId: nextListId
+      };
+    });
+  }, [addSheet.open, addSheet.type, addSheet.listId, addSheet.focalId, indexedLists, listsByFocal, mobileScope.focalId]);
+
+  useEffect(() => {
     if (!addSheet.open || addSheet.type !== 'item' || !addSheet.listId) {
       setAddItemFields([]);
       setAddItemFieldDrafts({});
@@ -1330,15 +1373,10 @@ export default function MobileCalendarWireframe(): JSX.Element {
             body: entry.body,
             created_at: entry.created_at,
             author_type: 'user',
-            user_id: entry.user_id || null
+            user_id: entry.user_id || null,
+            proposals: []
           })),
-          ...(scopedRows || []).map((entry: any) => ({
-            id: `thread-${entry.id}`,
-            body: entry.content || '',
-            created_at: entry.created_at,
-            author_type: entry.author_type || entry.source || 'user',
-            user_id: entry.user_id || null
-          }))
+          ...(scopedRows || []).map((entry: any) => ({ ...mapThreadComment(entry), id: `thread-${entry.id}` }))
         ].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
         setItemDrawerComments(merged);
       } catch (error) {
@@ -1815,6 +1853,17 @@ export default function MobileCalendarWireframe(): JSX.Element {
   };
 
   const openAddSheet = (next: AddSheetState): void => {
+    const derivedFocalId =
+      next.focalId ?? mobileScope.focalId ?? focals[0]?.id ?? indexedLists[0]?.focalId ?? null;
+    const derivedListId =
+      next.type === 'item' || next.type === 'subitem'
+        ? next.listId ??
+          mobileScope.listId ??
+          (derivedFocalId ? (listsByFocal[derivedFocalId] || [])[0]?.id || null : null) ??
+          indexedLists[0]?.id ??
+          null
+        : next.listId ?? null;
+
     setAddSheetClosing(false);
     setAddSheetName('');
     setAddSheetDescription('');
@@ -1828,11 +1877,14 @@ export default function MobileCalendarWireframe(): JSX.Element {
     setAddSheetRecurrenceExpanded(false);
     setAddSheet({
       ...next,
-      focalId: next.focalId ?? mobileScope.focalId ?? focals[0]?.id ?? null,
-      listId: next.listId ?? mobileScope.listId ?? null
+      focalId: derivedFocalId,
+      listId: derivedListId
     });
     addSheetOpenedAtRef.current = Date.now();
     setCaptureMode('none');
+    if (next.type === 'list' || next.type === 'item' || next.type === 'subitem') {
+      void ensureMobileListRegistry(derivedFocalId);
+    }
   };
 
   const switchUniversalAddType = (nextType: AddSheetState['type']): void => {
@@ -2591,6 +2643,64 @@ export default function MobileCalendarWireframe(): JSX.Element {
       console.error('Failed to add item comment from mobile drawer:', error);
     } finally {
       setItemDrawerCommentSubmitting(false);
+    }
+  };
+
+  const pushItemDrawerCommentToDelta = async (): Promise<void> => {
+    if (!user?.id || !resolvedDrawerItem?.id) return;
+    const body = itemDrawerCommentDraft.trim();
+    if (!body) return;
+    setItemDrawerDeltaSubmitting(true);
+    try {
+      const created = await focalBoardService.createScopedComment('item', resolvedDrawerItem.id, user.id, body, 'user');
+      const savedUserComment: MobileThreadEntry = { ...mapThreadComment(created), id: `thread-${created.id}` };
+      const nextThread = [...itemDrawerComments, savedUserComment];
+      setItemDrawerComments(nextThread);
+      setItemDrawerCommentDraft('');
+
+      const reply = await chatService.send({
+        messages: nextThread
+          .filter((entry) => entry.author_type === 'user' || entry.author_type === 'system' || entry.author_type === 'ai')
+          .slice(-20)
+          .map((entry) => ({
+            role: entry.author_type === 'user' ? 'user' : 'assistant',
+            content: entry.body
+          })),
+        context: {
+          ...buildMobileChatContext(),
+          item_id: resolvedDrawerItem.id,
+          list_id: resolvedDrawerItem.listId || mobileScope.listId || undefined,
+          focal_id: resolvedDrawerItem.focalId || mobileScope.focalId || undefined
+        },
+        mode: 'ai'
+      });
+
+      setItemDrawerComments((prev) => [
+        ...prev,
+        {
+          id: `thread-ai-${makeId()}`,
+          body: reply.text || 'No response generated.',
+          created_at: new Date().toISOString(),
+          author_type: 'ai',
+          user_id: null,
+          proposals: reply.proposals || []
+        }
+      ]);
+    } catch (error) {
+      console.error('Failed to push mobile item note to Delta:', error);
+      setItemDrawerComments((prev) => [
+        ...prev,
+        {
+          id: `thread-ai-error-${makeId()}`,
+          body: 'Delta could not analyze that note right now. Your note was still saved.',
+          created_at: new Date().toISOString(),
+          author_type: 'system',
+          user_id: null,
+          proposals: []
+        }
+      ]);
+    } finally {
+      setItemDrawerDeltaSubmitting(false);
     }
   };
 
@@ -4129,7 +4239,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
       idempotencyKey: proposal.id
     });
     await loadCalendarBlocks();
-    return proposal.type === 'resolve_time_conflict' ? proposal.event_title : proposal.title;
+    return getChatProposalTitle(proposal);
   };
 
   const handleApproveMobileProposal = async (proposal: ChatProposal): Promise<void> => {
@@ -5290,7 +5400,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
                     .filter((proposal) => !dismissedMobileProposalIds[proposal.id])
                     .map((proposal) => (
                       <div key={proposal.id} className="mobile-ai-proposal-card">
-                        <p>{proposal.type === 'resolve_time_conflict' ? proposal.event_title : proposal.title}</p>
+                        <p>{getChatProposalTitle(proposal)}</p>
                         {(proposal.type === 'create_action' ||
                           proposal.type === 'create_follow_up_action' ||
                           proposal.type === 'create_time_block' ||
@@ -5506,7 +5616,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
               .filter((proposal) => !captureDismissedProposalIds[proposal.id])
               .map((proposal) => (
                 <div key={proposal.id} className="mobile-ai-proposal-card mobile-capture-proposal-card">
-                  <p>{proposal.type === 'resolve_time_conflict' ? proposal.event_title : proposal.title}</p>
+                  <p>{getChatProposalTitle(proposal)}</p>
                   {(proposal.type === 'create_action' ||
                     proposal.type === 'create_follow_up_action' ||
                     proposal.type === 'create_time_block' ||
@@ -5772,9 +5882,9 @@ export default function MobileCalendarWireframe(): JSX.Element {
                 <>
                   <label className="mobile-add-field">
                     <span>List</span>
-                    <select
-                      value={addSheet.listId || ''}
-                      onChange={(event) => {
+                      <select
+                        value={addSheet.listId || ''}
+                        onChange={(event) => {
                         const nextListId = event.target.value || null;
                         const owningFocal =
                           Object.entries(listsByFocal).find(([, lists]) => lists.some((list) => list.id === nextListId))?.[0] || null;
@@ -5783,12 +5893,12 @@ export default function MobileCalendarWireframe(): JSX.Element {
                           listId: nextListId,
                           focalId: owningFocal
                         }));
-                      }}
-                    >
-                      <option value="">Select list</option>
-                      {indexedLists.map((list) => (
-                        <option key={list.id} value={list.id}>
-                          {list.focalName} / {list.name}
+                        }}
+                      >
+                        <option value="">{indexedLists.length > 0 ? 'Select list' : 'Loading lists…'}</option>
+                        {indexedLists.map((list) => (
+                          <option key={list.id} value={list.id}>
+                            {list.focalName} / {list.name}
                         </option>
                       ))}
                     </select>
@@ -6378,6 +6488,50 @@ export default function MobileCalendarWireframe(): JSX.Element {
                         ) : (
                           <div key={message.id} className="mobile-ai-assistant">
                             {message.content}
+                            {(message.proposals || [])
+                              .filter((proposal) => !dismissedMobileProposalIds[proposal.id])
+                              .map((proposal) => (
+                                <div key={proposal.id} className="mobile-ai-proposal-card">
+                                  <p>{getChatProposalTitle(proposal)}</p>
+                                  {(proposal.type === 'create_action' ||
+                                    proposal.type === 'create_follow_up_action' ||
+                                    proposal.type === 'create_time_block' ||
+                                    proposal.type === 'resolve_time_conflict') && (
+                                    <input
+                                      className="mobile-ai-proposal-input"
+                                      value={mobileProposalNotes[proposal.id] ?? proposal.notes ?? ''}
+                                      onChange={(event) =>
+                                        setMobileProposalNotes((prev) => ({ ...prev, [proposal.id]: event.target.value }))
+                                      }
+                                      placeholder="Adjust note"
+                                    />
+                                  )}
+                                  <div className="mobile-ai-proposal-actions">
+                                    <button
+                                      type="button"
+                                      className="approve"
+                                      disabled={Boolean(approvedMobileProposalIds[proposal.id]) || applyingMobileProposalId === proposal.id}
+                                      onClick={() => void handleApproveMobileProposal(proposal)}
+                                    >
+                                      {approvedMobileProposalIds[proposal.id]
+                                        ? 'Applied'
+                                        : applyingMobileProposalId === proposal.id
+                                          ? 'Applying…'
+                                          : 'Approve'}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="dismiss"
+                                      disabled={Boolean(approvedMobileProposalIds[proposal.id]) || applyingMobileProposalId === proposal.id}
+                                      onClick={() =>
+                                        setDismissedMobileProposalIds((prev) => ({ ...prev, [proposal.id]: true }))
+                                      }
+                                    >
+                                      Dismiss
+                                    </button>
+                                  </div>
+                                </div>
+                              ))}
                           </div>
                         )
                       )}
@@ -6721,6 +6875,50 @@ export default function MobileCalendarWireframe(): JSX.Element {
                                   {new Date(comment.created_at).toLocaleString()}
                                 </div>
                               )}
+                              {(comment.proposals || [])
+                                .filter((proposal) => !dismissedMobileProposalIds[proposal.id])
+                                .map((proposal) => (
+                                  <div key={proposal.id} className="mobile-ai-proposal-card">
+                                    <p>{getChatProposalTitle(proposal)}</p>
+                                    {(proposal.type === 'create_action' ||
+                                      proposal.type === 'create_follow_up_action' ||
+                                      proposal.type === 'create_time_block' ||
+                                      proposal.type === 'resolve_time_conflict') && (
+                                      <input
+                                        className="mobile-ai-proposal-input"
+                                        value={mobileProposalNotes[proposal.id] ?? proposal.notes ?? ''}
+                                        onChange={(event) =>
+                                          setMobileProposalNotes((prev) => ({ ...prev, [proposal.id]: event.target.value }))
+                                        }
+                                        placeholder="Adjust note"
+                                      />
+                                    )}
+                                    <div className="mobile-ai-proposal-actions">
+                                      <button
+                                        type="button"
+                                        className="approve"
+                                        disabled={Boolean(approvedMobileProposalIds[proposal.id]) || applyingMobileProposalId === proposal.id}
+                                        onClick={() => void handleApproveMobileProposal(proposal)}
+                                      >
+                                        {approvedMobileProposalIds[proposal.id]
+                                          ? 'Applied'
+                                          : applyingMobileProposalId === proposal.id
+                                            ? 'Applying…'
+                                            : 'Approve'}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="dismiss"
+                                        disabled={Boolean(approvedMobileProposalIds[proposal.id]) || applyingMobileProposalId === proposal.id}
+                                        onClick={() =>
+                                          setDismissedMobileProposalIds((prev) => ({ ...prev, [proposal.id]: true }))
+                                        }
+                                      >
+                                        Dismiss
+                                      </button>
+                                    </div>
+                                  </div>
+                                ))}
                             </div>
                           );
                         })}
@@ -6740,7 +6938,17 @@ export default function MobileCalendarWireframe(): JSX.Element {
                           onChange={(event) => setItemDrawerCommentDraft(event.target.value)}
                           placeholder="Write an activity note"
                         />
-                        <button type="submit" disabled={itemDrawerCommentSubmitting || !itemDrawerCommentDraft.trim()}>
+                        <button
+                          type="button"
+                          disabled={itemDrawerDeltaSubmitting || itemDrawerCommentSubmitting || !itemDrawerCommentDraft.trim()}
+                          onClick={() => void pushItemDrawerCommentToDelta()}
+                        >
+                          Delta
+                        </button>
+                        <button
+                          type="submit"
+                          disabled={itemDrawerCommentSubmitting || itemDrawerDeltaSubmitting || !itemDrawerCommentDraft.trim()}
+                        >
                           <Send size={17} />
                         </button>
                       </div>

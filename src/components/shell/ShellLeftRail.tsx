@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import MetricsCard from './MetricsCard';
 import SpacesRailCard from './SpacesRailCard';
 import type { ShellDaySnapshot } from './daySnapshot';
@@ -18,6 +19,7 @@ interface ShellLeftRailProps {
   onAddSpace: () => void;
   onAddList: (focalId: string | null) => void;
   onExpandSpaces: (payload: { focalId: string | null; listId: string | null; mode: 'space' | 'list' }) => void;
+  onAddTask: (date: Date) => void;
 }
 
 export default function ShellLeftRail({
@@ -34,10 +36,13 @@ export default function ShellLeftRail({
   onOpenItem,
   onAddSpace,
   onAddList,
-  onExpandSpaces
+  onExpandSpaces,
+  onAddTask
 }: ShellLeftRailProps): JSX.Element {
+  const [spacesMode, setSpacesMode] = useState<'spaces' | 'lists' | 'items'>('spaces');
+
   return (
-    <aside className="shell-rail shell-rail-left">
+    <aside className={`shell-rail shell-rail-left ${spacesMode === 'items' ? 'mode-items' : 'mode-compact'}`.trim()}>
       <SpacesRailCard
         userId={userId}
         focals={focals}
@@ -50,6 +55,7 @@ export default function ShellLeftRail({
         onAddList={onAddList}
         onExpand={onExpandSpaces}
         onRefreshShellData={onRefreshShellData}
+        onModeChange={setSpacesMode}
       />
       <MetricsCard
         userId={userId}
@@ -59,6 +65,7 @@ export default function ShellLeftRail({
         snapshot={daySnapshot}
         onOpenItem={onOpenItem}
         onRefreshShellData={onRefreshShellData}
+        onAddTask={onAddTask}
       />
     </aside>
   );

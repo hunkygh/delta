@@ -158,7 +158,7 @@ export default function ShellRefactorView(): JSX.Element {
       });
 
       const enrichedTimeBlocks = await Promise.all(
-        (timeBlocks || []).map(async (entry) => ({
+        (timeBlocks || []).map(async (entry: Event) => ({
           ...entry,
           sourceEventId: entry.id,
           occurrenceStartUtc: entry.start,
