@@ -5960,16 +5960,7 @@ export default function MobileCalendarWireframe(): JSX.Element {
               onPointerUp={onAddSheetPointerEnd}
               onPointerCancel={onAddSheetPointerEnd}
             />
-            <div
-              className="mobile-add-sheet-head"
-              onTouchStart={onAddSheetTouchStart}
-              onTouchMove={onAddSheetTouchMove}
-              onTouchEnd={onAddSheetTouchEnd}
-              onPointerDown={onAddSheetPointerDown}
-              onPointerMove={onAddSheetPointerMove}
-              onPointerUp={onAddSheetPointerEnd}
-              onPointerCancel={onAddSheetPointerEnd}
-            >
+            <div className="mobile-add-sheet-head">
               {addSheet.type === 'item' || addSheet.type === 'event' || addSheet.type === 'subitem' || addSheet.type === 'voice' ? (
                 <input
                   ref={addSheetNameRef}
