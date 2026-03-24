@@ -782,8 +782,8 @@ export default function MobileCalendarWireframe(): JSX.Element {
     return rows;
   }, []);
 
-  const navOrder: Array<'focals' | 'calendar'> = ['focals', 'calendar'];
-  const activeNavIndex = Math.max(0, navOrder.indexOf(activeNav as 'focals' | 'calendar'));
+  const navOrder: Array<'docs' | 'focals' | 'calendar'> = ['docs', 'focals', 'calendar'];
+  const activeNavIndex = Math.max(0, navOrder.indexOf(activeNav));
   const addSubitemParentOptions = useMemo(() => {
     return indexedLists.flatMap((list) =>
       list.items.map((item) => ({
@@ -5751,6 +5751,10 @@ export default function MobileCalendarWireframe(): JSX.Element {
                 className="mobile-bottom-pill-indicator"
                 style={{ transform: `translateX(${activeNavIndex * 100}%)` }}
               />
+              <button type="button" className={activeNav === 'docs' ? 'active' : ''} onClick={() => setActiveNav('docs')}>
+                <Folder size={15} />
+                <span>Notes</span>
+              </button>
               <button type="button" className={activeNav === 'focals' ? 'active' : ''} onClick={() => setActiveNav('focals')}>
                 <DatabaseIcon size={15} />
                 <span>Spaces</span>
